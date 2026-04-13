@@ -12,6 +12,144 @@
 
 ---
 
+## Review fixes (applied from Gemini + Codex review, 2026-04-13)
+
+### Fix 1: Autosave/watcher infinite loop (Critical — Tasks 1, 10)
+
+The autosave subscriber writes to the file, bumping `lastModified`.
+The file watcher sees the newer timestamp and calls `loadFromText`,
+which changes layers, which triggers autosave again — infinite loop.
+
+**Fix:** The autosave subscriber MUST update `lastModifiedRef.current`
+after every successful write. The watcher only reloads if
+`file.lastModified > lastModifiedRef.current`. Since autosave updates
+the ref after writing, the watcher ignores app-originated writes.
+
+Same fix for explicit Save (`handleSave`): update `lastModifiedRef`
+after `writable.close()`.
+
+Same fix for Open (`handleOpen`): set `lastModifiedRef` BEFORE
+calling `loadFromText`, not after — otherwise the autosave subscriber
+can fire in between and write to the file before the ref is set.
+
+### Fix 2: moveLayerLive on drag start triggers autosave (High — Task 3)
+
+The architecture says tools call `moveLayerLive` once on `onDragStart`
+to trigger the zundo snapshot. But `moveLayerLive` creates a new
+`layers` array (even if the bbox doesn't change), which triggers the
+autosave subscriber.
+
+**Fix:** The autosave subscriber must check whether `toText()` has
+actually changed before writing. Cheap: store the last-written text
+hash or the last-written string. Only write if different.
+
+```typescript
+// In autosave subscriber:
+const newText = useEditorStore.getState().toText();
+if (newText === lastWrittenTextRef.current) return; // no change, skip
+// ... write to file ...
+lastWrittenTextRef.current = newText;
+```
+
+This also prevents unnecessary disk writes during selection changes,
+tool switches, and other non-text-affecting state changes that
+produce new `layers` array references without changing content.
+
+### Fix 3: useGestureAdapter cleanup must distinguish move vs resize (High — Tasks 3, 4)
+
+The hook's `useEffect` cleanup always calls `moveLayerCommit`. If a
+resize is in progress, it should call `resizeLayerCommit` instead and
+reset `node.scaleX/Y` to 1.
+
+**Fix:** The `GestureState` ref stores a `mode: "move" | "resize"`
+field. Cleanup checks the mode and calls the appropriate commit
+action. Resize cleanup also resets the node's scale attrs.
+
+```typescript
+interface GestureState {
+  layerId: string;
+  startBbox: Bbox;
+  active: boolean;
+  mode: "move" | "resize";
+  node: any; // Konva node ref for cleanup
+}
+```
+
+### Fix 4: Disable draggable during transform (Medium — Task 4)
+
+A selected rect is both `draggable` and transformable — gesture
+conflict. Fix: set `draggable={false}` while a transform is active.
+Use a `transformingRef` boolean flag, set true in `onTransformStart`,
+false in `onTransformEnd`/cancel.
+
+Or simpler: `draggable={l.id === selectedId && activeTool === "select" && !isTransforming}`.
+
+### Fix 5: boundBoxFunc left/top handle wobble (Medium — Task 4)
+
+Rounding x/y/width/height independently causes the opposite edge to
+wobble when resizing from left/top handles.
+
+**Fix:** When the right/bottom edge is stationary, compute the
+snapped position from the stationary edge:
+
+```typescript
+boundBoxFunc={(oldBox, newBox) => {
+  const snapped = { ...newBox };
+  // If right edge is ~stationary, anchor it and snap left
+  if (Math.abs((newBox.x + newBox.width) - (oldBox.x + oldBox.width)) < charWidth / 2) {
+    const right = oldBox.x + oldBox.width;
+    snapped.x = Math.round(newBox.x / charWidth) * charWidth;
+    snapped.width = right - snapped.x;
+  } else {
+    snapped.x = Math.round(newBox.x / charWidth) * charWidth;
+    snapped.width = Math.max(charWidth, Math.round(newBox.width / charWidth) * charWidth);
+  }
+  // Same logic for top/bottom edge
+  if (Math.abs((newBox.y + newBox.height) - (oldBox.y + oldBox.height)) < charHeight / 2) {
+    const bottom = oldBox.y + oldBox.height;
+    snapped.y = Math.round(newBox.y / charHeight) * charHeight;
+    snapped.height = bottom - snapped.y;
+  } else {
+    snapped.y = Math.round(newBox.y / charHeight) * charHeight;
+    snapped.height = Math.max(charHeight, Math.round(newBox.height / charHeight) * charHeight);
+  }
+  return snapped;
+}}
+```
+
+### Fix 6: Additional tests needed (Medium — Tasks 5, 10)
+
+Add to Task 5 tests:
+- `setFileHandle` stores a handle
+- `reset()` clears `fileHandle` to null
+- `reset()` restores `activeTool` after transitions
+
+Add to Task 10 (or new Task 10b):
+- Autosave skips write when text hasn't changed
+- Autosave updates `lastModifiedRef` after write
+- Watcher ignores app-originated writes
+- Open sets `lastModifiedRef` before `loadFromText`
+- Save updates `lastModifiedRef`
+
+### Fix 7: Task 4 must define installResizeListeners (Medium)
+
+Task 4's `onTransformStart` references `installResizeListeners` but
+doesn't define it. The implementation must:
+- Install Escape listener that resets `node.scaleX(1); node.scaleY(1)`
+  and calls `resizeLayerCommit(id, startBbox)`
+- Install pointercancel listener with same revert
+- Reset node width/height to pre-transform pixel values on cancel
+- Be removed in onTransformEnd and cleanup
+
+### Fix 8: Text tool input constraint (Low — Task 8)
+
+The architecture says grapheme clusters / emoji are out of scope.
+`stampText` should filter input to printable single-column characters
+(charCode 32-126 plus Unicode box-drawing range U+2500-U+257F).
+Reject or ignore other input.
+
+---
+
 ## Phase 1: Konva renders the character grid
 
 ### Task 1: KonvaCanvas with character grid rendering
