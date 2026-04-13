@@ -360,24 +360,35 @@ interface GestureState {
   layerId: string;
   startBbox: Bbox;
   active: boolean;
+  mode: "move" | "resize";  // Fix 3: distinguish move vs resize
+  node: any;                 // Fix 3: Konva node ref for cleanup
 }
 
 /**
- * Returns callbacks for onDragStart/onDragEnd + cleanup.
+ * Returns callbacks for move (onDragStart/onDragEnd) and resize
+ * (onTransformStart/onTransformEnd) + cleanup.
  * Konva owns node position during drag (no per-frame store updates).
- * Store updates ONCE on end via moveLayerCommit.
+ * Store updates ONCE on end via moveLayerCommit/resizeLayerCommit.
  */
 export function useGestureAdapter() {
   const gestureRef = useRef<GestureState | null>(null);
   const escapeRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const cancelRef = useRef<((e: PointerEvent) => void) | null>(null);
 
-  // Cleanup on unmount: if a gesture is in progress, commit pre-drag bbox
+  // Cleanup on unmount: commit pre-gesture bbox if interrupted.
+  // Fix 3: use mode to call the correct commit action.
   useEffect(() => {
     return () => {
       const g = gestureRef.current;
       if (g?.active) {
-        useEditorStore.getState().moveLayerCommit(g.layerId, g.startBbox);
+        if (g.mode === "resize") {
+          // Reset scale before reverting
+          g.node.scaleX(1);
+          g.node.scaleY(1);
+          useEditorStore.getState().resizeLayerCommit(g.layerId, g.startBbox);
+        } else {
+          useEditorStore.getState().moveLayerCommit(g.layerId, g.startBbox);
+        }
       }
       if (escapeRef.current) {
         window.removeEventListener("keydown", escapeRef.current, true);
@@ -431,6 +442,8 @@ export function useGestureAdapter() {
       layerId,
       startBbox: { ...layer.bbox },
       active: true,
+      mode: "move",
+      node,
     };
     gestureRef.current = g;
     // Trigger zundo snapshot-then-pause via a no-op live call
@@ -471,7 +484,7 @@ On each shape Rect (for rect layers only in v1):
 const { onDragStart, onDragEnd } = useGestureAdapter();
 
 // On each Rect node:
-draggable={l.id === selectedId && activeTool === "select"}
+draggable={l.id === selectedId && activeTool === "select" && !gestureRef.current?.active}
 dragBoundFunc={(pos) => ({
   x: Math.round(pos.x / charWidth) * charWidth,
   y: Math.round(pos.y / charHeight) * charHeight,
@@ -512,6 +525,8 @@ function onTransformStart(layerId: string, node: any, charWidth: number, charHei
     layerId,
     startBbox: { ...layer.bbox },
     active: true,
+    mode: "resize",
+    node,
   };
   gestureRef.current = g;
   // Trigger zundo snapshot
@@ -572,13 +587,29 @@ useEffect(() => {
     "top-left","top-right","bottom-left","bottom-right",
     "top-center","bottom-center","middle-left","middle-right"
   ]}
-  boundBoxFunc={(oldBox, newBox) => ({
-    ...newBox,
-    x: Math.round(newBox.x / charWidth) * charWidth,
-    y: Math.round(newBox.y / charHeight) * charHeight,
-    width: Math.max(charWidth, Math.round(newBox.width / charWidth) * charWidth),
-    height: Math.max(charHeight, Math.round(newBox.height / charHeight) * charHeight),
-  })}
+  boundBoxFunc={(oldBox, newBox) => {
+    // Fix 5: anchor stationary edge to prevent wobble on left/top handles
+    const snapped = { ...newBox };
+    const rightStable = Math.abs((newBox.x + newBox.width) - (oldBox.x + oldBox.width)) < charWidth / 2;
+    if (rightStable) {
+      const right = oldBox.x + oldBox.width;
+      snapped.x = Math.round(newBox.x / charWidth) * charWidth;
+      snapped.width = right - snapped.x;
+    } else {
+      snapped.x = Math.round(newBox.x / charWidth) * charWidth;
+      snapped.width = Math.max(charWidth, Math.round(newBox.width / charWidth) * charWidth);
+    }
+    const bottomStable = Math.abs((newBox.y + newBox.height) - (oldBox.y + oldBox.height)) < charHeight / 2;
+    if (bottomStable) {
+      const bottom = oldBox.y + oldBox.height;
+      snapped.y = Math.round(newBox.y / charHeight) * charHeight;
+      snapped.height = bottom - snapped.y;
+    } else {
+      snapped.y = Math.round(newBox.y / charHeight) * charHeight;
+      snapped.height = Math.max(charHeight, Math.round(newBox.height / charHeight) * charHeight);
+    }
+    return snapped;
+  }}
 />
 
 // On each rect Rect node, add:
@@ -632,10 +663,23 @@ describe("tool state", () => {
     useEditorStore.getState().reset();
     expect(useEditorStore.getState().activeTool).toBe("select");
   });
+
+  // Fix 6: fileHandle tests
+  it("setFileHandle stores a handle", () => {
+    const fakeHandle = {} as FileSystemFileHandle;
+    useEditorStore.getState().setFileHandle(fakeHandle);
+    expect(useEditorStore.getState().fileHandle).toBe(fakeHandle);
+  });
+
+  it("reset clears fileHandle to null", () => {
+    useEditorStore.getState().setFileHandle({} as FileSystemFileHandle);
+    useEditorStore.getState().reset();
+    expect(useEditorStore.getState().fileHandle).toBeNull();
+  });
 });
 ```
 
-**Step 2: Run tests** → should pass (store already has activeTool)
+**Step 2: Run tests** → should pass (store already has activeTool + fileHandle)
 
 **Step 3: Create `src/Toolbar.tsx`**
 
@@ -1070,12 +1114,21 @@ git commit -m "feat: eraser tool — drag to clear characters"
 
 ## Phase 3: File handling
 
-### Task 10: File open, save, and autosave
+### Task 10: File open, save, and file watcher
 
 **Files:**
 - Modify: `src/App.tsx`
 
+**NOTE:** `lastModifiedRef` and `lastWrittenTextRef` already exist in
+App.tsx (applied in Fix 1/2). The autosave subscriber also already
+exists with the skip-if-unchanged and lastModified-update logic.
+This task adds Open, Save, and the file watcher. It does NOT
+re-create the autosave subscriber.
+
 **Step 1: Implement open handler**
+
+Fix 1 ordering: set `lastModifiedRef` BEFORE `loadFromText` so the
+autosave subscriber doesn't fire in between.
 
 ```typescript
 const handleOpen = async () => {
@@ -1085,9 +1138,12 @@ const handleOpen = async () => {
     });
     const file = await handle.getFile();
     const text = await file.text();
+    // Fix 1: set lastModified BEFORE loadFromText to prevent
+    // autosave from seeing the open as a "change" and writing back
+    lastModifiedRef.current = file.lastModified;
+    lastWrittenTextRef.current = text;
     useEditorStore.getState().setFileHandle(handle);
     useEditorStore.getState().loadFromText(text);
-    lastModifiedRef.current = file.lastModified;
   } catch (e) {
     // User cancelled — ignore
   }
@@ -1095,6 +1151,8 @@ const handleOpen = async () => {
 ```
 
 **Step 2: Implement save handler**
+
+Update `lastModifiedRef` after write to prevent watcher loop.
 
 ```typescript
 const handleSave = async () => {
@@ -1108,17 +1166,22 @@ const handleSave = async () => {
       useEditorStore.getState().setFileHandle(handle);
     } catch { return; }
   }
+  const text = useEditorStore.getState().toText();
   const writable = await handle.createWritable();
-  await writable.write(useEditorStore.getState().toText());
+  await writable.write(text);
   await writable.close();
+  lastWrittenTextRef.current = text;
+  // Update lastModified so watcher ignores this write
+  const file = await handle.getFile();
+  lastModifiedRef.current = file.lastModified;
 };
 ```
 
 **Step 3: Add file watcher for external changes**
 
-```typescript
-const lastModifiedRef = useRef<number>(0);
+Uses `lastModifiedRef` already declared in App.tsx.
 
+```typescript
 useEffect(() => {
   const interval = setInterval(async () => {
     const handle = useEditorStore.getState().fileHandle;
@@ -1127,13 +1190,36 @@ useEffect(() => {
       const file = await handle.getFile();
       if (file.lastModified > lastModifiedRef.current) {
         const text = await file.text();
-        useEditorStore.getState().loadFromText(text);
         lastModifiedRef.current = file.lastModified;
+        lastWrittenTextRef.current = text;
+        useEditorStore.getState().loadFromText(text);
       }
     } catch { /* permission revoked or file deleted */ }
   }, 2000);
   return () => clearInterval(interval);
 }, []);
+```
+
+**Step 4: Add tests (Fix 6)**
+
+Add to `src/store.test.ts`:
+
+```typescript
+describe("file state", () => {
+  beforeEach(() => useEditorStore.getState().reset());
+
+  it("setFileHandle stores a handle", () => {
+    const fakeHandle = {} as FileSystemFileHandle;
+    useEditorStore.getState().setFileHandle(fakeHandle);
+    expect(useEditorStore.getState().fileHandle).toBe(fakeHandle);
+  });
+
+  it("reset clears fileHandle to null", () => {
+    useEditorStore.getState().setFileHandle({} as FileSystemFileHandle);
+    useEditorStore.getState().reset();
+    expect(useEditorStore.getState().fileHandle).toBeNull();
+  });
+});
 ```
 
 **Step 4: Verify**
