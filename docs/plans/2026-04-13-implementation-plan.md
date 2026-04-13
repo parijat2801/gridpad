@@ -1,0 +1,1130 @@
+# Gridpad Implementation Plan
+
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+**Goal:** Build a single-view ASCII wireframe editor with Konva canvas, MS-Paint-style drawing tools, and file-based autosave.
+
+**Architecture:** Text is the document. Drawing tools stamp characters into text → `loadFromText` → scanner → layers. Move/resize mutates layers directly → `toText()` → autosave. Konva renders the grid + interactive shapes. No CodeMirror. See `docs/plans/2026-04-13-single-view-architecture.md`.
+
+**Tech Stack:** React 19, TypeScript, Konva + react-konva, Mantine v9, Zustand + Zundo, Vitest
+
+**Baseline:** 177 tests passing. All tests must stay green after every task.
+
+---
+
+## Phase 1: Konva renders the character grid
+
+### Task 1: KonvaCanvas with character grid rendering
+
+**Files:**
+- Create: `src/KonvaCanvas.tsx`
+- Modify: `src/App.tsx` (mount KonvaCanvas in canvas-area)
+
+**Step 1: Create `src/KonvaCanvas.tsx`**
+
+The component measures cell size on mount, then renders a Konva Stage
+with a single Layer containing a custom Shape that batch-renders the
+composited character grid via `ctx.fillText()` row by row.
+
+```typescript
+import { useEffect, useState, useRef } from "react";
+import { Stage, Layer, Shape } from "react-konva";
+import { useEditorStore } from "./store";
+import { compositeLayers } from "./layers";
+import {
+  GRID_WIDTH, GRID_HEIGHT, FONT_SIZE, FONT_FAMILY,
+  BG_COLOR, FG_COLOR, measureCellSize, getCharWidth, getCharHeight,
+} from "./grid";
+
+export function KonvaCanvas() {
+  const layers = useEditorStore((s) => s.layers);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    measureCellSize().then(() => setReady(true));
+  }, []);
+
+  if (!ready) {
+    return <div style={{ background: BG_COLOR, width: "100%", height: "100%" }} />;
+  }
+
+  const charWidth = getCharWidth();
+  const charHeight = getCharHeight();
+  const stageWidth = GRID_WIDTH * charWidth;
+  const stageHeight = GRID_HEIGHT * charHeight;
+  const composite = compositeLayers(layers);
+
+  return (
+    <Stage width={stageWidth} height={stageHeight} style={{ background: BG_COLOR }}>
+      <Layer listening={false}>
+        <Shape
+          sceneFunc={(ctx) => {
+            ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
+            ctx.fillStyle = FG_COLOR;
+            ctx.textBaseline = "top";
+            for (let row = 0; row < GRID_HEIGHT; row++) {
+              let line = "";
+              for (let col = 0; col < GRID_WIDTH; col++) {
+                line += composite.get(`${row},${col}`) ?? " ";
+              }
+              ctx.fillText(line, 0, row * charHeight);
+            }
+          }}
+        />
+      </Layer>
+    </Stage>
+  );
+}
+```
+
+**Step 2: Mount in App.tsx**
+
+Replace the `<pre>` placeholder in the canvas-area div:
+
+```typescript
+import { KonvaCanvas } from "./KonvaCanvas";
+
+// In the return, replace the <pre> with:
+<div className="canvas-area">
+  <KonvaCanvas />
+</div>
+```
+
+**Step 3: Verify**
+
+Run: `npm test` → 177 passed
+Run: `npm run dev` → open browser, verify characters render
+
+**Step 4: Commit**
+
+```bash
+git add src/KonvaCanvas.tsx src/App.tsx
+git commit -m "feat: KonvaCanvas renders character grid via custom Shape"
+```
+
+---
+
+### Task 2: Interactive shape outlines with click-to-select
+
+**Files:**
+- Modify: `src/KonvaCanvas.tsx`
+
+**Step 1: Add a second Layer with shape hit-targets**
+
+Below the grid Layer, add an interactive Layer that maps each
+visible, non-base, non-group layer to a Konva node:
+
+- Rect layers → `<Rect>` with transparent fill
+- Line layers → `<Line>` with `hitStrokeWidth={10}`
+- Text layers → `<Rect>` sized to text bbox
+
+Each node gets `onClick={() => selectLayer(l.id)}`.
+Stage gets `onClick` on empty space → `selectLayer(null)`.
+Selected shape gets a blue stroke.
+
+```typescript
+import { Stage, Layer, Shape, Rect, Line as KonvaLine } from "react-konva";
+
+const selectedId = useEditorStore((s) => s.selectedId);
+const selectLayer = useEditorStore((s) => s.selectLayer);
+
+const visibleLayers = layers.filter(
+  (l) => l.visible && l.type !== "base" && l.type !== "group"
+);
+
+// Second Layer:
+<Layer>
+  {visibleLayers.map((l) => {
+    const x = l.bbox.col * charWidth;
+    const y = l.bbox.row * charHeight;
+    const w = l.bbox.w * charWidth;
+    const h = l.bbox.h * charHeight;
+    const selected = l.id === selectedId;
+
+    if (l.type === "line") {
+      // Determine if horizontal or vertical from bbox
+      const isH = l.bbox.h === 1;
+      const points = isH
+        ? [0, h / 2, w, h / 2]
+        : [w / 2, 0, w / 2, h];
+      return (
+        <KonvaLine
+          key={l.id}
+          x={x} y={y}
+          points={points}
+          stroke={selected ? "#4a90e2" : "transparent"}
+          strokeWidth={selected ? 2 : 1}
+          hitStrokeWidth={10}
+          onClick={() => selectLayer(l.id)}
+          onTap={() => selectLayer(l.id)}
+        />
+      );
+    }
+
+    return (
+      <Rect
+        key={l.id}
+        x={x} y={y} width={w} height={h}
+        fill="transparent"
+        stroke={selected ? "#4a90e2" : "transparent"}
+        strokeWidth={selected ? 2 : 0}
+        hitStrokeWidth={10}
+        onClick={() => selectLayer(l.id)}
+        onTap={() => selectLayer(l.id)}
+      />
+    );
+  })}
+</Layer>
+```
+
+Stage deselect:
+```typescript
+<Stage
+  onClick={(e) => {
+    if (e.target === e.target.getStage()) selectLayer(null);
+  }}
+>
+```
+
+**Step 2: Verify**
+
+Click a shape → blue outline. Click empty → outline clears.
+Click panel row → canvas outline follows. Click canvas shape →
+panel row highlights.
+
+**Step 3: Commit**
+
+```bash
+git add src/KonvaCanvas.tsx
+git commit -m "feat: interactive shape outlines with click-to-select"
+```
+
+---
+
+### Task 3: Drag-to-move with grid snapping
+
+**Files:**
+- Modify: `src/KonvaCanvas.tsx`
+- Create: `src/useGestureAdapter.ts`
+
+**Step 1: Create the lifecycle adapter hook**
+
+This hook wraps Konva drag events with zundo safety (snapshot on
+start, commit on end, revert on Escape/cancel/unmount).
+
+```typescript
+// src/useGestureAdapter.ts
+import { useEffect, useRef } from "react";
+import { useEditorStore } from "./store";
+import type { Bbox } from "./store";
+
+interface GestureState {
+  layerId: string;
+  startBbox: Bbox;
+  active: boolean;
+}
+
+/**
+ * Returns callbacks for onDragStart/onDragEnd + cleanup.
+ * Konva owns node position during drag (no per-frame store updates).
+ * Store updates ONCE on end via moveLayerCommit.
+ */
+export function useGestureAdapter() {
+  const gestureRef = useRef<GestureState | null>(null);
+  const escapeRef = useRef<((e: KeyboardEvent) => void) | null>(null);
+  const cancelRef = useRef<((e: PointerEvent) => void) | null>(null);
+
+  // Cleanup on unmount: if a gesture is in progress, commit pre-drag bbox
+  useEffect(() => {
+    return () => {
+      const g = gestureRef.current;
+      if (g?.active) {
+        useEditorStore.getState().moveLayerCommit(g.layerId, g.startBbox);
+      }
+      if (escapeRef.current) {
+        window.removeEventListener("keydown", escapeRef.current, true);
+      }
+      if (cancelRef.current) {
+        window.removeEventListener("pointercancel", cancelRef.current);
+      }
+    };
+  }, []);
+
+  function installListeners(node: any, g: GestureState, charWidth: number, charHeight: number) {
+    const onEscape = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !gestureRef.current?.active) return;
+      e.stopPropagation();
+      // Revert store
+      useEditorStore.getState().moveLayerCommit(g.layerId, g.startBbox);
+      // Reset Konva node position
+      node.position({
+        x: g.startBbox.col * charWidth,
+        y: g.startBbox.row * charHeight,
+      });
+      node.stopDrag();
+      gestureRef.current = null;
+      removeListeners();
+    };
+    const onCancel = () => {
+      if (!gestureRef.current?.active) return;
+      useEditorStore.getState().moveLayerCommit(g.layerId, g.startBbox);
+      gestureRef.current = null;
+      removeListeners();
+    };
+    const removeListeners = () => {
+      window.removeEventListener("keydown", onEscape, true);
+      window.removeEventListener("pointercancel", onCancel);
+      escapeRef.current = null;
+      cancelRef.current = null;
+    };
+
+    window.addEventListener("keydown", onEscape, true); // capture phase
+    window.addEventListener("pointercancel", onCancel);
+    escapeRef.current = onEscape;
+    cancelRef.current = onCancel;
+
+    return removeListeners;
+  }
+
+  function onDragStart(layerId: string, node: any, charWidth: number, charHeight: number) {
+    const layer = useEditorStore.getState().layers.find((l) => l.id === layerId);
+    if (!layer) return;
+    const g: GestureState = {
+      layerId,
+      startBbox: { ...layer.bbox },
+      active: true,
+    };
+    gestureRef.current = g;
+    // Trigger zundo snapshot-then-pause via a no-op live call
+    useEditorStore.getState().moveLayerLive(layerId, layer.bbox);
+    installListeners(node, g, charWidth, charHeight);
+  }
+
+  function onDragEnd(layerId: string, node: any, charWidth: number, charHeight: number) {
+    if (!gestureRef.current?.active) return;
+    const newCol = Math.round(node.x() / charWidth);
+    const newRow = Math.round(node.y() / charHeight);
+    const layer = useEditorStore.getState().layers.find((l) => l.id === layerId);
+    if (!layer) return;
+    useEditorStore.getState().moveLayerCommit(layerId, {
+      row: newRow, col: newCol, w: layer.bbox.w, h: layer.bbox.h,
+    });
+    gestureRef.current = null;
+    // Remove listeners
+    if (escapeRef.current) {
+      window.removeEventListener("keydown", escapeRef.current, true);
+      escapeRef.current = null;
+    }
+    if (cancelRef.current) {
+      window.removeEventListener("pointercancel", cancelRef.current);
+      cancelRef.current = null;
+    }
+  }
+
+  return { onDragStart, onDragEnd, gestureRef };
+}
+```
+
+**Step 2: Wire drag into KonvaCanvas**
+
+On each shape Rect (for rect layers only in v1):
+
+```typescript
+const { onDragStart, onDragEnd } = useGestureAdapter();
+
+// On each Rect node:
+draggable={l.id === selectedId && activeTool === "select"}
+dragBoundFunc={(pos) => ({
+  x: Math.round(pos.x / charWidth) * charWidth,
+  y: Math.round(pos.y / charHeight) * charHeight,
+})}
+onDragStart={(e) => onDragStart(l.id, e.target, charWidth, charHeight)}
+onDragEnd={(e) => onDragEnd(l.id, e.target, charWidth, charHeight)}
+```
+
+**Step 3: Verify**
+
+Select a rect → drag it → snaps to grid. Characters update on
+release. Undo (Cmd+Z) restores. Escape mid-drag reverts.
+
+**Step 4: Commit**
+
+```bash
+git add src/useGestureAdapter.ts src/KonvaCanvas.tsx
+git commit -m "feat: drag-to-move with grid snapping and zundo-safe lifecycle"
+```
+
+---
+
+### Task 4: Transformer resize handles
+
+**Files:**
+- Modify: `src/KonvaCanvas.tsx`
+- Modify: `src/useGestureAdapter.ts` (add resize mode)
+
+**Step 1: Add resize to the gesture adapter**
+
+Add `onTransformStart`/`onTransformEnd` to `useGestureAdapter`:
+
+```typescript
+function onTransformStart(layerId: string, node: any, charWidth: number, charHeight: number) {
+  const layer = useEditorStore.getState().layers.find((l) => l.id === layerId);
+  if (!layer) return;
+  const g: GestureState = {
+    layerId,
+    startBbox: { ...layer.bbox },
+    active: true,
+  };
+  gestureRef.current = g;
+  // Trigger zundo snapshot
+  useEditorStore.getState().resizeLayerLive(layerId, layer.bbox);
+  // Install Escape/cancel with revert logic that also resets scale
+  // (similar to move but resets node.scaleX/Y to 1 and restores size)
+  installResizeListeners(node, g, charWidth, charHeight);
+}
+
+function onTransformEnd(layerId: string, node: any, charWidth: number, charHeight: number) {
+  if (!gestureRef.current?.active) return;
+  const scaleX = node.scaleX();
+  const scaleY = node.scaleY();
+  const newW = Math.max(1, Math.round((node.width() * scaleX) / charWidth));
+  const newH = Math.max(1, Math.round((node.height() * scaleY) / charHeight));
+  const newCol = Math.round(node.x() / charWidth);
+  const newRow = Math.round(node.y() / charHeight);
+  node.scaleX(1);
+  node.scaleY(1);
+  node.width(newW * charWidth);
+  node.height(newH * charHeight);
+  useEditorStore.getState().resizeLayerCommit(layerId, {
+    row: newRow, col: newCol, w: newW, h: newH,
+  });
+  gestureRef.current = null;
+  removeResizeListeners();
+}
+```
+
+**Step 2: Add Transformer to KonvaCanvas**
+
+```typescript
+import { Transformer } from "react-konva";
+
+const transformerRef = useRef<any>(null);
+const shapeRefs = useRef<Map<string, any>>(new Map());
+
+// Attach transformer to selected rect:
+useEffect(() => {
+  const tr = transformerRef.current;
+  if (!tr) return;
+  const selectedLayer = layers.find((l) => l.id === selectedId);
+  if (selectedId && selectedLayer?.type === "rect" && selectedLayer.style
+      && shapeRefs.current.has(selectedId)) {
+    tr.nodes([shapeRefs.current.get(selectedId)]);
+  } else {
+    tr.nodes([]);
+  }
+  tr.getLayer()?.batchDraw();
+}, [selectedId, layers]);
+
+// After shape nodes:
+<Transformer
+  ref={transformerRef}
+  rotateEnabled={false}
+  keepRatio={false}
+  enabledAnchors={[
+    "top-left","top-right","bottom-left","bottom-right",
+    "top-center","bottom-center","middle-left","middle-right"
+  ]}
+  boundBoxFunc={(oldBox, newBox) => ({
+    ...newBox,
+    x: Math.round(newBox.x / charWidth) * charWidth,
+    y: Math.round(newBox.y / charHeight) * charHeight,
+    width: Math.max(charWidth, Math.round(newBox.width / charWidth) * charWidth),
+    height: Math.max(charHeight, Math.round(newBox.height / charHeight) * charHeight),
+  })}
+/>
+
+// On each rect Rect node, add:
+ref={(node) => { if (node) shapeRefs.current.set(l.id, node); else shapeRefs.current.delete(l.id); }}
+onTransformStart={(e) => onTransformStart(l.id, e.target, charWidth, charHeight)}
+onTransformEnd={(e) => onTransformEnd(l.id, e.target, charWidth, charHeight)}
+```
+
+**Step 2: Verify**
+
+Select a rect → 8 handles. Drag a handle → rect resizes with grid
+snap. Characters regenerate on release. Undo works. Escape reverts.
+
+**Step 3: Commit**
+
+```bash
+git add src/KonvaCanvas.tsx src/useGestureAdapter.ts
+git commit -m "feat: Transformer resize with grid snap and zundo-safe lifecycle"
+```
+
+---
+
+## Phase 2: Toolbar and drawing tools
+
+### Task 5: Toolbar component + tool state + keyboard shortcuts
+
+**Files:**
+- Create: `src/Toolbar.tsx`
+- Modify: `src/App.tsx` (mount Toolbar, add keyboard listener)
+- Modify: `src/store.test.ts` (add tool state tests)
+
+**Step 1: Write failing tests for tool state**
+
+Add to `src/store.test.ts`:
+
+```typescript
+describe("tool state", () => {
+  beforeEach(() => useEditorStore.getState().reset());
+
+  it("defaults to select tool", () => {
+    expect(useEditorStore.getState().activeTool).toBe("select");
+  });
+
+  it("setActiveTool changes the active tool", () => {
+    useEditorStore.getState().setActiveTool("rect");
+    expect(useEditorStore.getState().activeTool).toBe("rect");
+  });
+
+  it("reset restores activeTool to select", () => {
+    useEditorStore.getState().setActiveTool("eraser");
+    useEditorStore.getState().reset();
+    expect(useEditorStore.getState().activeTool).toBe("select");
+  });
+});
+```
+
+**Step 2: Run tests** → should pass (store already has activeTool)
+
+**Step 3: Create `src/Toolbar.tsx`**
+
+```typescript
+import { ActionIcon, Group, Tooltip, Divider } from "@mantine/core";
+import {
+  IconPointer, IconSquare, IconMinus, IconLetterT,
+  IconEraser, IconFileUpload, IconDeviceFloppy,
+} from "@tabler/icons-react";
+import { useEditorStore } from "./store";
+
+const TOOLS = [
+  { id: "select", icon: IconPointer, label: "Select (V)" },
+  { id: "rect", icon: IconSquare, label: "Rectangle (R)" },
+  { id: "line", icon: IconMinus, label: "Line (L)" },
+  { id: "text", icon: IconLetterT, label: "Text (T)" },
+  { id: "eraser", icon: IconEraser, label: "Eraser (E)" },
+] as const;
+
+export function Toolbar({
+  onOpen,
+  onSave,
+}: {
+  onOpen: () => void;
+  onSave: () => void;
+}) {
+  const activeTool = useEditorStore((s) => s.activeTool);
+  const setActiveTool = useEditorStore((s) => s.setActiveTool);
+
+  return (
+    <Group gap="xs" p="xs" style={{ borderBottom: "1px solid #334155" }}>
+      <Tooltip label="Open file (Cmd+O)" position="bottom">
+        <ActionIcon variant="subtle" color="gray" size="lg" onClick={onOpen}>
+          <IconFileUpload size={20} />
+        </ActionIcon>
+      </Tooltip>
+      <Tooltip label="Save file (Cmd+S)" position="bottom">
+        <ActionIcon variant="subtle" color="gray" size="lg" onClick={onSave}>
+          <IconDeviceFloppy size={20} />
+        </ActionIcon>
+      </Tooltip>
+      <Divider orientation="vertical" />
+      {TOOLS.map(({ id, icon: Icon, label }) => (
+        <Tooltip key={id} label={label} position="bottom">
+          <ActionIcon
+            variant={activeTool === id ? "filled" : "subtle"}
+            color={activeTool === id ? "burgundy" : "gray"}
+            size="lg"
+            onClick={() => setActiveTool(id)}
+          >
+            <Icon size={20} />
+          </ActionIcon>
+        </Tooltip>
+      ))}
+    </Group>
+  );
+}
+```
+
+**Step 4: Mount Toolbar in App.tsx + add keyboard shortcuts**
+
+```typescript
+import { Toolbar } from "./Toolbar";
+
+// Inside App component:
+const handleOpen = async () => { /* Task 10 */ };
+const handleSave = async () => { /* Task 10 */ };
+
+// Keyboard shortcuts:
+useEffect(() => {
+  const isMac = navigator.platform.includes("Mac");
+  const handler = (e: KeyboardEvent) => {
+    if (e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLInputElement) return;
+    const store = useEditorStore.getState();
+    const mod = isMac ? e.metaKey : e.ctrlKey;
+    if (mod && e.key === "o") { e.preventDefault(); handleOpen(); return; }
+    if (mod && e.key === "s") { e.preventDefault(); handleSave(); return; }
+    // Tool shortcuts suppressed in text typing mode
+    if (store.activeTool === "text") {
+      if (e.key === "Escape") store.setActiveTool("select");
+      return;
+    }
+    switch (e.key.toLowerCase()) {
+      case "v": store.setActiveTool("select"); break;
+      case "r": store.setActiveTool("rect"); break;
+      case "l": store.setActiveTool("line"); break;
+      case "t": store.setActiveTool("text"); break;
+      case "e": store.setActiveTool("eraser"); break;
+      case "escape": store.setActiveTool("select"); break;
+      case "delete": case "backspace":
+        if (store.activeTool === "select" && store.selectedId) {
+          e.preventDefault();
+          store.deleteLayer(store.selectedId);
+        }
+        break;
+    }
+  };
+  window.addEventListener("keydown", handler);
+  return () => window.removeEventListener("keydown", handler);
+}, []);
+
+// In return JSX:
+<div className="toolbar-pane">
+  <Toolbar onOpen={handleOpen} onSave={handleSave} />
+</div>
+```
+
+**Step 5: Run tests, verify toolbar renders, shortcuts work**
+
+Run: `npm test` → all pass
+Press V, R, L, T, E → toolbar button highlights change.
+
+**Step 6: Commit**
+
+```bash
+git add src/Toolbar.tsx src/App.tsx src/store.test.ts
+git commit -m "feat: Toolbar with tool buttons, keyboard shortcuts, file open/save placeholders"
+```
+
+---
+
+### Task 6: Rectangle drawing tool
+
+**Files:**
+- Create: `src/tools/stampRect.ts`
+- Create: `src/tools/stampRect.test.ts`
+- Modify: `src/KonvaCanvas.tsx`
+
+**Step 1: Write failing test**
+
+```typescript
+import { describe, it, expect } from "vitest";
+import { stampRect } from "./stampRect";
+
+describe("stampRect", () => {
+  it("stamps a 3x3 rect at origin", () => {
+    const text = "          \n          \n          ";
+    const result = stampRect(text, { row: 0, col: 0, w: 3, h: 3 });
+    const lines = result.split("\n");
+    expect(lines[0].slice(0, 3)).toBe("┌─┐");
+    expect(lines[1][0]).toBe("│");
+    expect(lines[1][2]).toBe("│");
+    expect(lines[2].slice(0, 3)).toBe("└─┘");
+  });
+
+  it("stamps a rect at an offset", () => {
+    const text = "          \n          \n          \n          ";
+    const result = stampRect(text, { row: 1, col: 2, w: 4, h: 2 });
+    const lines = result.split("\n");
+    expect(lines[1].slice(2, 6)).toBe("┌──┐");
+    expect(lines[2].slice(2, 6)).toBe("└──┘");
+  });
+
+  it("returns original text for rect < 2x2", () => {
+    const text = "     ";
+    expect(stampRect(text, { row: 0, col: 0, w: 1, h: 1 })).toBe(text);
+  });
+
+  it("pads only affected rows, not entire document", () => {
+    const text = "ab\ncd\nef";
+    const result = stampRect(text, { row: 0, col: 5, w: 3, h: 2 });
+    const lines = result.split("\n");
+    // Row 0 and 1 are padded to col 7 (5+3-1)
+    expect(lines[0].length).toBeGreaterThanOrEqual(8);
+    // Row 2 is NOT padded
+    expect(lines[2]).toBe("ef");
+  });
+});
+```
+
+**Step 2: Run test → FAIL (module not found)**
+
+**Step 3: Implement `src/tools/stampRect.ts`**
+
+```typescript
+import type { Bbox } from "../store";
+
+/** Stamp a Unicode light rect's border characters into text.
+ * Returns modified text. Only pads affected rows. */
+export function stampRect(text: string, bbox: Bbox): string {
+  const { row, col, w, h } = bbox;
+  if (w < 2 || h < 2) return text;
+
+  const lines = text.split("\n");
+  // Ensure enough rows
+  while (lines.length <= row + h - 1) lines.push("");
+
+  const setChar = (r: number, c: number, ch: string) => {
+    // Pad only this row if needed
+    if (lines[r].length < c + 1) {
+      lines[r] = lines[r] + " ".repeat(c + 1 - lines[r].length);
+    }
+    const arr = [...lines[r]];
+    arr[c] = ch;
+    lines[r] = arr.join("");
+  };
+
+  setChar(row, col, "┌");
+  setChar(row, col + w - 1, "┐");
+  setChar(row + h - 1, col, "└");
+  setChar(row + h - 1, col + w - 1, "┘");
+  for (let c = col + 1; c < col + w - 1; c++) {
+    setChar(row, c, "─");
+    setChar(row + h - 1, c, "─");
+  }
+  for (let r = row + 1; r < row + h - 1; r++) {
+    setChar(r, col, "│");
+    setChar(r, col + w - 1, "│");
+  }
+
+  return lines.join("\n");
+}
+```
+
+**Step 4: Run test → PASS**
+
+**Step 5: Wire into KonvaCanvas**
+
+When `activeTool === "rect"`, on Stage mouse events:
+- mouseDown on empty space → record start cell, show dashed preview Rect
+- mouseMove → update preview bbox
+- mouseUp → if bbox >= 2x2, call `stampRect(store.toText(), bbox)` then
+  `store.loadFromText(newText)`. Remove preview.
+
+```typescript
+const [rectPreview, setRectPreview] = useState<Bbox | null>(null);
+const rectStartRef = useRef<{row: number; col: number} | null>(null);
+
+// In Stage event handlers:
+onMouseDown={(e) => {
+  if (activeTool === "rect" && e.target === e.target.getStage()) {
+    const pos = e.target.getStage()?.getPointerPosition();
+    if (!pos) return;
+    const cell = pixelToCell(pos.x, pos.y);
+    rectStartRef.current = cell;
+    setRectPreview({ row: cell.row, col: cell.col, w: 1, h: 1 });
+  }
+}}
+onMouseMove={(e) => {
+  if (activeTool === "rect" && rectStartRef.current) {
+    const pos = e.target.getStage()?.getPointerPosition();
+    if (!pos) return;
+    const cell = pixelToCell(pos.x, pos.y);
+    const s = rectStartRef.current;
+    setRectPreview({
+      row: Math.min(s.row, cell.row),
+      col: Math.min(s.col, cell.col),
+      w: Math.abs(cell.col - s.col) + 1,
+      h: Math.abs(cell.row - s.row) + 1,
+    });
+  }
+}}
+onMouseUp={() => {
+  if (activeTool === "rect" && rectPreview) {
+    if (rectPreview.w >= 2 && rectPreview.h >= 2) {
+      const text = useEditorStore.getState().toText();
+      const newText = stampRect(text, rectPreview);
+      if (newText !== text) {
+        useEditorStore.getState().loadFromText(newText);
+      }
+    }
+    setRectPreview(null);
+    rectStartRef.current = null;
+  }
+}}
+
+// Render preview:
+{rectPreview && (
+  <Rect
+    x={rectPreview.col * charWidth}
+    y={rectPreview.row * charHeight}
+    width={rectPreview.w * charWidth}
+    height={rectPreview.h * charHeight}
+    fill="transparent"
+    stroke="#4a90e2"
+    strokeWidth={1}
+    dash={[4, 4]}
+    listening={false}
+  />
+)}
+```
+
+**Step 6: Run full tests, visual verify, commit**
+
+```bash
+git add src/tools/stampRect.ts src/tools/stampRect.test.ts src/KonvaCanvas.tsx
+git commit -m "feat: rectangle drawing tool — stamps characters into text"
+```
+
+---
+
+### Task 7: Line drawing tool
+
+**Files:**
+- Create: `src/tools/stampLine.ts`
+- Create: `src/tools/stampLine.test.ts`
+- Modify: `src/KonvaCanvas.tsx`
+
+Same pattern as Task 6. The `stampLine` function constrains to the
+dominant axis (horizontal if `abs(dCol) >= abs(dRow)`, else vertical),
+stamps `─` or `│` characters, minimum length 2. Wire into
+KonvaCanvas with a preview Line node.
+
+**Step 1: Tests**
+
+```typescript
+import { describe, it, expect } from "vitest";
+import { stampLine } from "./stampLine";
+
+describe("stampLine", () => {
+  it("stamps a horizontal line", () => {
+    const text = "          ";
+    const result = stampLine(text, 0, 2, 0, 6);
+    expect(result.slice(2, 7)).toBe("─────");
+  });
+
+  it("stamps a vertical line", () => {
+    const text = "     \n     \n     \n     ";
+    const result = stampLine(text, 0, 2, 3, 2);
+    const lines = result.split("\n");
+    for (let r = 0; r <= 3; r++) expect(lines[r][2]).toBe("│");
+  });
+
+  it("constrains diagonal to dominant axis", () => {
+    const text = "          \n          ";
+    const result = stampLine(text, 0, 0, 1, 5);
+    expect(result.split("\n")[0].slice(0, 6)).toBe("──────");
+  });
+
+  it("discards single-cell line", () => {
+    const text = "     ";
+    expect(stampLine(text, 0, 2, 0, 2)).toBe(text);
+  });
+});
+```
+
+**Step 2: Implement, wire, verify, commit**
+
+```bash
+git add src/tools/stampLine.ts src/tools/stampLine.test.ts src/KonvaCanvas.tsx
+git commit -m "feat: line drawing tool — stamps horizontal/vertical lines"
+```
+
+---
+
+### Task 8: Text tool
+
+**Files:**
+- Create: `src/tools/stampText.ts`
+- Create: `src/tools/stampText.test.ts`
+- Modify: `src/KonvaCanvas.tsx`
+
+Text tool: click to place cursor, type to insert characters into a
+local buffer, commit on Escape or click-away. On commit, call
+`stampText(toText(), row, col, buffer)` → `loadFromText`.
+
+**Step 1: Tests**
+
+```typescript
+import { describe, it, expect } from "vitest";
+import { stampText } from "./stampText";
+
+describe("stampText", () => {
+  it("writes characters at cursor position", () => {
+    const text = "          \n          ";
+    const result = stampText(text, 0, 3, "Hello");
+    expect(result.split("\n")[0].slice(3, 8)).toBe("Hello");
+  });
+
+  it("overwrites existing characters", () => {
+    const text = "XXXXXXXXXX";
+    expect(stampText(text, 0, 2, "Hi")).toBe("XXHiXXXXXX");
+  });
+
+  it("pads row if text extends beyond current width", () => {
+    const text = "ab";
+    const result = stampText(text, 0, 5, "XY");
+    expect(result.length).toBeGreaterThanOrEqual(7);
+    expect(result[5]).toBe("X");
+    expect(result[6]).toBe("Y");
+  });
+});
+```
+
+**Step 2: Implement, wire cursor/preview, verify, commit**
+
+```bash
+git add src/tools/stampText.ts src/tools/stampText.test.ts src/KonvaCanvas.tsx
+git commit -m "feat: text tool — click to place cursor, type to insert characters"
+```
+
+---
+
+### Task 9: Eraser tool
+
+**Files:**
+- Create: `src/tools/stampErase.ts`
+- Create: `src/tools/stampErase.test.ts`
+- Modify: `src/KonvaCanvas.tsx`
+
+Eraser: drag across cells, write spaces. On mouseUp, call
+`stampErase(toText(), cells)` → `loadFromText`.
+
+**Step 1: Tests**
+
+```typescript
+import { describe, it, expect } from "vitest";
+import { stampErase } from "./stampErase";
+
+describe("stampErase", () => {
+  it("replaces characters with spaces", () => {
+    const text = "Hello\nWorld";
+    const cells = [{ row: 0, col: 1 }, { row: 0, col: 2 }];
+    expect(stampErase(text, cells).split("\n")[0]).toBe("H  lo");
+  });
+
+  it("no-ops on out-of-bounds cells", () => {
+    expect(stampErase("Hi", [{ row: 5, col: 5 }])).toBe("Hi");
+  });
+});
+```
+
+**Step 2: Implement, wire red highlight preview, verify, commit**
+
+```bash
+git add src/tools/stampErase.ts src/tools/stampErase.test.ts src/KonvaCanvas.tsx
+git commit -m "feat: eraser tool — drag to clear characters"
+```
+
+---
+
+## Phase 3: File handling
+
+### Task 10: File open, save, and autosave
+
+**Files:**
+- Modify: `src/App.tsx`
+
+**Step 1: Implement open handler**
+
+```typescript
+const handleOpen = async () => {
+  try {
+    const [handle] = await window.showOpenFilePicker({
+      types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
+    });
+    const file = await handle.getFile();
+    const text = await file.text();
+    useEditorStore.getState().setFileHandle(handle);
+    useEditorStore.getState().loadFromText(text);
+    lastModifiedRef.current = file.lastModified;
+  } catch (e) {
+    // User cancelled — ignore
+  }
+};
+```
+
+**Step 2: Implement save handler**
+
+```typescript
+const handleSave = async () => {
+  let handle = useEditorStore.getState().fileHandle;
+  if (!handle) {
+    try {
+      handle = await window.showSaveFilePicker({
+        suggestedName: "wireframe.md",
+        types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
+      });
+      useEditorStore.getState().setFileHandle(handle);
+    } catch { return; }
+  }
+  const writable = await handle.createWritable();
+  await writable.write(useEditorStore.getState().toText());
+  await writable.close();
+};
+```
+
+**Step 3: Add file watcher for external changes**
+
+```typescript
+const lastModifiedRef = useRef<number>(0);
+
+useEffect(() => {
+  const interval = setInterval(async () => {
+    const handle = useEditorStore.getState().fileHandle;
+    if (!handle) return;
+    try {
+      const file = await handle.getFile();
+      if (file.lastModified > lastModifiedRef.current) {
+        const text = await file.text();
+        useEditorStore.getState().loadFromText(text);
+        lastModifiedRef.current = file.lastModified;
+      }
+    } catch { /* permission revoked or file deleted */ }
+  }, 2000);
+  return () => clearInterval(interval);
+}, []);
+```
+
+**Step 4: Verify**
+
+Open a `.md` file → renders on canvas. Draw a rect → autosaves.
+Open the file in a text editor → see the new rect characters.
+Edit the file externally → canvas updates within 2s.
+
+**Step 5: Commit**
+
+```bash
+git add src/App.tsx
+git commit -m "feat: file open/save/autosave with File System Access API"
+```
+
+---
+
+### Task 11: File System Access API type declarations
+
+**Files:**
+- Create: `src/file-system.d.ts`
+
+The File System Access API types may not be in the default TypeScript
+lib. Add a declaration file if needed:
+
+```typescript
+// src/file-system.d.ts
+// File System Access API types (Chrome 86+)
+// Only needed if TS doesn't recognize showOpenFilePicker etc.
+interface FileSystemFileHandle {
+  getFile(): Promise<File>;
+  createWritable(): Promise<FileSystemWritableFileStream>;
+}
+interface FileSystemWritableFileStream extends WritableStream {
+  write(data: string | BufferSource | Blob): Promise<void>;
+  close(): Promise<void>;
+}
+declare function showOpenFilePicker(options?: any): Promise<FileSystemFileHandle[]>;
+declare function showSaveFilePicker(options?: any): Promise<FileSystemFileHandle>;
+```
+
+Only create this if `npx tsc -b` errors on `showOpenFilePicker`.
+
+**Commit**
+
+```bash
+git add src/file-system.d.ts
+git commit -m "chore: File System Access API type declarations"
+```
+
+---
+
+## Phase 4: Polish and cleanup
+
+### Task 12: CLAUDE.md for gridpad
+
+**Files:**
+- Create: `CLAUDE.md`
+
+Write a CLAUDE.md that describes the new architecture:
+
+```markdown
+# CLAUDE.md
+
+## What this project is
+
+Gridpad is a visual ASCII wireframe editor. Open a .md file, see
+shapes rendered on a Konva canvas, draw with MS-Paint-style tools.
+Text is the source of truth — tools stamp characters, the scanner
+derives layers.
+
+## Architecture
+
+Text (the document) ↔ Scanner → Layers (derived) → Konva renders
+Drawing tools → stamp chars into text → loadFromText → scanner
+Move/resize → mutate layers → toText → autosave to file
+
+## Stack
+
+Vite + React 19 + TypeScript + Konva + react-konva + Mantine v9 +
+Zustand + Zundo + Vitest
+
+## Key files
+
+- src/scanner.ts — parses ASCII text into shapes
+- src/layers.ts — layer model, compositing, mutations
+- src/diff.ts — identity-preserving diff pass
+- src/store.ts — zustand store (no CodeMirror)
+- src/KonvaCanvas.tsx — Konva Stage with grid + interactive shapes
+- src/Toolbar.tsx — tool buttons
+- src/tools/ — stamp helpers (stampRect, stampLine, etc.)
+- src/grid.ts — cell measurement constants
+- src/LayerPanel.tsx — layer tree panel
+
+## Commands
+
+npm run dev — start dev server
+npm test — run vitest
+npm run build — production build
+```
+
+**Commit**
+
+```bash
+git add CLAUDE.md
+git commit -m "docs: add CLAUDE.md with project architecture"
+```
+
+---
+
+### Task 13: Final verification
+
+Run: `npm test` → all pass
+Run: `npm run build` → succeeds
+Run: `npm run dev` → open browser
+
+Walk through:
+- [ ] Open a .md file
+- [ ] Characters render on canvas
+- [ ] Click a shape → selects
+- [ ] Drag a shape → grid-snapped move
+- [ ] Resize a rect → grid-snapped resize
+- [ ] Draw a rect with R tool
+- [ ] Draw a line with L tool
+- [ ] Type text with T tool
+- [ ] Erase with E tool
+- [ ] Keyboard shortcuts work (V, R, L, T, E, Escape, Delete)
+- [ ] Autosave → file updates
+- [ ] External edit → canvas reloads
+- [ ] Undo/redo covers all actions
+- [ ] Layer panel shows all shapes
+- [ ] Groups, visibility, reparent all work
