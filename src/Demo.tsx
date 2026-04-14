@@ -698,13 +698,16 @@ export default function Demo() {
         ? (lr.region.layers!.find(l => l.id === g.layerId)!.bbox.col - g.startBbox.col)
         : 0;
 
-      // Erase old cells
+      // Snapshot composite of all OTHER layers before erasing
+      const otherComposite = compositeLayers(lr.region.layers!.filter(l => l.id !== g.layerId));
+
+      // Erase old cells — restore other layers' char instead of blindly writing space
       for (const [key] of lr.region.layers!.find(l => l.id === g.layerId)!.cells) {
         const ci = key.indexOf(",");
         const r = Number(key.slice(0, ci)) - dRow; // original position
         const c = Number(key.slice(ci + 1)) - dCol;
         if (r >= 0 && r < grid.length && c >= 0 && c < (grid[r]?.length ?? 0)) {
-          grid[r][c] = " ";
+          grid[r][c] = otherComposite.get(`${r},${c}`) ?? " ";
         }
       }
 
@@ -715,8 +718,9 @@ export default function Demo() {
         const r = Number(key.slice(0, ci));
         const c = Number(key.slice(ci + 1));
         // Expand grid if needed
-        while (grid.length <= r) grid.push(Array(maxCols).fill(" "));
-        while ((grid[r]?.length ?? 0) <= c) grid[r].push(" ");
+        while (grid.length <= r) grid.push(new Array(maxCols).fill(" "));
+        if (!grid[r]) grid[r] = new Array(maxCols).fill(" ");
+        while (grid[r].length <= c) grid[r].push(" ");
         grid[r][c] = ch;
       }
 
