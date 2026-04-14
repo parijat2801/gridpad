@@ -4,10 +4,7 @@ import { useEditorStore } from "./store";
 import type { Bbox } from "./types";
 import type { ToolId } from "./store";
 import { pixelToCell } from "./grid";
-import { stampRect } from "./tools/stampRect";
-import { stampLine } from "./tools/stampLine";
-import { stampText } from "./tools/stampText";
-import { stampErase } from "./tools/stampErase";
+import { regenerateCells, LIGHT_RECT_STYLE, buildLineCells, buildTextCells } from "./layers";
 
 interface ToolHandlers {
   onMouseDown: (e: any) => void;
@@ -50,14 +47,17 @@ export function useToolHandlers(
   // Helper: commit text buffer to store and clear cursor
   function commitText() {
     if (textCursor && textBufferRef.current.length > 0) {
-      const t = useEditorStore.temporal.getState();
-      if (!t.isTracking) t.resume();
-      const text = useEditorStore.getState().toText();
-      const newText = stampText(
-        text, textCursor.row, textCursor.col, textBufferRef.current
+      const { bbox, cells, content } = buildTextCells(
+        textCursor.row, textCursor.col, textBufferRef.current
       );
-      if (newText !== text) {
-        useEditorStore.getState().loadFromText(newText);
+      if (cells.size > 0) {
+        useEditorStore.getState().addLayer({
+          type: "text",
+          bbox,
+          cells,
+          visible: true,
+          content,
+        });
       }
     }
     textBufferRef.current = "";
@@ -176,13 +176,13 @@ export function useToolHandlers(
   function onMouseUp() {
     if (activeTool === "rect" && rectPreview) {
       if (rectPreview.w >= 2 && rectPreview.h >= 2) {
-        const t = useEditorStore.temporal.getState();
-        if (!t.isTracking) t.resume();
-        const text = useEditorStore.getState().toText();
-        const newText = stampRect(text, rectPreview);
-        if (newText !== text) {
-          useEditorStore.getState().loadFromText(newText);
-        }
+        useEditorStore.getState().addLayer({
+          type: "rect",
+          bbox: rectPreview,
+          cells: regenerateCells(rectPreview, LIGHT_RECT_STYLE),
+          style: LIGHT_RECT_STYLE,
+          visible: true,
+        });
       }
       setRectPreview(null);
       rectStartRef.current = null;
@@ -192,13 +192,13 @@ export function useToolHandlers(
       const { r1, c1, r2, c2 } = linePreview;
       const length = r1 === r2 ? Math.abs(c2 - c1) + 1 : Math.abs(r2 - r1) + 1;
       if (length >= 2) {
-        const t = useEditorStore.temporal.getState();
-        if (!t.isTracking) t.resume();
-        const text = useEditorStore.getState().toText();
-        const newText = stampLine(text, r1, c1, r2, c2);
-        if (newText !== text) {
-          useEditorStore.getState().loadFromText(newText);
-        }
+        const { bbox, cells } = buildLineCells(r1, c1, r2, c2);
+        useEditorStore.getState().addLayer({
+          type: "line",
+          bbox,
+          cells,
+          visible: true,
+        });
       }
       setLinePreview(null);
       lineStartRef.current = null;
@@ -207,13 +207,8 @@ export function useToolHandlers(
     if (activeTool === "eraser" && erasingRef.current) {
       const cells = eraserCellsRef.current;
       if (cells.length > 0) {
-        const t = useEditorStore.temporal.getState();
-        if (!t.isTracking) t.resume();
-        const text = useEditorStore.getState().toText();
-        const newText = stampErase(text, cells);
-        if (newText !== text) {
-          useEditorStore.getState().loadFromText(newText);
-        }
+        const cellKeys = cells.map((c) => `${c.row},${c.col}`);
+        useEditorStore.getState().eraseCells(cellKeys);
       }
       eraserCellsRef.current = [];
       setEraserCellsForRender([]);

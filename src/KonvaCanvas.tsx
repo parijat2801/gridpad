@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { Stage, Layer, Shape, Rect, Line as KonvaLine, Transformer } from "react-konva";
 import { useEditorStore } from "./store";
 import { compositeLayers, isEffectivelyVisible } from "./layers";
@@ -48,7 +48,7 @@ export function KonvaCanvas() {
     return <div style={{ background: BG_COLOR, width: "100%", height: "100%" }} />;
   }
 
-  const composite = compositeLayers(layers);
+  const composite = useMemo(() => compositeLayers(layers), [layers]);
 
   // Derive grid dimensions from content
   let maxRow = 0;
