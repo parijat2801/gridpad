@@ -44,11 +44,11 @@ export function KonvaCanvas() {
     tr.getLayer()?.batchDraw();
   }, [selectedId, layers]);
 
+  const composite = useMemo(() => compositeLayers(layers), [layers]);
+
   if (!ready) {
     return <div style={{ background: BG_COLOR, width: "100%", height: "100%" }} />;
   }
-
-  const composite = useMemo(() => compositeLayers(layers), [layers]);
 
   // Derive grid dimensions from content
   let maxRow = 0;
