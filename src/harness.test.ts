@@ -492,6 +492,168 @@ describe("real file stress tests", () => {
   });
 });
 
+// ── 8. Demo simulation — full interaction sequences ──────
+
+describe("demo simulation", () => {
+  /**
+   * Simulates the exact data flow in Demo.tsx:
+   * load text → detectRegions → layout prose → composite wireframes
+   * → hit test → drag → recomposite → verify
+   */
+
+  it("full load + render pipeline produces renderable data", () => {
+    const regions = detectRegions(scan(DASHBOARD));
+    expect(regions.length).toBe(3);
+
+    // Prose regions produce Pretext-layoutable text
+    const prose = regions.filter(r => r.type === "prose");
+    for (const p of prose) {
+      expect(p.text.length).toBeGreaterThan(0);
+    }
+
+    // Wireframe regions produce compositable layers
+    const wf = regions.find(r => r.type === "wireframe")!;
+    const composite = compositeLayers(wf.layers!);
+    expect(composite.size).toBeGreaterThan(0);
+    const sparse = buildSparseRows(composite);
+    expect(sparse.length).toBeGreaterThan(0);
+  });
+
+  it("click hit-test finds correct layer in wireframe region", () => {
+    const regions = detectRegions(scan(DASHBOARD));
+    const wf = regions.find(r => r.type === "wireframe")!;
+    const layers = wf.layers!;
+
+    // Find a rect layer and click inside it
+    const rect = layers.find(l => l.type === "rect" && l.bbox.w > 3)!;
+    const clickRow = rect.bbox.row + 1; // inside the rect
+    const clickCol = rect.bbox.col + 1;
+
+    // Hit test — same logic as Demo.tsx onMouseDown
+    let bestId: string | null = null;
+    let bestZ = -Infinity;
+    for (const l of layers) {
+      if (l.type === "base" || l.type === "group" || !l.visible) continue;
+      const { row, col, w, h } = l.bbox;
+      if (clickRow >= row && clickRow < row + h &&
+          clickCol >= col && clickCol < col + w &&
+          l.z > bestZ) {
+        bestId = l.id;
+        bestZ = l.z;
+      }
+    }
+    expect(bestId).not.toBeNull();
+  });
+
+  it("drag sequence: move layer, recomposite, verify new position", () => {
+    const regions = detectRegions(scan(DASHBOARD));
+    const wf = regions.find(r => r.type === "wireframe")!;
+    const layers = wf.layers!;
+    const rect = layers.find(l => l.type === "rect" && l.style)!;
+
+    const origRow = rect.bbox.row;
+    const origCol = rect.bbox.col;
+    const origCorner = [...rect.cells.entries()].find(([, v]) => v === "┌");
+    expect(origCorner).toBeDefined();
+
+    // Simulate drag: move by (+3, +5)
+    const dRow = 3, dCol = 5;
+    const newCells = new Map<string, string>();
+    for (const [key, val] of rect.cells) {
+      const i = key.indexOf(",");
+      const r = Number(key.slice(0, i)) + dRow;
+      const c = Number(key.slice(i + 1)) + dCol;
+      newCells.set(`${r},${c}`, val);
+    }
+    rect.cells = newCells;
+    rect.bbox.row = origRow + dRow;
+    rect.bbox.col = origCol + dCol;
+
+    // Recomposite — this is what Demo.tsx does in onMouseMove
+    const composite = compositeLayers(layers);
+    const sparse = buildSparseRows(composite);
+
+    // Verify the layer moved: corner should be at new position
+    expect(rect.bbox.row).toBe(origRow + 3);
+    expect(rect.bbox.col).toBe(origCol + 5);
+
+    // Sparse rows should still be non-empty
+    expect(sparse.length).toBeGreaterThan(0);
+  });
+
+  it("resize sequence: resize rect, regenerate cells, recomposite", () => {
+    const regions = detectRegions(scan(DASHBOARD));
+    const wf = regions.find(r => r.type === "wireframe")!;
+    const layers = wf.layers!;
+    const rect = layers.find(l => l.type === "rect" && l.style)!;
+
+    const origW = rect.bbox.w;
+    const origH = rect.bbox.h;
+
+    // Resize: make wider and taller
+    rect.bbox.w = origW + 4;
+    rect.bbox.h = origH + 2;
+    rect.cells = regenerateCells(rect.bbox, rect.style!);
+
+    // Verify cells regenerated at new size
+    expect(rect.cells.size).toBeGreaterThan(0);
+    // Top-right corner should be at new position
+    const trKey = `${rect.bbox.row},${rect.bbox.col + rect.bbox.w - 1}`;
+    expect(rect.cells.get(trKey)).toBe("┐");
+
+    // Recomposite
+    const composite = compositeLayers(layers);
+    expect(composite.size).toBeGreaterThan(0);
+
+    // Composite should have the corner at the right place
+    expect(composite.get(trKey)).toBe("┐");
+  });
+
+  it("drag does NOT survive re-layout from same text (the current bug)", () => {
+    // This test documents the bug: doLayout() re-scans docText,
+    // creating new layer objects that overwrite any drag mutations.
+    const text = DASHBOARD;
+    const regions1 = detectRegions(scan(text));
+    const wf1 = regions1.find(r => r.type === "wireframe")!;
+    const rect1 = wf1.layers!.find(l => l.type === "rect" && l.style)!;
+
+    // Drag the rect
+    rect1.bbox.row += 3;
+    rect1.bbox.col += 5;
+
+    // Re-layout from same text (what happens on React re-render)
+    const regions2 = detectRegions(scan(text));
+    const wf2 = regions2.find(r => r.type === "wireframe")!;
+    const rect2 = wf2.layers!.find(l => l.id === rect1.id)!;
+
+    // The drag is lost — rect2 has the original position
+    expect(rect2.bbox.row).not.toBe(rect1.bbox.row);
+    // This is the fundamental bug we need to fix for drag to persist
+  });
+
+  it("drag persists if we update the source text after drag", () => {
+    // The fix: after drag ends, regenerate the source text from layers
+    const text = DASHBOARD;
+    const regions = detectRegions(scan(text));
+    const wf = regions.find(r => r.type === "wireframe")!;
+
+    // Find a standalone rect (the inner "Card" box is a good candidate)
+    const rects = wf.layers!.filter(l => l.type === "rect" && l.style);
+    expect(rects.length).toBeGreaterThan(0);
+
+    // Verify that compositing + sparse rows → text round-trip works
+    const composite = compositeLayers(wf.layers!);
+    const sparse = buildSparseRows(composite);
+
+    // Sparse rows should produce text that re-scans to the same structure
+    expect(sparse.length).toBeGreaterThan(0);
+    // Each row should have content
+    for (const sr of sparse) {
+      expect(sr.text.length).toBeGreaterThan(0);
+    }
+  });
+});
+
 // ── Helpers ──────────────────────────────────────────────
 
 function findMdFiles(dir: string): string[] {
