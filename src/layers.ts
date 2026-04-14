@@ -7,6 +7,11 @@ import { extractRectStyle } from "./scanner";
 
 export type { RectStyle } from "./scanner";
 
+/** Canonical Unicode light box-drawing style. Used by drawing tools. */
+export const LIGHT_RECT_STYLE: RectStyle = {
+  tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│",
+};
+
 export type LayerType = "rect" | "line" | "text" | "base" | "group";
 
 export interface Layer {
@@ -284,6 +289,39 @@ export function compositeLayers(layers: Layer[]): Map<string, string> {
 }
 
 /**
+ * Like compositeLayers but returns ownership info: each cell maps to
+ * { char, layerId } indicating which layer is visually topmost.
+ * Same DFS walk as compositeLayers — one pass, O(total cells).
+ */
+export function compositeLayersWithOwnership(
+  layers: Layer[],
+): Map<string, { char: string; layerId: string }> {
+  const result = new Map<string, { char: string; layerId: string }>();
+  const byParent = new Map<string | null, Layer[]>();
+  for (const l of layers) {
+    const pid = l.parentId ?? null;
+    const arr = byParent.get(pid) ?? [];
+    arr.push(l);
+    byParent.set(pid, arr);
+  }
+  for (const arr of byParent.values()) arr.sort((a, b) => a.z - b.z);
+
+  function walk(parentId: string | null): void {
+    for (const l of byParent.get(parentId) ?? []) {
+      if (!l.visible) continue;
+      if (l.type === "group") {
+        walk(l.id);
+      } else {
+        for (const [k, ch] of l.cells) result.set(k, { char: ch, layerId: l.id });
+        walk(l.id);
+      }
+    }
+  }
+  walk(null);
+  return result;
+}
+
+/**
  * Effective visibility: a layer is effectively visible iff it AND every
  * ancestor group is individually visible. Used by the layer panel to
  * render dimmed rows whose ancestor is hidden. NOT used by
@@ -452,4 +490,74 @@ export function toggleVisible(layers: Layer[], id: string): Layer[] {
     if (l.id !== id) return l;
     return { ...l, visible: !l.visible };
   });
+}
+
+/** Recompute a tight bounding box from a cell map's keys.
+ * Returns { row:0, col:0, w:0, h:0 } for empty maps. */
+export function recomputeBbox(cells: Map<string, string>): Bbox {
+  if (cells.size === 0) return { row: 0, col: 0, w: 0, h: 0 };
+  let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
+  for (const k of cells.keys()) {
+    const [r, c] = parseKey(k);
+    if (r < minR) minR = r;
+    if (r > maxR) maxR = r;
+    if (c < minC) minC = c;
+    if (c > maxC) maxC = c;
+  }
+  return { row: minR, col: minC, w: maxC - minC + 1, h: maxR - minR + 1 };
+}
+
+/** Build cells for a straight line between two points.
+ * Constrains to dominant axis (same logic as stampLine).
+ * Returns { bbox, cells } with "─" or "│" characters. */
+export function buildLineCells(
+  r1: number, c1: number, r2: number, c2: number,
+): { bbox: Bbox; cells: Map<string, string> } {
+  const dRow = Math.abs(r2 - r1);
+  const dCol = Math.abs(c2 - c1);
+  const isH = dCol >= dRow;
+
+  const cells = new Map<string, string>();
+  let minR: number, maxR: number, minC: number, maxC: number;
+
+  if (isH) {
+    minR = r1; maxR = r1;
+    minC = Math.min(c1, c2); maxC = Math.max(c1, c2);
+    for (let c = minC; c <= maxC; c++) {
+      cells.set(key(minR, c), "─");
+    }
+  } else {
+    minC = c1; maxC = c1;
+    minR = Math.min(r1, r2); maxR = Math.max(r1, r2);
+    for (let r = minR; r <= maxR; r++) {
+      cells.set(key(r, minC), "│");
+    }
+  }
+
+  return {
+    bbox: { row: minR, col: minC, w: maxC - minC + 1, h: maxR - minR + 1 },
+    cells,
+  };
+}
+
+/** Build cells for a text label at (row, col).
+ * Filters to printable ASCII (32-126) and box-drawing (U+2500-U+257F).
+ * Returns { bbox, cells, content } where content is the filtered string. */
+export function buildTextCells(
+  row: number, col: number, buffer: string,
+): { bbox: Bbox; cells: Map<string, string>; content: string } {
+  const filtered = [...buffer].filter((ch) => {
+    const code = ch.codePointAt(0)!;
+    return (code >= 32 && code <= 126) || (code >= 0x2500 && code <= 0x257f);
+  });
+  const content = filtered.join("");
+  const cells = new Map<string, string>();
+  for (let i = 0; i < filtered.length; i++) {
+    cells.set(key(row, col + i), filtered[i]);
+  }
+  return {
+    bbox: { row, col, w: filtered.length, h: 1 },
+    cells,
+    content,
+  };
 }

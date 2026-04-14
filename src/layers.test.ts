@@ -2,13 +2,18 @@ import { describe, it, expect } from "vitest";
 import {
   buildLayersFromScan,
   compositeLayers,
+  compositeLayersWithOwnership,
   deleteLayer,
   isEffectivelyVisible,
   layerToText,
   moveLayer,
   moveLayerCascading,
   regenerateCells,
+  recomputeBbox,
+  buildLineCells,
+  buildTextCells,
   toggleVisible,
+  LIGHT_RECT_STYLE,
   type Layer,
 } from "./layers";
 import { scan, type RectStyle } from "./scanner";
@@ -537,6 +542,171 @@ describe("toggleVisible", () => {
     const r1 = makeLayer("r1", { visible: true });
     const out = toggleVisible([r1], "does-not-exist");
     expect(out.find((l) => l.id === "r1")!.visible).toBe(true);
+  });
+});
+
+describe("LIGHT_RECT_STYLE", () => {
+  it("has correct Unicode light box-drawing characters", () => {
+    expect(LIGHT_RECT_STYLE).toEqual({
+      tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│",
+    });
+  });
+});
+
+describe("recomputeBbox", () => {
+  it("computes tight bbox from cell keys", () => {
+    const cells = new Map([["2,3", "x"], ["5,7", "y"], ["2,7", "z"]]);
+    const bbox = recomputeBbox(cells);
+    expect(bbox).toEqual({ row: 2, col: 3, w: 5, h: 4 });
+  });
+
+  it("returns zero bbox for empty map", () => {
+    const bbox = recomputeBbox(new Map());
+    expect(bbox).toEqual({ row: 0, col: 0, w: 0, h: 0 });
+  });
+
+  it("single cell", () => {
+    const cells = new Map([["10,20", "a"]]);
+    const bbox = recomputeBbox(cells);
+    expect(bbox).toEqual({ row: 10, col: 20, w: 1, h: 1 });
+  });
+});
+
+describe("buildLineCells", () => {
+  it("horizontal line left-to-right", () => {
+    const result = buildLineCells(0, 0, 0, 4);
+    expect(result.bbox).toEqual({ row: 0, col: 0, w: 5, h: 1 });
+    expect(result.cells.size).toBe(5);
+    for (let c = 0; c <= 4; c++) {
+      expect(result.cells.get(`0,${c}`)).toBe("─");
+    }
+  });
+
+  it("vertical line top-to-bottom", () => {
+    const result = buildLineCells(0, 0, 4, 0);
+    expect(result.bbox).toEqual({ row: 0, col: 0, w: 1, h: 5 });
+    expect(result.cells.size).toBe(5);
+    for (let r = 0; r <= 4; r++) {
+      expect(result.cells.get(`${r},0`)).toBe("│");
+    }
+  });
+
+  it("constrains to dominant axis — diagonal biased horizontal", () => {
+    const result = buildLineCells(0, 0, 1, 5);
+    expect(result.bbox).toEqual({ row: 0, col: 0, w: 6, h: 1 });
+    expect(result.cells.get("0,0")).toBe("─");
+    expect(result.cells.get("0,5")).toBe("─");
+  });
+
+  it("constrains to dominant axis — diagonal biased vertical", () => {
+    const result = buildLineCells(0, 0, 5, 1);
+    expect(result.bbox).toEqual({ row: 0, col: 0, w: 1, h: 6 });
+    expect(result.cells.get("0,0")).toBe("│");
+    expect(result.cells.get("5,0")).toBe("│");
+  });
+
+  it("reversed coordinates work (right-to-left)", () => {
+    const result = buildLineCells(3, 7, 3, 2);
+    expect(result.bbox).toEqual({ row: 3, col: 2, w: 6, h: 1 });
+    expect(result.cells.size).toBe(6);
+  });
+
+  it("degenerate single-point (r1===r2, c1===c2) returns one horizontal cell", () => {
+    const result = buildLineCells(3, 5, 3, 5);
+    expect(result.bbox).toEqual({ row: 3, col: 5, w: 1, h: 1 });
+    expect(result.cells.size).toBe(1);
+    expect(result.cells.get("3,5")).toBe("─");
+  });
+});
+
+describe("buildTextCells", () => {
+  it("basic ASCII string", () => {
+    const result = buildTextCells(2, 5, "Hello");
+    expect(result.bbox).toEqual({ row: 2, col: 5, w: 5, h: 1 });
+    expect(result.content).toBe("Hello");
+    expect(result.cells.size).toBe(5);
+    expect(result.cells.get("2,5")).toBe("H");
+    expect(result.cells.get("2,6")).toBe("e");
+    expect(result.cells.get("2,9")).toBe("o");
+  });
+
+  it("filters non-printable characters", () => {
+    const result = buildTextCells(0, 0, "A\x01B\x02C");
+    expect(result.content).toBe("ABC");
+    expect(result.cells.size).toBe(3);
+    expect(result.cells.get("0,0")).toBe("A");
+    expect(result.cells.get("0,1")).toBe("B");
+    expect(result.cells.get("0,2")).toBe("C");
+  });
+
+  it("allows box-drawing characters", () => {
+    const result = buildTextCells(0, 0, "─│┌");
+    expect(result.content).toBe("─│┌");
+    expect(result.cells.size).toBe(3);
+  });
+
+  it("empty after filtering returns empty cells", () => {
+    const result = buildTextCells(0, 0, "\x01\x02");
+    expect(result.content).toBe("");
+    expect(result.cells.size).toBe(0);
+    expect(result.bbox).toEqual({ row: 0, col: 0, w: 0, h: 1 });
+  });
+});
+
+describe("compositeLayersWithOwnership", () => {
+  it("returns empty map for no layers", () => {
+    const result = compositeLayersWithOwnership([]);
+    expect(result.size).toBe(0);
+  });
+
+  it("single layer — all cells owned by that layer", () => {
+    const l = makeLayer("r1", {
+      z: 1, cells: new Map([["0,0", "A"], ["0,1", "B"]]),
+    });
+    const result = compositeLayersWithOwnership([l]);
+    expect(result.get("0,0")).toEqual({ char: "A", layerId: "r1" });
+    expect(result.get("0,1")).toEqual({ char: "B", layerId: "r1" });
+  });
+
+  it("higher z wins ownership at overlapping cell", () => {
+    const low = makeLayer("low", {
+      z: 1, cells: new Map([["0,0", "A"]]),
+    });
+    const high = makeLayer("high", {
+      z: 2, cells: new Map([["0,0", "B"]]),
+    });
+    const result = compositeLayersWithOwnership([low, high]);
+    expect(result.get("0,0")).toEqual({ char: "B", layerId: "high" });
+  });
+
+  it("hidden layer is not included", () => {
+    const l = makeLayer("r1", {
+      z: 1, visible: false, cells: new Map([["0,0", "X"]]),
+    });
+    const result = compositeLayersWithOwnership([l]);
+    expect(result.size).toBe(0);
+  });
+
+  it("hidden group hides children", () => {
+    const group = makeLayer("g1", {
+      type: "group", parentId: null, visible: false, z: 0, cells: new Map(),
+    });
+    const child = makeLayer("r1", {
+      parentId: "g1", z: 0, cells: new Map([["0,0", "X"]]),
+    });
+    const result = compositeLayersWithOwnership([group, child]);
+    expect(result.size).toBe(0);
+  });
+
+  it("child in visible group is owned correctly", () => {
+    const group = makeLayer("g1", {
+      type: "group", parentId: null, visible: true, z: 0, cells: new Map(),
+    });
+    const child = makeLayer("r1", {
+      parentId: "g1", z: 0, cells: new Map([["5,5", "X"]]),
+    });
+    const result = compositeLayersWithOwnership([group, child]);
+    expect(result.get("5,5")).toEqual({ char: "X", layerId: "r1" });
   });
 });
 
