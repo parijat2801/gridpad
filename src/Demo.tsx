@@ -80,6 +80,7 @@ export default function Demo() {
   const laidRef = useRef<LayoutRegion[]>([]);
   const cwRef = useRef(0);
   const chRef = useRef(0);
+  const regionsRef = useRef<Region[]>([]);
   const gestureRef = useRef<GestureState | null>(null);
   const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -123,6 +124,7 @@ export default function Demo() {
     measureCellSize().then(() => {
       cwRef.current = getCharWidth();
       chRef.current = getCharHeight();
+      regionsRef.current = detectRegions(scan(docTextRef.current));
       setReady(true);
     });
   }, []);
@@ -145,6 +147,7 @@ export default function Demo() {
           fileHandleRef.current = handle;
           const file = await handle.getFile();
           docTextRef.current = await file.text();
+          regionsRef.current = detectRegions(scan(docTextRef.current));
           scrollYRef.current = 0;
           selectedIdRef.current = null;
           gestureRef.current = null;
@@ -327,10 +330,9 @@ export default function Demo() {
     const cw = cwRef.current;
     const ch = chRef.current;
     if (!cw) return;
-    const regions = detectRegions(scan(docTextRef.current));
     const laid: LayoutRegion[] = [];
     let y = 0;
-    for (const r of regions) {
+    for (const r of regionsRef.current) {
       if (r.type === "prose") {
         const p = prepareWithSegments(r.text, FONT, { whiteSpace: "pre-wrap" });
         const l = layoutWithLines(p, sizeRef.current.w, LH);
@@ -734,7 +736,6 @@ export default function Demo() {
 
     gestureRef.current = null;
     scheduleAutosave();
-    doLayout();
     paint();
   }
 
