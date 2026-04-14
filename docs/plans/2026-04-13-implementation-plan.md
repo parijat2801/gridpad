@@ -40,16 +40,16 @@ Run `npm test` after both changes to verify.
 
 ## Review fixes (applied from Gemini + Codex review, 2026-04-13)
 
-### Fix 1: Autosave/watcher infinite loop (Critical — Tasks 1, 10)
+### Fix 1: Autosave must track last-written state (Critical — Tasks 1, 10)
 
 The autosave subscriber writes to the file, bumping `lastModified`.
-The file watcher sees the newer timestamp and calls `loadFromText`,
-which changes layers, which triggers autosave again — infinite loop.
+Without tracking, the Reload handler would see the app's own write
+as an "external change" and reload unnecessarily.
 
 **Fix:** The autosave subscriber MUST update `lastModifiedRef.current`
-after every successful write. The watcher only reloads if
-`file.lastModified > lastModifiedRef.current`. Since autosave updates
-the ref after writing, the watcher ignores app-originated writes.
+after every successful write. The Reload handler compares
+`file.lastModified` against this ref. Since autosave updates the ref
+after writing, Reload only acts on genuinely external changes.
 
 Same fix for explicit Save (`handleSave`): update `lastModifiedRef`
 after `writable.close()`.
@@ -57,6 +57,8 @@ after `writable.close()`.
 Same fix for Open (`handleOpen`): set `lastModifiedRef` BEFORE
 calling `loadFromText`, not after — otherwise the autosave subscriber
 can fire in between and write to the file before the ref is set.
+
+**Already implemented** in `App.tsx:26-48`.
 
 ### Fix 2: moveLayerLive on drag start triggers autosave (High — Task 3)
 
@@ -83,23 +85,11 @@ produce new `layers` array references without changing content.
 
 ### Fix 3: useGestureAdapter cleanup must distinguish move vs resize (High — Tasks 3, 4)
 
-The hook's `useEffect` cleanup always calls `moveLayerCommit`. If a
-resize is in progress, it should call `resizeLayerCommit` instead and
-reset `node.scaleX/Y` to 1.
-
-**Fix:** The `GestureState` ref stores a `mode: "move" | "resize"`
-field. Cleanup checks the mode and calls the appropriate commit
-action. Resize cleanup also resets the node's scale attrs.
-
-```typescript
-interface GestureState {
-  layerId: string;
-  startBbox: Bbox;
-  active: boolean;
-  mode: "move" | "resize";
-  node: any; // Konva node ref for cleanup
-}
-```
+**Already incorporated** into Task 3 and Task 4 code. The
+`GestureState` ref has a `mode: "move" | "resize"` field.
+`installListeners` uses a shared `revertGesture()` helper that
+checks `g.mode` and calls the correct commit action + resets scale
+for resize. See the `useGestureAdapter` code in Task 3.
 
 ### Fix 4: Disable draggable during transform (Medium — Task 4)
 
@@ -150,24 +140,10 @@ Add to Task 5 tests:
 - `reset()` clears `fileHandle` to null
 - `reset()` restores `activeTool` after transitions
 
-Add to Task 10 (or new Task 10b):
-- Autosave skips write when text hasn't changed
-- Autosave updates `lastModifiedRef` after write
-- Watcher ignores app-originated writes
-- Open sets `lastModifiedRef` before `loadFromText`
-- Save updates `lastModifiedRef`
+Add to Task 10:
+- `toText()` is stable across selection changes (autosave guard)
 
-### Fix 7: Task 4 must define installResizeListeners (Medium)
-
-Task 4's `onTransformStart` references `installResizeListeners` but
-doesn't define it. The implementation must:
-- Install Escape listener that resets `node.scaleX(1); node.scaleY(1)`
-  and calls `resizeLayerCommit(id, startBbox)`
-- Install pointercancel listener with same revert
-- Reset node width/height to pre-transform pixel values on cancel
-- Be removed in onTransformEnd and cleanup
-
-### Fix 8: Text tool input constraint (Low — Task 8)
+### Fix 7: Text tool input constraint (Low — Task 8)
 
 The architecture says grapheme clusters / emoji are out of scope.
 `stampText` should filter input to printable single-column characters
@@ -185,7 +161,7 @@ would split them into individual codepoints, corrupting the string.
 This is acceptable for v1 (emoji is a non-goal) but stamp functions
 should not be used as evidence that grapheme-safe editing works.
 
-### Fix 9: Drawing tools must verify zundo tracking is active (Low — Tasks 6-9)
+### Fix 8: Drawing tools must verify zundo tracking is active (Low — Tasks 6-9)
 
 Drawing tools call `loadFromText(newText)` which does a normal
 `set()` — zundo captures this as an undo step. But if a prior drag
@@ -203,7 +179,7 @@ if (!t.isTracking) t.resume();
 This is defensive — the gesture adapter cleanup should always fire,
 but a one-line guard prevents silent undo breakage.
 
-### Fix 10: `measureCellSize` fallback for failed font load (Low — Task 1)
+### Fix 9: `measureCellSize` fallback for failed font load (Low — Task 1)
 
 If the monospace font fails to load (missing system font, slow
 network for web fonts), `measureCellSize` could produce a 0-width
@@ -486,7 +462,7 @@ start, commit on end, revert on Escape/cancel/unmount).
 // src/useGestureAdapter.ts
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "./store";
-import type { Bbox } from "./store";
+import type { Bbox } from "./types";
 
 interface GestureState {
   layerId: string;
@@ -1191,15 +1167,7 @@ git commit -m "feat: rectangle tool + useToolHandlers hook for drawing tool disp
 - Create: `src/tools/stampLine.test.ts`
 - Modify: `src/useToolHandlers.ts` (add line tool branch)
 
-Same pattern as Task 6's rect. The `stampLine` function constrains to
-the dominant axis (horizontal if `abs(dCol) >= abs(dRow)`, else
-vertical), stamps `─` or `│` characters, minimum length 2.
-
-Add line tool state and branches to `useToolHandlers` (same pattern
-as rect: `useRef` for start cell, `useState` for preview, branches
-in `onMouseDown`/`onMouseMove`/`onMouseUp`, preview node returned).
-
-**Step 1: Tests**
+**Step 1: Write failing tests**
 
 ```typescript
 import { describe, it, expect } from "vitest";
@@ -1232,7 +1200,134 @@ describe("stampLine", () => {
 });
 ```
 
-**Step 2: Implement, add to useToolHandlers, verify, commit**
+**Step 2: Run test → FAIL (module not found)**
+
+**Step 3: Implement `src/tools/stampLine.ts`**
+
+```typescript
+/** Stamp a horizontal or vertical line into text.
+ * Constrains to dominant axis. Returns modified text.
+ * Minimum length: 2 cells. */
+export function stampLine(
+  text: string, r1: number, c1: number, r2: number, c2: number,
+): string {
+  // Constrain to dominant axis
+  const dRow = Math.abs(r2 - r1);
+  const dCol = Math.abs(c2 - c1);
+  const isH = dCol >= dRow;
+
+  let startR: number, startC: number, endR: number, endC: number;
+  if (isH) {
+    startR = r1; endR = r1; // flatten to horizontal
+    startC = Math.min(c1, c2); endC = Math.max(c1, c2);
+  } else {
+    startC = c1; endC = c1; // flatten to vertical
+    startR = Math.min(r1, r2); endR = Math.max(r1, r2);
+  }
+
+  const length = isH ? (endC - startC + 1) : (endR - startR + 1);
+  if (length < 2) return text;
+
+  const lines = text.split("\n");
+  while (lines.length <= endR) lines.push("");
+
+  const setChar = (r: number, c: number, ch: string) => {
+    if (lines[r].length < c + 1) {
+      lines[r] = lines[r] + " ".repeat(c + 1 - lines[r].length);
+    }
+    const arr = [...lines[r]];
+    arr[c] = ch;
+    lines[r] = arr.join("");
+  };
+
+  if (isH) {
+    for (let c = startC; c <= endC; c++) setChar(startR, c, "─");
+  } else {
+    for (let r = startR; r <= endR; r++) setChar(r, startC, "│");
+  }
+
+  return lines.join("\n");
+}
+```
+
+**Step 4: Run test → PASS**
+
+**Step 5: Add line tool state and branches to `useToolHandlers`**
+
+Add these to the hook alongside the existing rect state:
+
+```typescript
+import { Line as KonvaLine } from "react-konva";
+import { stampLine } from "./tools/stampLine";
+
+// ── Line tool state (add alongside rect state) ──
+const [linePreview, setLinePreview] = useState<{
+  r1: number; c1: number; r2: number; c2: number;
+} | null>(null);
+const lineStartRef = useRef<{ row: number; col: number } | null>(null);
+
+// ── Add to onMouseDown, after rect branch ──
+if (activeTool === "line" && isStage) {
+  lineStartRef.current = cell;
+  setLinePreview({ r1: cell.row, c1: cell.col, r2: cell.row, c2: cell.col });
+}
+
+// ── Add to onMouseMove, after rect branch ──
+if (activeTool === "line" && lineStartRef.current) {
+  const s = lineStartRef.current;
+  // Constrain to dominant axis during preview
+  const dRow = Math.abs(cell.row - s.row);
+  const dCol = Math.abs(cell.col - s.col);
+  if (dCol >= dRow) {
+    setLinePreview({ r1: s.row, c1: s.col, r2: s.row, c2: cell.col });
+  } else {
+    setLinePreview({ r1: s.row, c1: s.col, r2: cell.row, c2: s.col });
+  }
+}
+
+// ── Add to onMouseUp, after rect branch ──
+if (activeTool === "line" && linePreview) {
+  const { r1, c1, r2, c2 } = linePreview;
+  const length = r1 === r2 ? Math.abs(c2 - c1) + 1 : Math.abs(r2 - r1) + 1;
+  if (length >= 2) {
+    // Fix 8: ensure zundo tracking is active
+    const t = useEditorStore.temporal.getState();
+    if (!t.isTracking) t.resume();
+    const text = useEditorStore.getState().toText();
+    const newText = stampLine(text, r1, c1, r2, c2);
+    if (newText !== text) {
+      useEditorStore.getState().loadFromText(newText);
+    }
+  }
+  setLinePreview(null);
+  lineStartRef.current = null;
+}
+
+// ── Add to previewNode, after rect preview ──
+if (linePreview) {
+  const { r1, c1, r2, c2 } = linePreview;
+  const isH = r1 === r2;
+  const x = Math.min(c1, c2) * charWidth;
+  const y = Math.min(r1, r2) * charHeight;
+  const w = (Math.abs(c2 - c1) + 1) * charWidth;
+  const h = (Math.abs(r2 - r1) + 1) * charHeight;
+  const points = isH
+    ? [0, h / 2, w, h / 2]
+    : [w / 2, 0, w / 2, h];
+  previewNode = (
+    <KonvaLine
+      x={x} y={y}
+      points={points}
+      stroke="#4a90e2"
+      strokeWidth={1}
+      dash={[4, 4]}
+      listening={false}
+    />
+  );
+}
+```
+
+**Step 6: Run full tests, visual verify, commit**
 
 ```bash
 git add src/tools/stampLine.ts src/tools/stampLine.test.ts src/useToolHandlers.ts
@@ -1252,10 +1347,7 @@ Text tool: click to place cursor, type to insert characters into a
 local buffer, commit on Escape or click-away. On commit, call
 `stampText(toText(), row, col, buffer)` → `loadFromText`.
 
-The text tool's keyboard listener is managed inside `useToolHandlers`
-(installed when text tool activates a cursor, removed on commit).
-
-**Step 1: Tests**
+**Step 1: Write failing tests**
 
 ```typescript
 import { describe, it, expect } from "vitest";
@@ -1280,10 +1372,140 @@ describe("stampText", () => {
     expect(result[5]).toBe("X");
     expect(result[6]).toBe("Y");
   });
+
+  it("rejects empty buffer", () => {
+    const text = "Hello";
+    expect(stampText(text, 0, 0, "")).toBe(text);
+  });
 });
 ```
 
-**Step 2: Implement, wire cursor/preview, verify, commit**
+**Step 2: Run test → FAIL (module not found)**
+
+**Step 3: Implement `src/tools/stampText.ts`**
+
+```typescript
+/** Stamp a string of characters into text at (row, col).
+ * Fix 7: filters to printable single-column characters only.
+ * Returns modified text. */
+export function stampText(
+  text: string, row: number, col: number, buffer: string,
+): string {
+  // Filter to printable ASCII (32-126) + box-drawing (U+2500-U+257F)
+  const filtered = [...buffer].filter((ch) => {
+    const code = ch.codePointAt(0)!;
+    return (code >= 32 && code <= 126) || (code >= 0x2500 && code <= 0x257f);
+  }).join("");
+
+  if (filtered.length === 0) return text;
+
+  const lines = text.split("\n");
+  while (lines.length <= row) lines.push("");
+  if (lines[row].length < col + filtered.length) {
+    lines[row] = lines[row] + " ".repeat(
+      col + filtered.length - lines[row].length
+    );
+  }
+  const arr = [...lines[row]];
+  for (let i = 0; i < filtered.length; i++) {
+    arr[col + i] = filtered[i];
+  }
+  lines[row] = arr.join("");
+  return lines.join("\n");
+}
+```
+
+**Step 4: Run test → PASS**
+
+**Step 5: Add text tool state and branches to `useToolHandlers`**
+
+The text tool is different from rect/line: it has a persistent cursor
+and a keyboard listener. Click places the cursor, typing appends to
+a buffer, Escape or click-away commits.
+
+```typescript
+import { Rect as KonvaRect } from "react-konva";
+import { stampText } from "./tools/stampText";
+
+// ── Text tool state (add alongside rect/line state) ──
+const [textCursor, setTextCursor] = useState<{
+  row: number; col: number;
+} | null>(null);
+const textBufferRef = useRef<string>("");
+const textKeyListenerRef = useRef<((e: KeyboardEvent) => void) | null>(null);
+
+// Helper: commit text buffer to store and clear cursor
+function commitText() {
+  if (textCursor && textBufferRef.current.length > 0) {
+    // Fix 8: ensure zundo tracking is active
+    const t = useEditorStore.temporal.getState();
+    if (!t.isTracking) t.resume();
+    const text = useEditorStore.getState().toText();
+    const newText = stampText(
+      text, textCursor.row, textCursor.col, textBufferRef.current
+    );
+    if (newText !== text) {
+      useEditorStore.getState().loadFromText(newText);
+    }
+  }
+  textBufferRef.current = "";
+  setTextCursor(null);
+  if (textKeyListenerRef.current) {
+    window.removeEventListener("keydown", textKeyListenerRef.current);
+    textKeyListenerRef.current = null;
+  }
+}
+
+// ── Add to onMouseDown, after line branch ──
+if (activeTool === "text") {
+  // Clicking anywhere commits previous text, then starts new cursor
+  commitText();
+  if (isStage) {
+    setTextCursor(cell);
+    textBufferRef.current = "";
+    // Install keyboard listener
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { commitText(); return; }
+      if (e.key === "Backspace") {
+        textBufferRef.current = textBufferRef.current.slice(0, -1);
+        return;
+      }
+      // Single printable character
+      if (e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        textBufferRef.current += e.key;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    textKeyListenerRef.current = onKey;
+  }
+}
+
+// ── No onMouseMove needed for text tool ──
+
+// ── No onMouseUp needed for text tool (commit is on Escape/click) ──
+
+// ── Cleanup on tool switch: if text tool deactivates with buffer ──
+// (Add a useEffect in useToolHandlers that calls commitText when
+// activeTool changes away from "text")
+
+// ── Add to previewNode, after line preview ──
+if (textCursor) {
+  const cursorCol = textCursor.col + textBufferRef.current.length;
+  previewNode = (
+    <KonvaRect
+      x={cursorCol * charWidth}
+      y={textCursor.row * charHeight}
+      width={2}
+      height={charHeight}
+      fill="#4a90e2"
+      listening={false}
+    />
+  );
+}
+```
+
+**Step 6: Run full tests, visual verify, commit**
 
 ```bash
 git add src/tools/stampText.ts src/tools/stampText.test.ts src/useToolHandlers.ts
@@ -1299,10 +1521,10 @@ git commit -m "feat: text tool — click to place cursor, type to insert charact
 - Create: `src/tools/stampErase.test.ts`
 - Modify: `src/useToolHandlers.ts` (add eraser tool branch)
 
-Eraser: drag across cells, write spaces. On mouseUp, call
-`stampErase(toText(), cells)` → `loadFromText`.
+Eraser: drag across cells while mouse is down, accumulate cells,
+write spaces on mouseUp.
 
-**Step 1: Tests**
+**Step 1: Write failing tests**
 
 ```typescript
 import { describe, it, expect } from "vitest";
@@ -1318,10 +1540,107 @@ describe("stampErase", () => {
   it("no-ops on out-of-bounds cells", () => {
     expect(stampErase("Hi", [{ row: 5, col: 5 }])).toBe("Hi");
   });
+
+  it("no-ops on empty cell list", () => {
+    expect(stampErase("Hello", [])).toBe("Hello");
+  });
 });
 ```
 
-**Step 2: Implement, wire red highlight preview, verify, commit**
+**Step 2: Run test → FAIL (module not found)**
+
+**Step 3: Implement `src/tools/stampErase.ts`**
+
+```typescript
+/** Replace characters at specified cells with spaces.
+ * Returns modified text. Out-of-bounds cells are ignored. */
+export function stampErase(
+  text: string, cells: { row: number; col: number }[],
+): string {
+  if (cells.length === 0) return text;
+
+  const lines = text.split("\n");
+
+  for (const { row, col } of cells) {
+    if (row < 0 || row >= lines.length) continue;
+    if (col < 0 || col >= lines[row].length) continue;
+    const arr = [...lines[row]];
+    arr[col] = " ";
+    lines[row] = arr.join("");
+  }
+
+  return lines.join("\n");
+}
+```
+
+**Step 4: Run test → PASS**
+
+**Step 5: Add eraser tool state and branches to `useToolHandlers`**
+
+```typescript
+import { stampErase } from "./tools/stampErase";
+
+// ── Eraser tool state (add alongside rect/line/text state) ──
+const [eraserCells, setEraserCells] = useState<
+  { row: number; col: number }[]
+>([]);
+const erasingRef = useRef(false);
+
+// ── Add to onMouseDown, after text branch ──
+if (activeTool === "eraser" && isStage) {
+  erasingRef.current = true;
+  setEraserCells([cell]);
+}
+
+// ── Add to onMouseMove, after line branch ──
+if (activeTool === "eraser" && erasingRef.current) {
+  setEraserCells((prev) => {
+    // Avoid duplicates
+    if (prev.some((c) => c.row === cell.row && c.col === cell.col)) {
+      return prev;
+    }
+    return [...prev, cell];
+  });
+}
+
+// ── Add to onMouseUp, after line branch ──
+if (activeTool === "eraser" && erasingRef.current) {
+  if (eraserCells.length > 0) {
+    // Fix 8: ensure zundo tracking is active
+    const t = useEditorStore.temporal.getState();
+    if (!t.isTracking) t.resume();
+    const text = useEditorStore.getState().toText();
+    const newText = stampErase(text, eraserCells);
+    if (newText !== text) {
+      useEditorStore.getState().loadFromText(newText);
+    }
+  }
+  setEraserCells([]);
+  erasingRef.current = false;
+}
+
+// ── Add to previewNode, after text preview ──
+// Red highlight over cells being erased
+if (eraserCells.length > 0) {
+  previewNode = (
+    <>
+      {eraserCells.map((c, i) => (
+        <KonvaRect
+          key={i}
+          x={c.col * charWidth}
+          y={c.row * charHeight}
+          width={charWidth}
+          height={charHeight}
+          fill="rgba(255, 60, 60, 0.3)"
+          listening={false}
+        />
+      ))}
+    </>
+  );
+}
+```
+
+**Step 6: Run full tests, visual verify, commit**
 
 ```bash
 git add src/tools/stampErase.ts src/tools/stampErase.test.ts src/useToolHandlers.ts
@@ -1339,11 +1658,10 @@ git commit -m "feat: eraser tool — drag to clear characters"
 - Modify: `src/Toolbar.tsx` (add Reload button)
 
 **NOTE:** `lastModifiedRef` and `lastWrittenTextRef` already exist in
-App.tsx (applied in Fix 1/2). The autosave subscriber also already
-exists with the skip-if-unchanged and lastModified-update logic.
-This task adds Open, Save, and Reload. File watcher (polling for
-external changes) is deferred — Reload covers the "Claude edited
-my file" workflow without the autosave/watcher loop complexity.
+App.tsx (applied in Fixes 1 and 2). The autosave subscriber also
+already exists with the skip-if-unchanged and lastModified-update
+logic. This task adds Open, Save, and Reload. No file watcher —
+Reload covers the "Claude edited my file" workflow manually.
 
 **Step 1: Implement open handler**
 
@@ -1375,7 +1693,7 @@ const handleOpen = async () => {
 
 **Step 2: Implement save handler**
 
-Update `lastModifiedRef` after write to prevent watcher loop.
+Update `lastModifiedRef` after write so Reload knows this was our write.
 
 ```typescript
 const handleSave = async () => {
@@ -1589,7 +1907,7 @@ Walk through:
 - [ ] Erase with E tool
 - [ ] Keyboard shortcuts work (V, R, L, T, E, Escape, Delete)
 - [ ] Autosave → file updates
-- [ ] External edit → canvas reloads
+- [ ] External edit → Cmd+Shift+R → canvas reloads
 - [ ] Undo/redo covers all actions
 - [ ] Layer panel shows all shapes
 - [ ] Groups, visibility, reparent all work
