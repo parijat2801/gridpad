@@ -20,7 +20,7 @@
 import { useEffect, useRef, useState } from "react";
 import { scan } from "./scanner";
 import { detectRegions } from "./regions";
-import { compositeLayers, moveLayer, regenerateCells, buildTextCells } from "./layers";
+import { compositeLayers, moveLayer, regenerateCells, buildTextCells, buildLineCells, LIGHT_RECT_STYLE } from "./layers";
 import type { Layer } from "./layers";
 import { buildSparseRows, type SparseRow } from "./KonvaCanvas";
 import {
@@ -61,6 +61,37 @@ interface ProseCursorState {
   /** Character offset within that source line */
   col: number;
 }
+
+// ── Drawing tool types ────────────────────────────────────
+type ActiveTool = "select" | "rect" | "line" | "text";
+
+/** Active draw gesture for rect/line tools (start grid coords within wireframe) */
+interface DrawGestureState {
+  tool: "rect" | "line";
+  /** Wireframe being drawn into (may be null if creating a new wireframe) */
+  wfId: string | null;
+  /** New wireframe y position when wfId is null */
+  newWfY?: number;
+  /** Start grid row in wireframe-local coords */
+  startRow: number;
+  /** Start grid col in wireframe-local coords */
+  startCol: number;
+  /** Current end row (updated on mousemove) */
+  endRow: number;
+  /** Current end col */
+  endCol: number;
+}
+
+/** Active text placement state */
+interface TextPlacementState {
+  wfId: string | null;
+  newWfY?: number;
+  row: number;
+  col: number;
+  buffer: string;
+}
+
+const TOOLBAR_HEIGHT = 32;
 
 // ── Drag state ───────────────────────────────────────────
 interface DragState {
@@ -107,6 +138,12 @@ export default function Demo() {
   /** Selected individual layer id within a wireframe */
   const selectedLayerIdRef = useRef<string | null>(null);
   const dragRef = useRef<DragState | null>(null);
+
+  // Drawing tool state
+  const activeToolRef = useRef<ActiveTool>("select");
+  const drawGestureRef = useRef<DrawGestureState | null>(null);
+  const textPlacementRef = useRef<TextPlacementState | null>(null);
+  const [activeTool, setActiveTool] = useState<ActiveTool>("select");
 
   // Wireframe text label editing
   const wireframeTextEditRef = useRef<{ wfId: string; layerId: string; col: number } | null>(null);
@@ -357,7 +394,8 @@ export default function Demo() {
   function paint() {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const { w, h } = sizeRef.current;
+    const { w } = sizeRef.current;
+    const h = sizeRef.current.h - TOOLBAR_HEIGHT;
 
     // Retina / HiDPI: set physical pixel size to CSS pixel size * devicePixelRatio
     const dpr = window.devicePixelRatio || 1;
@@ -470,6 +508,68 @@ export default function Demo() {
         ctx.fillRect(cursorX, cursorY, 2, ch);
       }
     }
+
+    // Draw text placement cursor (text tool active, waiting for input)
+    const tp = textPlacementRef.current;
+    if (tp && blinkVisibleRef.current) {
+      const wfForTp = wireframesRef.current.find(w => w.id === tp.wfId);
+      if (wfForTp) {
+        const cursorX = (tp.col + tp.buffer.length) * cw;
+        const cursorY = wfForTp.y - scrollY + tp.row * ch;
+        // Draw typed buffer text preview
+        if (tp.buffer.length > 0) {
+          ctx.font = SPATIAL_FONT;
+          ctx.fillStyle = "#4a90e2";
+          ctx.textBaseline = "top";
+          ctx.fillText(tp.buffer, tp.col * cw, cursorY);
+        }
+        ctx.fillStyle = FG_COLOR;
+        ctx.fillRect(cursorX, cursorY, 2, ch);
+      }
+    }
+
+    // Draw rect/line preview overlay
+    const dg = drawGestureRef.current;
+    if (dg) {
+      const wfForDg = wireframesRef.current.find(w => w.id === dg.wfId);
+      if (wfForDg) {
+        const top = wfForDg.y - scrollY;
+        ctx.save();
+        ctx.strokeStyle = "#4a90e2";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        if (dg.tool === "rect") {
+          const minR = Math.min(dg.startRow, dg.endRow);
+          const maxR = Math.max(dg.startRow, dg.endRow);
+          const minC = Math.min(dg.startCol, dg.endCol);
+          const maxC = Math.max(dg.startCol, dg.endCol);
+          ctx.strokeRect(
+            minC * cw,
+            top + minR * ch,
+            (maxC - minC + 1) * cw,
+            (maxR - minR + 1) * ch,
+          );
+        } else if (dg.tool === "line") {
+          const dRow = Math.abs(dg.endRow - dg.startRow);
+          const dCol = Math.abs(dg.endCol - dg.startCol);
+          const isH = dCol >= dRow;
+          ctx.beginPath();
+          if (isH) {
+            const y = top + dg.startRow * ch + ch / 2;
+            ctx.moveTo(dg.startCol * cw, y);
+            ctx.lineTo((dg.endCol + 1) * cw, y);
+          } else {
+            const x = dg.startCol * cw + cw / 2;
+            const minR = Math.min(dg.startRow, dg.endRow);
+            const maxR = Math.max(dg.startRow, dg.endRow);
+            ctx.moveTo(x, top + minR * ch);
+            ctx.lineTo(x, top + (maxR + 1) * ch);
+          }
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
   }
 
   // ── Schedule autosave ───────────────────────────────────
@@ -519,6 +619,59 @@ export default function Demo() {
   useEffect(() => {
     const fn = async (e: KeyboardEvent) => {
       const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
+
+      // ── Text tool placement input ─────────────────────────
+      const tp = textPlacementRef.current;
+      if (tp && !mod) {
+        const wf = wireframesRef.current.find(w => w.id === tp.wfId);
+        if (wf) {
+          if (e.key === "Escape" || e.key === "Enter") {
+            e.preventDefault();
+            // Commit the text layer if buffer is non-empty
+            if (tp.buffer.length > 0) {
+              const { cells, content, bbox } = buildTextCells(tp.row, tp.col, tp.buffer);
+              if (content.length > 0) {
+                const newLayer: Layer = {
+                  id: `text_${Date.now()}`,
+                  type: "text",
+                  z: 0,
+                  visible: true,
+                  parentId: null,
+                  bbox: { ...bbox, w: Math.max(1, content.length) },
+                  cells,
+                  content,
+                };
+                addLayerToWireframe(wf, newLayer);
+                selectedLayerIdRef.current = newLayer.id;
+                selectedIdRef.current = null;
+                scheduleAutosave();
+              }
+            }
+            textPlacementRef.current = null;
+            stopBlink();
+            paint();
+            return;
+          }
+
+          if (e.key === "Backspace") {
+            e.preventDefault();
+            if (tp.buffer.length > 0) {
+              textPlacementRef.current = { ...tp, buffer: tp.buffer.slice(0, -1) };
+              resetBlink();
+              paint();
+            }
+            return;
+          }
+
+          if (e.key.length === 1) {
+            e.preventDefault();
+            textPlacementRef.current = { ...tp, buffer: tp.buffer + e.key };
+            resetBlink();
+            paint();
+            return;
+          }
+        }
+      }
 
       // ── Wireframe text label editing ─────────────────────
       const wte = wireframeTextEditRef.current;
@@ -655,9 +808,30 @@ export default function Demo() {
         selectedLayerIdRef.current = null;
         proseCursorRef.current = null;
         wireframeTextEditRef.current = null;
+        textPlacementRef.current = null;
+        drawGestureRef.current = null;
         stopBlink();
         paint();
         return;
+      }
+
+      // ── Tool shortcuts (only when no active text edit or prose cursor) ──
+      const noTextActive =
+        !wireframeTextEditRef.current &&
+        !textPlacementRef.current &&
+        !proseCursorRef.current;
+      if (noTextActive && !mod) {
+        let newTool: ActiveTool | null = null;
+        if (e.key === "v" || e.key === "V") newTool = "select";
+        else if (e.key === "r" || e.key === "R") newTool = "rect";
+        else if (e.key === "l" || e.key === "L") newTool = "line";
+        else if (e.key === "t" || e.key === "T") newTool = "text";
+        if (newTool !== null) {
+          e.preventDefault();
+          activeToolRef.current = newTool;
+          setActiveTool(newTool);
+          return;
+        }
       }
 
       if (mod && e.key === "o") {
@@ -709,6 +883,61 @@ export default function Demo() {
     }
   });
 
+  // ── Drawing tool helpers ─────────────────────────────────
+
+  /** Return pixel coords → wireframe-local grid (row, col). */
+  function pixelToGrid(wf: Wireframe, px: number, docY: number): { row: number; col: number } {
+    const cw = cwRef.current;
+    const ch = chRef.current;
+    return {
+      row: Math.max(0, Math.floor((docY - wf.y) / ch)),
+      col: Math.max(0, Math.floor(px / cw)),
+    };
+  }
+
+  /**
+   * Ensure a wireframe exists for drawing. If click is inside an existing
+   * wireframe, return it. Otherwise create a new minimal wireframe at that
+   * y position and return it.
+   */
+  function getOrCreateWireframe(px: number, docY: number): Wireframe {
+    const existing = hitTestWireframe(px, docY);
+    if (existing) return existing;
+
+    // Create a new wireframe at this y position (snapped to ch grid)
+    const ch = chRef.current;
+    const snappedY = Math.floor(docY / ch) * ch;
+    const newWf: Wireframe = {
+      id: `wf-${Date.now()}`,
+      x: 0,
+      y: snappedY,
+      w: sizeRef.current.w,
+      h: ch * 8, // default 8 rows tall
+      layers: [],
+      sparse: [],
+      originalText: "",
+    };
+    wireframesRef.current = [...wireframesRef.current, newWf];
+    regionOrderRef.current = [...regionOrderRef.current, { type: "wireframe", wireframeId: newWf.id }];
+    return newWf;
+  }
+
+  /** Add a new layer to a wireframe, recomposite, and repaint. */
+  function addLayerToWireframe(wf: Wireframe, newLayer: Layer) {
+    const maxZ = wf.layers.reduce((m, l) => Math.max(m, l.z), -1);
+    const layerWithZ: Layer = { ...newLayer, z: maxZ + 1 };
+    wf.layers = [...wf.layers, layerWithZ];
+    wf.sparse = buildSparseRows(compositeLayers(wf.layers));
+
+    // Grow wireframe height to fit
+    let maxRow = 0;
+    for (const l of wf.layers) {
+      maxRow = Math.max(maxRow, l.bbox.row + l.bbox.h);
+    }
+    wf.h = Math.max(wf.h, maxRow * chRef.current);
+    doLayout();
+  }
+
   // ── Mouse handlers ──────────────────────────────────────
   function hitTestWireframe(px: number, docY: number): Wireframe | null {
     for (const wf of wireframesRef.current) {
@@ -729,6 +958,47 @@ export default function Demo() {
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const docY = e.clientY - rect.top + scrollYRef.current;
+
+    // ── Drawing tools: rect, line, text ──────────────────
+    const tool = activeToolRef.current;
+    if (tool === "rect" || tool === "line") {
+      const targetWf = getOrCreateWireframe(px, docY);
+      const { row, col } = pixelToGrid(targetWf, px, docY);
+      drawGestureRef.current = {
+        tool,
+        wfId: targetWf.id,
+        startRow: row,
+        startCol: col,
+        endRow: row,
+        endCol: col,
+      };
+      proseCursorRef.current = null;
+      wireframeTextEditRef.current = null;
+      textPlacementRef.current = null;
+      stopBlink();
+      paint();
+      return;
+    }
+
+    if (tool === "text") {
+      const targetWf = getOrCreateWireframe(px, docY);
+      const { row, col } = pixelToGrid(targetWf, px, docY);
+      textPlacementRef.current = {
+        wfId: targetWf.id,
+        row,
+        col,
+        buffer: "",
+      };
+      proseCursorRef.current = null;
+      wireframeTextEditRef.current = null;
+      drawGestureRef.current = null;
+      selectedIdRef.current = null;
+      selectedLayerIdRef.current = null;
+      canvas.focus();
+      resetBlink();
+      paint();
+      return;
+    }
 
     const wf = hitTestWireframe(px, docY);
     if (wf) {
@@ -839,13 +1109,26 @@ export default function Demo() {
   }
 
   function onMouseMove(e: React.MouseEvent) {
-    const drag = dragRef.current;
-    if (!drag) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const docY = e.clientY - rect.top + scrollYRef.current;
+
+    // Update draw gesture preview
+    const dg = drawGestureRef.current;
+    if (dg) {
+      const wf = wireframesRef.current.find(w => w.id === dg.wfId);
+      if (wf) {
+        const { row, col } = pixelToGrid(wf, px, docY);
+        drawGestureRef.current = { ...dg, endRow: row, endCol: col };
+        paint();
+      }
+      return;
+    }
+
+    const drag = dragRef.current;
+    if (!drag) return;
 
     const wf = wireframesRef.current.find(w => w.id === drag.wireframeId);
     if (!wf) return;
@@ -943,6 +1226,55 @@ export default function Demo() {
   }
 
   function onMouseUp() {
+    // Commit draw gesture
+    const dg = drawGestureRef.current;
+    if (dg) {
+      drawGestureRef.current = null;
+      const wf = wireframesRef.current.find(w => w.id === dg.wfId);
+      if (wf) {
+        const r1 = dg.startRow, c1 = dg.startCol;
+        const r2 = dg.endRow, c2 = dg.endCol;
+        // Require minimum size (at least 1 cell)
+        if (dg.tool === "rect" && (Math.abs(r2 - r1) >= 1 || Math.abs(c2 - c1) >= 1)) {
+          const minR = Math.min(r1, r2), maxR = Math.max(r1, r2);
+          const minC = Math.min(c1, c2), maxC = Math.max(c1, c2);
+          const bbox = { row: minR, col: minC, w: maxC - minC + 1, h: maxR - minR + 1 };
+          const cells = regenerateCells(bbox, LIGHT_RECT_STYLE);
+          const newLayer: Layer = {
+            id: `rect_${Date.now()}`,
+            type: "rect",
+            z: 0,
+            visible: true,
+            parentId: null,
+            bbox,
+            cells,
+            style: LIGHT_RECT_STYLE,
+          };
+          addLayerToWireframe(wf, newLayer);
+          selectedLayerIdRef.current = newLayer.id;
+          selectedIdRef.current = null;
+          scheduleAutosave();
+        } else if (dg.tool === "line" && (Math.abs(r2 - r1) >= 1 || Math.abs(c2 - c1) >= 1)) {
+          const { bbox, cells } = buildLineCells(r1, c1, r2, c2);
+          const newLayer: Layer = {
+            id: `line_${Date.now()}`,
+            type: "line",
+            z: 0,
+            visible: true,
+            parentId: null,
+            bbox,
+            cells,
+          };
+          addLayerToWireframe(wf, newLayer);
+          selectedLayerIdRef.current = newLayer.id;
+          selectedIdRef.current = null;
+          scheduleAutosave();
+        }
+      }
+      paint();
+      return;
+    }
+
     if (dragRef.current) {
       dragRef.current = null;
       scheduleAutosave();
@@ -961,7 +1293,7 @@ export default function Demo() {
     }
     scrollYRef.current = Math.max(
       0,
-      Math.min(Math.max(0, totalH - sizeRef.current.h), scrollYRef.current + e.deltaY),
+      Math.min(Math.max(0, totalH - (sizeRef.current.h - TOOLBAR_HEIGHT)), scrollYRef.current + e.deltaY),
     );
     paint();
   }
@@ -969,25 +1301,86 @@ export default function Demo() {
   if (!ready) return <div style={{ background: BG_COLOR, width: "100vw", height: "100vh" }} />;
 
   const isDragging = dragRef.current !== null;
+  const isDrawing = drawGestureRef.current !== null;
+  const toolCursor = activeTool === "rect" || activeTool === "line"
+    ? "crosshair"
+    : activeTool === "text"
+    ? "text"
+    : isDragging ? "grabbing" : "default";
+
+  const toolButtons: Array<{ id: ActiveTool; label: string; shortcut: string }> = [
+    { id: "select", label: "Select", shortcut: "V" },
+    { id: "rect",   label: "Rect",   shortcut: "R" },
+    { id: "line",   label: "Line",   shortcut: "L" },
+    { id: "text",   label: "Text",   shortcut: "T" },
+  ];
+
   return (
-    <canvas
-      ref={canvasRef}
-      tabIndex={0}
-      style={{
-        background: BG_COLOR,
-        display: "block",
-        position: "fixed",
-        top: 0,
-        left: 0,
-        width: sizeRef.current.w,
-        height: sizeRef.current.h,
-        outline: "none",
-        cursor: isDragging ? "grabbing" : "text",
-      }}
-      onWheel={onWheel}
-      onMouseDown={onMouseDown}
-      onMouseMove={onMouseMove}
-      onMouseUp={onMouseUp}
-    />
+    <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh" }}>
+      {/* Toolbar */}
+      <div
+        style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: TOOLBAR_HEIGHT,
+          background: "#1e1e1e",
+          borderBottom: "1px solid #333",
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          padding: "0 8px",
+          zIndex: 10,
+          boxSizing: "border-box",
+        }}
+      >
+        {toolButtons.map(({ id, label, shortcut }) => (
+          <button
+            key={id}
+            title={`${label} (${shortcut})`}
+            onClick={() => {
+              activeToolRef.current = id;
+              setActiveTool(id);
+              canvasRef.current?.focus();
+            }}
+            style={{
+              background: activeTool === id ? "#4a90e2" : "#2d2d2d",
+              color: activeTool === id ? "#fff" : "#ccc",
+              border: `1px solid ${activeTool === id ? "#4a90e2" : "#444"}`,
+              borderRadius: 4,
+              padding: "2px 10px",
+              fontSize: 12,
+              cursor: "pointer",
+              height: 24,
+              lineHeight: "20px",
+            }}
+          >
+            {label} <span style={{ opacity: 0.6, fontSize: 10 }}>{shortcut}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Canvas */}
+      <canvas
+        ref={canvasRef}
+        tabIndex={0}
+        style={{
+          background: BG_COLOR,
+          display: "block",
+          position: "fixed",
+          top: TOOLBAR_HEIGHT,
+          left: 0,
+          width: sizeRef.current.w,
+          height: sizeRef.current.h - TOOLBAR_HEIGHT,
+          outline: "none",
+          cursor: isDrawing ? "crosshair" : toolCursor,
+        }}
+        onWheel={onWheel}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={onMouseUp}
+      />
+    </div>
   );
 }
