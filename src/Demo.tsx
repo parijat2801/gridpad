@@ -693,12 +693,9 @@ export default function Demo() {
       while (grid.length < rows) grid.push(Array(maxCols).fill(" "));
 
       // Erase old position (write spaces where the layer's cells WERE)
-      const dRow = g.mode === "drag"
-        ? (lr.region.layers!.find(l => l.id === g.layerId)!.bbox.row - g.startBbox.row)
-        : (lr.region.layers!.find(l => l.id === g.layerId)!.bbox.row - g.startBbox.row);
-      const dCol = g.mode === "drag"
-        ? (lr.region.layers!.find(l => l.id === g.layerId)!.bbox.col - g.startBbox.col)
-        : 0;
+      const movedLayer = lr.region.layers!.find(l => l.id === g.layerId)!;
+      const dRow = movedLayer.bbox.row - g.startBbox.row;
+      const dCol = movedLayer.bbox.col - g.startBbox.col;
 
       // Snapshot composite of all OTHER layers before erasing
       const otherComposite = compositeLayers(lr.region.layers!.filter(l => l.id !== g.layerId));
@@ -736,6 +733,7 @@ export default function Demo() {
 
     gestureRef.current = null;
     scheduleAutosave();
+    doLayout(); // rebuild laidRef with correct y-offsets for next hit test
     paint();
   }
 
