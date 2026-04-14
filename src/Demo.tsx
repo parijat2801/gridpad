@@ -20,7 +20,7 @@
 import { useEffect, useRef, useState } from "react";
 import { scan } from "./scanner";
 import { detectRegions } from "./regions";
-import { compositeLayers, moveLayer } from "./layers";
+import { compositeLayers, moveLayer, regenerateCells } from "./layers";
 import type { Layer } from "./layers";
 import { buildSparseRows, type SparseRow } from "./KonvaCanvas";
 import {
@@ -31,6 +31,8 @@ import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pr
 import { reflowLayout, type PositionedLine, type Obstacle } from "./reflowLayout";
 import { DEMO_DEFAULT_TEXT } from "./demoDefaults";
 import { handleProseKeyPress } from "./spatialKeyHandler";
+import { detectResizeEdge } from "./spatialHitTest";
+import type { ResizeEdge } from "./spatialHitTest";
 
 export const SPATIAL_FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 export const SPATIAL_LH = Math.ceil(FONT_SIZE * 1.15);
@@ -71,6 +73,8 @@ interface DragState {
   startWfY: number; // wireframe.y at drag start
   /** pixel mouseX at drag start (for layer column delta) */
   startMX?: number;
+  /** If set, this is a resize gesture (not a move) */
+  resizeEdge?: ResizeEdge;
 }
 
 export default function Demo() {
@@ -384,6 +388,29 @@ export default function Demo() {
             bw * cw - 2,
             bh * ch - 2,
           );
+
+          // Draw resize handles for rect layers with style
+          if (selLayer.type === "rect" && selLayer.style) {
+            const hx = wf.x + col * cw;
+            const hy = top + row * ch;
+            const hw = bw * cw;
+            const hh = bh * ch;
+            const hs = 6; // handle size in pixels
+            const handlePositions = [
+              { x: hx,           y: hy           }, // top-left
+              { x: hx + hw / 2,  y: hy           }, // top-mid
+              { x: hx + hw,      y: hy           }, // top-right
+              { x: hx,           y: hy + hh / 2  }, // mid-left
+              { x: hx + hw,      y: hy + hh / 2  }, // mid-right
+              { x: hx,           y: hy + hh       }, // bottom-left
+              { x: hx + hw / 2,  y: hy + hh       }, // bottom-mid
+              { x: hx + hw,      y: hy + hh       }, // bottom-right
+            ];
+            ctx.fillStyle = "#4a90e2";
+            for (const hp of handlePositions) {
+              ctx.fillRect(hp.x - hs / 2, hp.y - hs / 2, hs, hs);
+            }
+          }
         }
       } else if (selectedIdRef.current !== null && wf.id === selectedIdRef.current) {
         // Whole wireframe selected
@@ -486,6 +513,36 @@ export default function Demo() {
         }
       }
 
+      // ── Layer/selection keyboard shortcuts ──────────────
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const selLayerId = selectedLayerIdRef.current;
+        if (selLayerId) {
+          e.preventDefault();
+          // Find the wireframe containing the selected layer
+          const wf = wireframesRef.current.find(w =>
+            w.layers.some(l => l.id === selLayerId),
+          );
+          if (wf) {
+            wf.layers = wf.layers.filter(l => l.id !== selLayerId);
+            wf.sparse = buildSparseRows(compositeLayers(wf.layers));
+          }
+          selectedLayerIdRef.current = null;
+          selectedIdRef.current = null;
+          paint();
+          return;
+        }
+      }
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        selectedIdRef.current = null;
+        selectedLayerIdRef.current = null;
+        proseCursorRef.current = null;
+        stopBlink();
+        paint();
+        return;
+      }
+
       if (mod && e.key === "o") {
         e.preventDefault();
         try {
@@ -583,6 +640,14 @@ export default function Demo() {
         // Individual layer selected
         selectedIdRef.current = null;
         selectedLayerIdRef.current = hitLayer.id;
+
+        // Check if this is a resize gesture (rect layer with style, near edge)
+        let resizeEdge: ResizeEdge | undefined;
+        if (hitLayer.type === "rect" && hitLayer.style) {
+          const edge = detectResizeEdge(hitLayer, gridRow, gridCol, 1);
+          if (edge) resizeEdge = edge;
+        }
+
         dragRef.current = {
           wireframeId: wf.id,
           layerId: hitLayer.id,
@@ -590,6 +655,7 @@ export default function Demo() {
           startY: docY,
           startWfY: wf.y,
           startMX: px,
+          resizeEdge,
         };
       } else {
         // Whole wireframe block drag
@@ -632,32 +698,78 @@ export default function Demo() {
     if (!wf) return;
 
     if (drag.layerId && drag.startBbox && drag.startMX !== undefined) {
-      // Individual layer drag — no reflow, just recomposite within wireframe
+      // Individual layer drag or resize — no reflow, just recomposite within wireframe
       const cw = cwRef.current;
       const ch = chRef.current;
       const deltaRow = Math.round((docY - drag.startY) / ch);
       const deltaCol = Math.round((px - drag.startMX) / cw);
 
-      const newRow = drag.startBbox.row + deltaRow;
-      const newCol = drag.startBbox.col + deltaCol;
-
-      // Find the layer and move it
       const layerIdx = wf.layers.findIndex(l => l.id === drag.layerId);
       if (layerIdx !== -1) {
         const layer = wf.layers[layerIdx];
-        const actualDeltaRow = newRow - layer.bbox.row;
-        const actualDeltaCol = newCol - layer.bbox.col;
-        if (actualDeltaRow !== 0 || actualDeltaCol !== 0) {
-          const movedLayer = moveLayer(layer, actualDeltaRow, actualDeltaCol);
+
+        if (drag.resizeEdge && layer.style) {
+          // Resize gesture — compute new bbox from startBbox + delta + edges
+          const sb = drag.startBbox;
+          const edge = drag.resizeEdge;
+          let newRow = sb.row;
+          let newCol = sb.col;
+          let newW = sb.w;
+          let newH = sb.h;
+
+          if (edge.top) {
+            newRow = sb.row + deltaRow;
+            newH = sb.h - deltaRow;
+          }
+          if (edge.bottom) {
+            newH = sb.h + deltaRow;
+          }
+          if (edge.left) {
+            newCol = sb.col + deltaCol;
+            newW = sb.w - deltaCol;
+          }
+          if (edge.right) {
+            newW = sb.w + deltaCol;
+          }
+
+          // Clamp minimum size to 2x2
+          if (newW < 2) {
+            if (edge.left) newCol = sb.col + sb.w - 2;
+            newW = 2;
+          }
+          if (newH < 2) {
+            if (edge.top) newRow = sb.row + sb.h - 2;
+            newH = 2;
+          }
+
+          const newBbox = { row: newRow, col: newCol, w: newW, h: newH };
+          const newCells = regenerateCells(newBbox, layer.style);
+          const resizedLayer: Layer = { ...layer, bbox: newBbox, cells: newCells };
           wf.layers = [
             ...wf.layers.slice(0, layerIdx),
-            movedLayer,
+            resizedLayer,
             ...wf.layers.slice(layerIdx + 1),
           ];
-          // Recomposite wireframe (wireframe position unchanged — no reflow)
           wf.sparse = buildSparseRows(compositeLayers(wf.layers));
-          // Keep selectedLayerIdRef in sync (id is unchanged)
           paint();
+        } else {
+          // Move gesture
+          const newRow = drag.startBbox.row + deltaRow;
+          const newCol = drag.startBbox.col + deltaCol;
+          const actualDeltaRow = newRow - layer.bbox.row;
+          const actualDeltaCol = newCol - layer.bbox.col;
+          if (actualDeltaRow !== 0 || actualDeltaCol !== 0) {
+            const movedLayer = moveLayer(layer, actualDeltaRow, actualDeltaCol);
+            wf.layers = [
+              ...wf.layers.slice(0, layerIdx),
+              movedLayer,
+              ...wf.layers.slice(layerIdx + 1),
+            ];
+            // Recomposite wireframe (wireframe position unchanged — no reflow)
+            wf.sparse = buildSparseRows(compositeLayers(wf.layers));
+            // Keep selectedLayerIdRef in sync (id is unchanged)
+            paint();
+          }
         }
       }
     } else {
