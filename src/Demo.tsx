@@ -20,7 +20,7 @@
 import { useEffect, useRef, useState } from "react";
 import { scan } from "./scanner";
 import { detectRegions } from "./regions";
-import { compositeLayers, moveLayer, regenerateCells } from "./layers";
+import { compositeLayers, moveLayer, regenerateCells, buildTextCells } from "./layers";
 import type { Layer } from "./layers";
 import { buildSparseRows, type SparseRow } from "./KonvaCanvas";
 import {
@@ -107,6 +107,11 @@ export default function Demo() {
   /** Selected individual layer id within a wireframe */
   const selectedLayerIdRef = useRef<string | null>(null);
   const dragRef = useRef<DragState | null>(null);
+
+  // Wireframe text label editing
+  const wireframeTextEditRef = useRef<{ wfId: string; layerId: string; col: number } | null>(null);
+  // Double-click detection
+  const lastClickRef = useRef<{ time: number; px: number; docY: number } | null>(null);
 
   const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -452,6 +457,19 @@ export default function Demo() {
         ctx.fillRect(pos.x, screenY, 2, SPATIAL_LH);
       }
     }
+
+    // Draw wireframe text edit cursor
+    const wte = wireframeTextEditRef.current;
+    if (wte && blinkVisibleRef.current) {
+      const wf = wireframesRef.current.find(w => w.id === wte.wfId);
+      const layer = wf?.layers.find(l => l.id === wte.layerId);
+      if (wf && layer && layer.type === "text") {
+        const cursorX = (layer.bbox.col + wte.col) * cw;
+        const cursorY = wf.y - scrollY + layer.bbox.row * ch;
+        ctx.fillStyle = FG_COLOR;
+        ctx.fillRect(cursorX, cursorY, 2, ch);
+      }
+    }
   }
 
   // ── Schedule autosave ───────────────────────────────────
@@ -501,6 +519,77 @@ export default function Demo() {
   useEffect(() => {
     const fn = async (e: KeyboardEvent) => {
       const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
+
+      // ── Wireframe text label editing ─────────────────────
+      const wte = wireframeTextEditRef.current;
+      if (wte && !mod) {
+        const wf = wireframesRef.current.find(w => w.id === wte.wfId);
+        const layer = wf?.layers.find(l => l.id === wte.layerId);
+        if (wf && layer && layer.type === "text") {
+          const content = layer.content ?? "";
+
+          if (e.key === "Escape" || e.key === "Enter") {
+            e.preventDefault();
+            wireframeTextEditRef.current = null;
+            stopBlink();
+            paint();
+            return;
+          }
+
+          if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            wireframeTextEditRef.current = { ...wte, col: Math.max(0, wte.col - 1) };
+            resetBlink();
+            paint();
+            return;
+          }
+
+          if (e.key === "ArrowRight") {
+            e.preventDefault();
+            wireframeTextEditRef.current = { ...wte, col: Math.min(content.length, wte.col + 1) };
+            resetBlink();
+            paint();
+            return;
+          }
+
+          if (e.key === "Backspace") {
+            e.preventDefault();
+            if (wte.col > 0) {
+              const newContent = content.slice(0, wte.col - 1) + content.slice(wte.col);
+              const { cells, content: fc, bbox } = buildTextCells(layer.bbox.row, layer.bbox.col, newContent);
+              const layerIdx = wf.layers.findIndex(l => l.id === wte.layerId);
+              wf.layers = [
+                ...wf.layers.slice(0, layerIdx),
+                { ...layer, cells, content: fc, bbox: { ...bbox, w: Math.max(1, fc.length) } },
+                ...wf.layers.slice(layerIdx + 1),
+              ];
+              wf.sparse = buildSparseRows(compositeLayers(wf.layers));
+              wireframeTextEditRef.current = { ...wte, col: wte.col - 1 };
+              resetBlink();
+              paint();
+            }
+            return;
+          }
+
+          // Printable character insertion
+          if (e.key.length === 1) {
+            e.preventDefault();
+            const newContent = content.slice(0, wte.col) + e.key + content.slice(wte.col);
+            const { cells, content: fc, bbox } = buildTextCells(layer.bbox.row, layer.bbox.col, newContent);
+            const layerIdx = wf.layers.findIndex(l => l.id === wte.layerId);
+            wf.layers = [
+              ...wf.layers.slice(0, layerIdx),
+              { ...layer, cells, content: fc, bbox: { ...bbox, w: Math.max(1, fc.length) } },
+              ...wf.layers.slice(layerIdx + 1),
+            ];
+            wf.sparse = buildSparseRows(compositeLayers(wf.layers));
+            wireframeTextEditRef.current = { ...wte, col: wte.col + 1 };
+            resetBlink();
+            paint();
+            return;
+          }
+        }
+      }
 
       // ── Prose cursor keyboard handling ──────────────────
       const pc = proseCursorRef.current;
@@ -565,6 +654,7 @@ export default function Demo() {
         selectedIdRef.current = null;
         selectedLayerIdRef.current = null;
         proseCursorRef.current = null;
+        wireframeTextEditRef.current = null;
         stopBlink();
         paint();
         return;
@@ -659,8 +749,44 @@ export default function Demo() {
         gridCol < l.bbox.col + l.bbox.w,
       ) ?? null;
 
+      // Check for double-click on a text layer
+      const now = Date.now();
+      const last = lastClickRef.current;
+      const isDoubleClick =
+        last !== null &&
+        now - last.time < 300 &&
+        Math.abs(px - last.px) < cw * 2 &&
+        Math.abs(docY - last.docY) < ch * 2;
+      lastClickRef.current = { time: now, px, docY };
+
+      if (isDoubleClick && hitLayer && hitLayer.type === "text") {
+        // Enter wireframe text label editing mode
+        const colInContent = Math.max(
+          0,
+          Math.min(
+            hitLayer.content?.length ?? 0,
+            gridCol - hitLayer.bbox.col,
+          ),
+        );
+        wireframeTextEditRef.current = {
+          wfId: wf.id,
+          layerId: hitLayer.id,
+          col: colInContent,
+        };
+        proseCursorRef.current = null;
+        selectedIdRef.current = null;
+        selectedLayerIdRef.current = hitLayer.id;
+        dragRef.current = null;
+        canvas.focus();
+        resetBlink();
+        paint();
+        return;
+      }
+
       // Clear prose cursor when clicking into a wireframe
       proseCursorRef.current = null;
+      // Clear wireframe text edit if clicking elsewhere
+      wireframeTextEditRef.current = null;
       stopBlink();
 
       if (hitLayer) {
