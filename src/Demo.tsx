@@ -348,6 +348,16 @@ export default function Demo() {
       }
     }
     laidRef.current = laid;
+
+    // Invariants: post-layout consistency checks
+    console.assert(laid.length === regionsRef.current.length, "doLayout: laid.length !== regionsRef.current.length");
+    for (const lr of laid) {
+      if (lr.region.type === "wireframe") console.assert(lr.sparse !== undefined, "doLayout: wireframe region missing sparse rows");
+      if (lr.region.type === "prose") console.assert(lr.lines !== undefined, "doLayout: prose region missing lines");
+    }
+    for (let i = 1; i < laid.length; i++) {
+      console.assert(laid[i].y === laid[i - 1].y + laid[i - 1].height, "doLayout: y-offsets not monotonically increasing at index " + i);
+    }
   }
 
   // ── Render ─────────────────────────────────────────────
@@ -355,6 +365,10 @@ export default function Demo() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const { w, h } = sizeRef.current;
+
+    // Invariants: canvas and layout sanity
+    console.assert(w > 0 && h > 0, "paint: canvas dimensions are zero");
+    if (laidRef.current.length === 0) console.warn("paint: no regions to render");
     if (canvas.width !== w) canvas.width = w;
     if (canvas.height !== h) canvas.height = h;
     const ctx = canvas.getContext("2d")!;
@@ -546,6 +560,10 @@ export default function Demo() {
 
   // ── Mouse ──────────────────────────────────────────────
   function onMouseDown(e: React.MouseEvent) {
+    // Invariants: pre-mousedown sanity
+    console.assert(laidRef.current.length > 0, "onMouseDown: layout has not been computed");
+    console.assert(gestureRef.current === null, "onMouseDown: gesture already in progress");
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -603,6 +621,12 @@ export default function Demo() {
   function onMouseMove(e: React.MouseEvent) {
     const g = gestureRef.current;
     if (!g) return;
+
+    // Invariants: gesture and layer consistency
+    console.assert(gestureRef.current !== null, "onMouseMove: no gesture in progress");
+    const _mmLr = laidRef.current[g.regionIdx];
+    if (!_mmLr?.region.layers?.find(l => l.id === g.layerId)) console.warn("onMouseMove: gestured layer no longer exists in region");
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const cw = cwRef.current;
@@ -735,6 +759,11 @@ export default function Demo() {
     scheduleAutosave();
     doLayout(); // rebuild laidRef with correct y-offsets for next hit test
     paint();
+
+    // Invariants: post-mouseup consistency
+    console.assert(gestureRef.current === null, "onMouseUp: gesture not cleared");
+    console.assert(laidRef.current.length === regionsRef.current.length, "onMouseUp: laid.length !== regionsRef.current.length");
+    if (!docTextRef.current) console.warn("onMouseUp: docText is empty after gesture");
   }
 
   function onWheel(e: React.WheelEvent) {
