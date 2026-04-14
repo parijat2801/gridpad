@@ -21,27 +21,7 @@ import {
   applyDragToText, applyResizeToText, applyLiveDrag, applyLiveResize, applyWireframeTextEdit,
 } from "./spatialTextEdit";
 import { handleProseKeyPress, handleWireframeKeyPress } from "./spatialKeyHandler";
-
-const DEFAULT_TEXT = `# Welcome to Gridpad
-
-Open a markdown file with wireframes to see them rendered.
-Use Cmd+O to open a file, then drag the wireframe boxes around.
-
-┌─────────────────────────────────────────────────┐
-│                   Dashboard                     │
-├──────────┬──────────────────────┬───────────────┤
-│ Sidebar  │  Main Content        │  Right Panel  │
-│          │                      │               │
-│          │  ┌────────────────┐  │               │
-│          │  │  Card Title    │  │               │
-│          │  │  Description   │  │               │
-│          │  └────────────────┘  │               │
-│          │                      │               │
-└──────────┴──────────────────────┴───────────────┘
-
-The text above and below the wireframe is rendered by Pretext.
-Try dragging a wireframe box — the prose reflows around it.
-Click a box to select, drag edges to resize, drag interior to move.`;
+import { DEMO_DEFAULT_TEXT } from "./demoDefaults";
 
 const EDGE_THRESHOLD = 1;
 type GestureMode = "drag" | "resize";
@@ -54,7 +34,7 @@ interface GestureState {
 export default function Demo() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [ready, setReady] = useState(false);
-  const docTextRef = useRef(DEFAULT_TEXT);
+  const docTextRef = useRef(DEMO_DEFAULT_TEXT);
   const scrollYRef = useRef(0);
   const selectedIdRef = useRef<string | null>(null);
   const sizeRef = useRef({ w: window.innerWidth, h: window.innerHeight });
