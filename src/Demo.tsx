@@ -95,7 +95,8 @@ export default function Demo() {
   useEffect(() => {
     measureCellSize().then(() => {
       cwRef.current = getCharWidth(); chRef.current = getCharHeight();
-      regionsRef.current = detectRegions(scan(docTextRef.current)); setReady(true);
+      regionsRef.current = detectRegions(scan(docTextRef.current));
+      setReady(true); // triggers re-render → useEffect calls doLayout + paint
     });
   }, []);
   useEffect(() => {
@@ -128,7 +129,9 @@ export default function Demo() {
     };
     window.addEventListener("keydown", fn); return () => window.removeEventListener("keydown", fn);
   }, []);
-  useEffect(() => { if (ready) paint(); });
+  // On every render: ensure layout is computed and canvas is painted.
+  // doLayout is cheap (no scan) — just Pretext measurement + composite.
+  useEffect(() => { if (ready) { doLayout(); paint(); } });
   useEffect(() => () => stopBlink(), []);
 
   // ── Key handlers ────────────────────────────────────────
