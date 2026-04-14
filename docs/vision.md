@@ -2,6 +2,10 @@
 
 A markdown editor where ASCII wireframes come alive.
 
+## Why
+
+Coding agents are bad at visual work because the feedback loop is slow: describe UI in words, agent writes code, run it, look at it, describe what's wrong, repeat. Figma MCP tries to fix this but burns 10-50K tokens per screen read, requires API round-trips, and forces the agent to interpret a proprietary node model. Gridpad replaces all of that with a plain text file. An ASCII wireframe with annotations is ~2K tokens, readable by any agent, diffable in git, and editable by humans visually. The `.md` file is a shared protocol between human and agent — both sides read and write the same artifact. Most teams already have a design system; they don't need pixel-level specs from Figma, they need structural intent: which components go where, in what layout, with what hierarchy. That's exactly what an annotated wireframe expresses.
+
 ## What it does
 
 Open any `.md` file. Prose renders as editable text. ASCII wireframes
@@ -90,14 +94,17 @@ The harness runs against real colex plan files as fixtures.
 
 ## Current state
 
-- Region detection: working (32 harness tests)
+- Region detection: working (76 harness tests including real colex plan files)
 - Canvas rendering: working (prose via Pretext, wireframes via glyph atlas)
 - Click to select: working
-- Drag to move: working, persists via stitch-back
-- Resize: working during gesture, persists via stitch-back
+- Drag to move: working, persists via text grid edit
+- Resize: working, persists via text grid edit
 - Scroll: working
 - File open (Cmd+O): working
-- Prose editing: not yet
-- Autosave: not yet
-- Performance measurement: not yet
+- Autosave: working (debounced 500ms + Cmd+S)
+- Prose editing: working (cursor, typing, backspace, delete, enter, arrows)
+- Wireframe text label editing: working (double-click to edit)
+- Performance targets: all passing (12ms file open, 0.11ms/frame drag)
+- Playwright browser tests: 5 tests (render, select, drag-twice, scroll, no-errors)
+- Code: extracted into 6 pure modules (Demo.tsx is 290-line thin shell)
 - Drawing tools: not yet
