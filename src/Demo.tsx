@@ -309,35 +309,24 @@ export default function Demo() {
     proseTextRef.current = proseParts.join("\n\n");
 
     // Build prepared text (cached — re-created on content change)
+    let prepared: PreparedTextWithSegments | null = null;
     if (proseTextRef.current.length > 0) {
-      preparedRef.current = prepareWithSegments(
+      prepared = prepareWithSegments(
         proseTextRef.current,
         SPATIAL_FONT,
         { whiteSpace: "pre-wrap" },
       );
+      preparedRef.current = prepared;
     } else {
       preparedRef.current = null;
     }
 
     // Build wireframe objects
-    // We need to assign initial pixel y-positions for wireframes.
-    // Strategy: simulate a pass where prose fills canvasWidth, then
-    // place wireframes at their natural document order position.
-    // For initial load we use a simple estimate: lay out all regions in order
-    // at the current canvas width.
-    const cw = canvasRef.current?.width ?? sizeRef.current.w;
+    const canvasWidth = sizeRef.current.w;
     const wireframes: Wireframe[] = [];
     const regionOrder: Array<{ type: "prose" | "wireframe"; wireframeId?: string }> = [];
-
-    // Do a quick sequential layout pass to figure out initial y positions
-    let curY = 0;
-    // We need to know how many prose lines came before each wireframe to
-    // estimate its initial y. Use a full reflow pass after setting wireframes.
-    // For now: assign sequential y based on prose blocks above each wireframe.
-    // We'll do a proper reflow after assigning initial positions.
-
-    // First pass: assign temporary y positions based on sequential order
     const ch = chRef.current || 18; // fallback
+
     for (const r of regions) {
       if (r.type === "wireframe") {
         const rowCount = r.endRow - r.startRow + 1;
@@ -359,12 +348,12 @@ export default function Demo() {
           }
         }
         // If still no content, use a reasonable default width
-        const wfW = maxCol > 0 ? maxCol * cwRef.current : Math.floor(cw * 0.5);
+        const wfW = maxCol > 0 ? maxCol * cwRef.current : Math.floor(canvasWidth * 0.5);
 
         wireframes.push({
           id: wfId,
           x: 0,
-          y: curY,
+          y: 0, // placeholder — corrected in two-pass layout below
           w: wfW,
           h,
           layers,
@@ -372,17 +361,81 @@ export default function Demo() {
           originalText: r.text,
         });
         regionOrder.push({ type: "wireframe", wireframeId: wfId });
-        curY += h;
       } else {
-        // Estimate prose height: rough line count * LH
-        const lines = r.text.split("\n");
-        curY += lines.length * SPATIAL_LH;
         regionOrder.push({ type: "prose" });
       }
     }
     regionOrderRef.current = regionOrder;
-
     wireframesRef.current = wireframes;
+
+    // ── Two-pass wireframe y-position correction ─────────────
+    // Pass 1: reflow prose WITHOUT any obstacles. This gives the actual
+    // visual line positions produced by Pretext (accounting for real wrapping).
+    // Pass 2: walk regions in document order, accumulate curY using the
+    // actual prose line count per prose region. Assign wireframe y-positions
+    // based on that accurate curY.
+    if (prepared && canvasWidth > 0) {
+      const noObstacleResult = reflowLayout(prepared, canvasWidth, SPATIAL_LH, []);
+      const visualLines = noObstacleResult.lines;
+
+      // Build char-offset boundaries for each prose part.
+      // proseText = proseParts.join("\n\n"), so boundaries are:
+      //   part[0]: chars 0 .. proseParts[0].length - 1
+      //   part[1]: chars proseParts[0].length+2 .. proseParts[0].length+2+proseParts[1].length - 1
+      // We count how many visual lines fall within each part's char range.
+      const partBoundaries: { start: number; end: number }[] = [];
+      let offset = 0;
+      for (const part of proseParts) {
+        partBoundaries.push({ start: offset, end: offset + part.length });
+        offset += part.length + 2; // +2 for "\n\n" separator
+      }
+
+      // For each visual line, find which char offset it starts at.
+      // We reconstruct cumulative char offsets by walking visual lines.
+      // Each visual line consumes line.text.length chars from the source,
+      // plus any "\n" that was consumed at a source-line-break boundary.
+      const proseText = proseTextRef.current;
+      let charConsumed = 0;
+      // lineStartOffset[i] = cumulative char offset at start of visual line i
+      const lineStartOffset: number[] = [];
+      for (let i = 0; i < visualLines.length; i++) {
+        lineStartOffset.push(charConsumed);
+        charConsumed += visualLines[i].text.length;
+        // If next char in source is a \n (source line break), consume it
+        if (proseText[charConsumed] === "\n") charConsumed += 1;
+      }
+
+      // Count visual lines per prose part
+      const linesPerPart: number[] = proseParts.map(() => 0);
+      for (let i = 0; i < visualLines.length; i++) {
+        const charOff = lineStartOffset[i];
+        for (let p = 0; p < partBoundaries.length; p++) {
+          if (charOff >= partBoundaries[p].start && charOff < partBoundaries[p].end) {
+            linesPerPart[p]++;
+            break;
+          }
+        }
+      }
+
+      // Walk regions in document order, assign wireframe y-positions
+      let curY = 0;
+      let prosePartIdx = 0;
+      let wfIdx = 0;
+      for (const entry of regionOrder) {
+        if (entry.type === "prose") {
+          const count = linesPerPart[prosePartIdx] ?? 0;
+          curY += count * SPATIAL_LH;
+          prosePartIdx++;
+        } else {
+          const wf = wireframes[wfIdx];
+          if (wf) {
+            wf.y = curY;
+            curY += wf.h;
+          }
+          wfIdx++;
+        }
+      }
+    }
   }
 
   // ── Layout + Paint ──────────────────────────────────────
