@@ -558,4 +558,32 @@ describe("eraseCells", () => {
     expect(useEditorStore.getState().layers).toHaveLength(1);
     expect(useEditorStore.getState().layers[0].cells.get("0,0")).toBe("A");
   });
+
+  it("recomputes group bbox after erasing from grouped child", () => {
+    // Create two children, then group them (createGroup requires >= 2)
+    useEditorStore.getState().addLayer({
+      type: "text", bbox: { row: 0, col: 0, w: 3, h: 1 },
+      cells: new Map([["0,0", "A"], ["0,1", "B"], ["0,2", "C"]]),
+      visible: true, content: "ABC",
+    });
+    useEditorStore.getState().addLayer({
+      type: "text", bbox: { row: 2, col: 0, w: 1, h: 1 },
+      cells: new Map([["2,0", "X"]]),
+      visible: true, content: "X",
+    });
+    const childId1 = useEditorStore.getState().layers[0].id;
+    const childId2 = useEditorStore.getState().layers[1].id;
+    const groupId = useEditorStore.getState().createGroup([childId1, childId2]);
+    expect(groupId).toBeTruthy();
+    // Group bbox spans both children: rows 0-2, cols 0-2 → w=3, h=3
+    const groupBefore = useEditorStore.getState().layers.find((l: Layer) => l.id === groupId)!;
+    expect(groupBefore.bbox.w).toBe(3);
+    // Erase col 2 from child1 — child1 bbox shrinks to w=2
+    useEditorStore.getState().eraseCells(["0,2"]);
+    const child1 = useEditorStore.getState().layers.find((l: Layer) => l.id === childId1)!;
+    expect(child1.bbox.w).toBe(2);
+    // Group bbox should recompute: now spans rows 0-2, cols 0-1 → w=2
+    const groupAfter = useEditorStore.getState().layers.find((l: Layer) => l.id === groupId)!;
+    expect(groupAfter.bbox.w).toBe(2);
+  });
 });

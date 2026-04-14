@@ -261,9 +261,9 @@ export const useEditorStore = create<EditorState>()(
           bbox: newBbox,
           ...(l.type === "text" ? { content: newContent } : {}),
         };
-      }).filter((l) => l.cells.size > 0);
+      }).filter((l) => l.type === "group" || l.cells.size > 0);
 
-      set({ layers: next });
+      set({ layers: recomputeAllGroupBboxes(next) });
     },
 
     setActiveTool: (tool: ToolId) => {
