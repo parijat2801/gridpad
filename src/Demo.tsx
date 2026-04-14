@@ -751,6 +751,13 @@ export default function Demo() {
             ...wf.layers.slice(layerIdx + 1),
           ];
           wf.sparse = buildSparseRows(compositeLayers(wf.layers));
+          // Recalculate wireframe obstacle height from layer bounds
+          let maxRow = 0;
+          for (const l of wf.layers) {
+            maxRow = Math.max(maxRow, l.bbox.row + l.bbox.h);
+          }
+          wf.h = maxRow * chRef.current;
+          doLayout(); // reflow prose around resized wireframe
           paint();
         } else {
           // Move gesture
