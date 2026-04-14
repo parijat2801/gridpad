@@ -25,7 +25,7 @@ import type { Layer } from "./layers";
 import { buildSparseRows, type SparseRow } from "./KonvaCanvas";
 import {
   BG_COLOR, FG_COLOR, measureCellSize, getCharWidth, getCharHeight,
-  getGlyphAtlas, FONT_SIZE, FONT_FAMILY,
+  FONT_SIZE, FONT_FAMILY,
 } from "./grid";
 import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pretext";
 import { reflowLayout, type PositionedLine, type Obstacle } from "./reflowLayout";
@@ -383,7 +383,6 @@ export default function Demo() {
     }
 
     // Draw wireframes
-    const atlas = getGlyphAtlas();
     for (const wf of wireframesRef.current) {
       const top = wf.y - scrollY;
       if (top + wf.h < 0 || top > h) continue;
@@ -393,24 +392,8 @@ export default function Demo() {
       ctx.textBaseline = "top";
 
       for (const { row, startCol, text } of wf.sparse) {
-        if (atlas) {
-          for (let i = 0; i < text.length; i++) {
-            const c = text[i];
-            if (c === " ") continue;
-            const g = atlas.glyphs.get(c);
-            if (g) {
-              ctx.drawImage(
-                atlas.canvas,
-                g.sx, g.sy, atlas.cellWidth, atlas.cellHeight,
-                (startCol + i) * cw, top + row * ch, cw, ch,
-              );
-            } else {
-              ctx.fillText(c, (startCol + i) * cw, top + row * ch);
-            }
-          }
-        } else {
-          ctx.fillText(text, startCol * cw, top + row * ch);
-        }
+        // Use fillText per row for Retina sharpness (atlas drawImage is low-res)
+        ctx.fillText(text, startCol * cw, top + row * ch);
       }
 
       // Draw selection highlight
