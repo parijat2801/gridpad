@@ -10,6 +10,32 @@
 
 **Baseline:** 177 tests passing. All tests must stay green after every task.
 
+**Prep (before Task 1):**
+
+1. Extract `Bbox` type into `src/types.ts` and re-export from
+   `src/store.ts`. Currently `Bbox` is defined in `store.ts`
+   (exported) and duplicated privately in `layers.ts:57`.
+   Centralizing it lets stamp functions (`src/tools/*.ts`) import
+   from `src/types.ts` without coupling to the store — important
+   for the Obsidian plugin reuse goal. Update `layers.ts` to import
+   from `src/types.ts` and delete its private copy.
+
+2. Add `snapToGrid` helper to `src/grid.ts`:
+   ```typescript
+   export function snapToGrid(
+     px: number, py: number
+   ): { x: number; y: number } {
+     return {
+       x: Math.round(px / _charWidth) * _charWidth,
+       y: Math.round(py / _charHeight) * _charHeight,
+     };
+   }
+   ```
+   Used by `dragBoundFunc` (Task 3) and `boundBoxFunc` (Task 4)
+   instead of inlining the same rounding logic in both places.
+
+Run `npm test` after both changes to verify.
+
 ---
 
 ## Review fixes (applied from Gemini + Codex review, 2026-04-13)
@@ -148,21 +174,83 @@ The architecture says grapheme clusters / emoji are out of scope.
 (charCode 32-126 plus Unicode box-drawing range U+2500-U+257F).
 Reject or ignore other input.
 
+### Note: `[...string]` spread and multi-byte characters (Low — Tasks 6-9)
+
+The stamp functions' `setChar` helper uses `[...lines[r]]` to spread
+a string into an array by codepoint. Box-drawing characters (U+2500–
+U+257F) are single codepoints, so this is safe for all tool output.
+However, if a user externally edits the `.md` file to include emoji
+or other multi-codepoint graphemes, a stamp operation on that row
+would split them into individual codepoints, corrupting the string.
+This is acceptable for v1 (emoji is a non-goal) but stamp functions
+should not be used as evidence that grapheme-safe editing works.
+
+### Fix 9: Drawing tools must verify zundo tracking is active (Low — Tasks 6-9)
+
+Drawing tools call `loadFromText(newText)` which does a normal
+`set()` — zundo captures this as an undo step. But if a prior drag
+was interrupted without cleanup (component unmount edge case),
+`_inLiveDrag` could be stuck `true` with tracking paused.
+
+**Fix:** At the top of each stamp commit path in `useToolHandlers`,
+guard with a tracking check:
+
+```typescript
+const t = useEditorStore.temporal.getState();
+if (!t.isTracking) t.resume();
+```
+
+This is defensive — the gesture adapter cleanup should always fire,
+but a one-line guard prevents silent undo breakage.
+
+### Fix 10: `measureCellSize` fallback for failed font load (Low — Task 1)
+
+If the monospace font fails to load (missing system font, slow
+network for web fonts), `measureCellSize` could produce a 0-width
+or wildly wrong cell size. `getCharWidth()`/`getCharHeight()` throw
+if not measured, but there's no fallback.
+
+**Fix:** After measurement, validate the result. If `_charWidth` or
+`_charHeight` is 0 or unreasonable (< 4px or > 40px), fall back to
+hardcoded defaults:
+
+```typescript
+const FALLBACK_CHAR_WIDTH = 9.6;  // typical 16px Menlo
+const FALLBACK_CHAR_HEIGHT = 18.4;
+
+// After measurement:
+if (_charWidth < 4 || _charWidth > 40) _charWidth = FALLBACK_CHAR_WIDTH;
+if (_charHeight < 4 || _charHeight > 40) _charHeight = FALLBACK_CHAR_HEIGHT;
+```
+
 ---
 
 ## Phase 1: Konva renders the character grid
 
-### Task 1: KonvaCanvas with character grid rendering
+### Task 1: KonvaCanvas with character grid rendering + dynamic sizing
 
 **Files:**
 - Create: `src/KonvaCanvas.tsx`
+- Modify: `src/grid.ts` (add `CANVAS_PADDING` constant)
 - Modify: `src/App.tsx` (mount KonvaCanvas in canvas-area)
+- Modify: `src/index.css` (canvas-area overflow: auto)
 
-**Step 1: Create `src/KonvaCanvas.tsx`**
+**Step 1: Add `CANVAS_PADDING` to `src/grid.ts`**
+
+```typescript
+export const CANVAS_PADDING = 5; // cells of empty space beyond content
+```
+
+**Step 2: Create `src/KonvaCanvas.tsx`**
 
 The component measures cell size on mount, then renders a Konva Stage
 with a single Layer containing a custom Shape that batch-renders the
 composited character grid via `ctx.fillText()` row by row.
+
+The Stage size is **dynamic**: derived from the composite cell map's
+bounding box + padding, with a high-water mark so it never shrinks
+during a session. Minimum size is `GRID_WIDTH × GRID_HEIGHT`.
+The high-water mark resets when `layers` becomes empty (reset/new file).
 
 ```typescript
 import { useEffect, useState, useRef } from "react";
@@ -170,13 +258,14 @@ import { Stage, Layer, Shape } from "react-konva";
 import { useEditorStore } from "./store";
 import { compositeLayers } from "./layers";
 import {
-  GRID_WIDTH, GRID_HEIGHT, FONT_SIZE, FONT_FAMILY,
+  GRID_WIDTH, GRID_HEIGHT, CANVAS_PADDING, FONT_SIZE, FONT_FAMILY,
   BG_COLOR, FG_COLOR, measureCellSize, getCharWidth, getCharHeight,
 } from "./grid";
 
 export function KonvaCanvas() {
   const layers = useEditorStore((s) => s.layers);
   const [ready, setReady] = useState(false);
+  const highWaterRef = useRef<{ rows: number; cols: number }>({ rows: 0, cols: 0 });
 
   useEffect(() => {
     measureCellSize().then(() => setReady(true));
@@ -188,9 +277,32 @@ export function KonvaCanvas() {
 
   const charWidth = getCharWidth();
   const charHeight = getCharHeight();
-  const stageWidth = GRID_WIDTH * charWidth;
-  const stageHeight = GRID_HEIGHT * charHeight;
   const composite = compositeLayers(layers);
+
+  // Derive grid dimensions from content
+  let maxRow = 0;
+  let maxCol = 0;
+  for (const key of composite.keys()) {
+    const [r, c] = key.split(",").map(Number);
+    if (r > maxRow) maxRow = r;
+    if (c > maxCol) maxCol = c;
+  }
+
+  const contentRows = maxRow + 1 + CANVAS_PADDING;
+  const contentCols = maxCol + 1 + CANVAS_PADDING;
+
+  // Reset high-water mark when layers are empty (reset/new file)
+  if (layers.length === 0) {
+    highWaterRef.current = { rows: 0, cols: 0 };
+  }
+
+  // Grow only, never shrink
+  const effectiveRows = Math.max(GRID_HEIGHT, contentRows, highWaterRef.current.rows);
+  const effectiveCols = Math.max(GRID_WIDTH, contentCols, highWaterRef.current.cols);
+  highWaterRef.current = { rows: effectiveRows, cols: effectiveCols };
+
+  const stageWidth = effectiveCols * charWidth;
+  const stageHeight = effectiveRows * charHeight;
 
   return (
     <Stage width={stageWidth} height={stageHeight} style={{ background: BG_COLOR }}>
@@ -200,9 +312,9 @@ export function KonvaCanvas() {
             ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
             ctx.fillStyle = FG_COLOR;
             ctx.textBaseline = "top";
-            for (let row = 0; row < GRID_HEIGHT; row++) {
+            for (let row = 0; row < effectiveRows; row++) {
               let line = "";
-              for (let col = 0; col < GRID_WIDTH; col++) {
+              for (let col = 0; col < effectiveCols; col++) {
                 line += composite.get(`${row},${col}`) ?? " ";
               }
               ctx.fillText(line, 0, row * charHeight);
@@ -215,7 +327,21 @@ export function KonvaCanvas() {
 }
 ```
 
-**Step 2: Mount in App.tsx**
+**Step 3: Update `src/index.css`**
+
+Change `.canvas-area` overflow from `hidden` to `auto` so scrollbars
+appear when the Stage exceeds the viewport:
+
+```css
+.canvas-area {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: auto;
+  background: #1a1a1a;
+}
+```
+
+**Step 4: Mount in App.tsx**
 
 Replace the `<pre>` placeholder in the canvas-area div:
 
@@ -228,16 +354,18 @@ import { KonvaCanvas } from "./KonvaCanvas";
 </div>
 ```
 
-**Step 3: Verify**
+**Step 5: Verify**
 
 Run: `npm test` → 177 passed
 Run: `npm run dev` → open browser, verify characters render
+Verify: canvas has scrollbars if content exceeds viewport
+Verify: drawing near bottom-right edge grows the canvas
 
-**Step 4: Commit**
+**Step 6: Commit**
 
 ```bash
-git add src/KonvaCanvas.tsx src/App.tsx
-git commit -m "feat: KonvaCanvas renders character grid via custom Shape"
+git add src/KonvaCanvas.tsx src/grid.ts src/App.tsx src/index.css
+git commit -m "feat: KonvaCanvas with dynamic sizing — canvas grows as content grows"
 ```
 
 ---
@@ -262,12 +390,16 @@ Selected shape gets a blue stroke.
 
 ```typescript
 import { Stage, Layer, Shape, Rect, Line as KonvaLine } from "react-konva";
+import { isEffectivelyVisible } from "./layers";
 
 const selectedId = useEditorStore((s) => s.selectedId);
 const selectLayer = useEditorStore((s) => s.selectLayer);
 
+// Use isEffectivelyVisible (not l.visible) so hiding a parent group
+// also hides its children on the canvas — consistent with LayerPanel.
+const byId = new Map(layers.map((l) => [l.id, l]));
 const visibleLayers = layers.filter(
-  (l) => l.visible && l.type !== "base" && l.type !== "group"
+  (l) => l.type !== "base" && l.type !== "group" && isEffectivelyVisible(l, byId)
 );
 
 // Second Layer:
@@ -399,24 +531,36 @@ export function useGestureAdapter() {
     };
   }, []);
 
+  // Mode-aware: handles both move and resize revert (fixes 2c + 2d).
   function installListeners(node: any, g: GestureState, charWidth: number, charHeight: number) {
-    const onEscape = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || !gestureRef.current?.active) return;
-      e.stopPropagation();
-      // Revert store
-      useEditorStore.getState().moveLayerCommit(g.layerId, g.startBbox);
-      // Reset Konva node position
+    const revertGesture = () => {
+      const store = useEditorStore.getState();
+      if (g.mode === "resize") {
+        node.scaleX(1);
+        node.scaleY(1);
+        node.width(g.startBbox.w * charWidth);
+        node.height(g.startBbox.h * charHeight);
+        store.resizeLayerCommit(g.layerId, g.startBbox);
+      } else {
+        store.moveLayerCommit(g.layerId, g.startBbox);
+      }
       node.position({
         x: g.startBbox.col * charWidth,
         y: g.startBbox.row * charHeight,
       });
-      node.stopDrag();
+    };
+
+    const onEscape = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !gestureRef.current?.active) return;
+      e.stopPropagation();
+      revertGesture();
+      if (g.mode === "move") node.stopDrag();
       gestureRef.current = null;
       removeListeners();
     };
     const onCancel = () => {
       if (!gestureRef.current?.active) return;
-      useEditorStore.getState().moveLayerCommit(g.layerId, g.startBbox);
+      revertGesture();
       gestureRef.current = null;
       removeListeners();
     };
@@ -531,9 +675,8 @@ function onTransformStart(layerId: string, node: any, charWidth: number, charHei
   gestureRef.current = g;
   // Trigger zundo snapshot
   useEditorStore.getState().resizeLayerLive(layerId, layer.bbox);
-  // Install Escape/cancel with revert logic that also resets scale
-  // (similar to move but resets node.scaleX/Y to 1 and restores size)
-  installResizeListeners(node, g, charWidth, charHeight);
+  // installListeners is mode-aware: checks g.mode to reset scale on revert
+  installListeners(node, g, charWidth, charHeight);
 }
 
 function onTransformEnd(layerId: string, node: any, charWidth: number, charHeight: number) {
@@ -552,7 +695,15 @@ function onTransformEnd(layerId: string, node: any, charWidth: number, charHeigh
     row: newRow, col: newCol, w: newW, h: newH,
   });
   gestureRef.current = null;
-  removeResizeListeners();
+  // Shared removeListeners — same as move, installed by installListeners
+  if (escapeRef.current) {
+    window.removeEventListener("keydown", escapeRef.current, true);
+    escapeRef.current = null;
+  }
+  if (cancelRef.current) {
+    window.removeEventListener("pointercancel", cancelRef.current);
+    cancelRef.current = null;
+  }
 }
 ```
 
@@ -802,14 +953,15 @@ git commit -m "feat: Toolbar with tool buttons, keyboard shortcuts, file open/sa
 
 ---
 
-### Task 6: Rectangle drawing tool
+### Task 6: Rectangle drawing tool + `useToolHandlers` hook
 
 **Files:**
 - Create: `src/tools/stampRect.ts`
 - Create: `src/tools/stampRect.test.ts`
+- Create: `src/useToolHandlers.ts`
 - Modify: `src/KonvaCanvas.tsx`
 
-**Step 1: Write failing test**
+**Step 1: Write failing test for stampRect**
 
 ```typescript
 import { describe, it, expect } from "vitest";
@@ -856,7 +1008,7 @@ describe("stampRect", () => {
 **Step 3: Implement `src/tools/stampRect.ts`**
 
 ```typescript
-import type { Bbox } from "../store";
+import type { Bbox } from "../types";
 
 /** Stamp a Unicode light rect's border characters into text.
  * Returns modified text. Only pads affected rows. */
@@ -897,77 +1049,137 @@ export function stampRect(text: string, bbox: Bbox): string {
 
 **Step 4: Run test → PASS**
 
-**Step 5: Wire into KonvaCanvas**
+**Step 5: Create `src/useToolHandlers.ts`**
 
-When `activeTool === "rect"`, on Stage mouse events:
-- mouseDown on empty space → record start cell, show dashed preview Rect
-- mouseMove → update preview bbox
-- mouseUp → if bbox >= 2x2, call `stampRect(store.toText(), bbox)` then
-  `store.loadFromText(newText)`. Remove preview.
+Single hook that dispatches mouse events to the active tool's handler.
+Returns `{ onMouseDown, onMouseMove, onMouseUp, previewNode }` for
+KonvaCanvas to wire into the Stage and render layer. Each tool's
+logic is a private function inside the hook — easy to extract into
+separate files later if needed.
 
 ```typescript
-const [rectPreview, setRectPreview] = useState<Bbox | null>(null);
-const rectStartRef = useRef<{row: number; col: number} | null>(null);
+import { useState, useRef, type ReactNode } from "react";
+import { Rect as KonvaRect } from "react-konva";
+import { useEditorStore } from "./store";
+import type { Bbox } from "./types";
+import type { ToolId } from "./store";
+import { pixelToCell } from "./grid";
+import { stampRect } from "./tools/stampRect";
 
-// In Stage event handlers:
-onMouseDown={(e) => {
-  if (activeTool === "rect" && e.target === e.target.getStage()) {
-    const pos = e.target.getStage()?.getPointerPosition();
+interface ToolHandlers {
+  onMouseDown: (e: any) => void;
+  onMouseMove: (e: any) => void;
+  onMouseUp: () => void;
+  previewNode: ReactNode;
+}
+
+export function useToolHandlers(
+  activeTool: ToolId,
+  charWidth: number,
+  charHeight: number,
+): ToolHandlers {
+  // ── Rect tool state ──
+  const [rectPreview, setRectPreview] = useState<Bbox | null>(null);
+  const rectStartRef = useRef<{ row: number; col: number } | null>(null);
+
+  // ── Dispatch ──
+  function onMouseDown(e: any) {
+    const stage = e.target.getStage?.();
+    if (!stage) return;
+    const isStage = e.target === stage;
+    const pos = stage.getPointerPosition();
     if (!pos) return;
     const cell = pixelToCell(pos.x, pos.y);
-    rectStartRef.current = cell;
-    setRectPreview({ row: cell.row, col: cell.col, w: 1, h: 1 });
-  }
-}}
-onMouseMove={(e) => {
-  if (activeTool === "rect" && rectStartRef.current) {
-    const pos = e.target.getStage()?.getPointerPosition();
-    if (!pos) return;
-    const cell = pixelToCell(pos.x, pos.y);
-    const s = rectStartRef.current;
-    setRectPreview({
-      row: Math.min(s.row, cell.row),
-      col: Math.min(s.col, cell.col),
-      w: Math.abs(cell.col - s.col) + 1,
-      h: Math.abs(cell.row - s.row) + 1,
-    });
-  }
-}}
-onMouseUp={() => {
-  if (activeTool === "rect" && rectPreview) {
-    if (rectPreview.w >= 2 && rectPreview.h >= 2) {
-      const text = useEditorStore.getState().toText();
-      const newText = stampRect(text, rectPreview);
-      if (newText !== text) {
-        useEditorStore.getState().loadFromText(newText);
-      }
+
+    if (activeTool === "rect" && isStage) {
+      rectStartRef.current = cell;
+      setRectPreview({ row: cell.row, col: cell.col, w: 1, h: 1 });
     }
-    setRectPreview(null);
-    rectStartRef.current = null;
+    // Tasks 7-9 add line/text/eraser branches here
   }
-}}
 
-// Render preview:
-{rectPreview && (
-  <Rect
-    x={rectPreview.col * charWidth}
-    y={rectPreview.row * charHeight}
-    width={rectPreview.w * charWidth}
-    height={rectPreview.h * charHeight}
-    fill="transparent"
-    stroke="#4a90e2"
-    strokeWidth={1}
-    dash={[4, 4]}
-    listening={false}
-  />
-)}
+  function onMouseMove(e: any) {
+    const pos = e.target.getStage?.()?.getPointerPosition();
+    if (!pos) return;
+    const cell = pixelToCell(pos.x, pos.y);
+
+    if (activeTool === "rect" && rectStartRef.current) {
+      const s = rectStartRef.current;
+      setRectPreview({
+        row: Math.min(s.row, cell.row),
+        col: Math.min(s.col, cell.col),
+        w: Math.abs(cell.col - s.col) + 1,
+        h: Math.abs(cell.row - s.row) + 1,
+      });
+    }
+    // Tasks 7-9 add line/text/eraser branches here
+  }
+
+  function onMouseUp() {
+    if (activeTool === "rect" && rectPreview) {
+      if (rectPreview.w >= 2 && rectPreview.h >= 2) {
+        const text = useEditorStore.getState().toText();
+        const newText = stampRect(text, rectPreview);
+        if (newText !== text) {
+          useEditorStore.getState().loadFromText(newText);
+        }
+      }
+      setRectPreview(null);
+      rectStartRef.current = null;
+    }
+    // Tasks 7-9 add line/text/eraser branches here
+  }
+
+  // ── Preview nodes ──
+  let previewNode: ReactNode = null;
+  if (rectPreview) {
+    previewNode = (
+      <KonvaRect
+        x={rectPreview.col * charWidth}
+        y={rectPreview.row * charHeight}
+        width={rectPreview.w * charWidth}
+        height={rectPreview.h * charHeight}
+        fill="transparent"
+        stroke="#4a90e2"
+        strokeWidth={1}
+        dash={[4, 4]}
+        listening={false}
+      />
+    );
+  }
+
+  return { onMouseDown, onMouseMove, onMouseUp, previewNode };
+}
 ```
 
-**Step 6: Run full tests, visual verify, commit**
+**Step 6: Wire into KonvaCanvas**
+
+KonvaCanvas becomes a thin rendering shell. It delegates all
+drawing-tool mouse events and preview rendering to `useToolHandlers`:
+
+```typescript
+const toolHandlers = useToolHandlers(activeTool, charWidth, charHeight);
+
+<Stage
+  onMouseDown={toolHandlers.onMouseDown}
+  onMouseMove={toolHandlers.onMouseMove}
+  onMouseUp={toolHandlers.onMouseUp}
+  // ... existing onClick for deselect
+>
+  {/* Layer 1: grid */}
+  {/* Layer 2: interactive shapes + gesture adapter */}
+  <Layer>
+    {/* ... shape nodes ... */}
+    {toolHandlers.previewNode}
+  </Layer>
+</Stage>
+```
+
+**Step 7: Run full tests, visual verify, commit**
 
 ```bash
-git add src/tools/stampRect.ts src/tools/stampRect.test.ts src/KonvaCanvas.tsx
-git commit -m "feat: rectangle drawing tool — stamps characters into text"
+git add src/tools/stampRect.ts src/tools/stampRect.test.ts src/useToolHandlers.ts src/KonvaCanvas.tsx
+git commit -m "feat: rectangle tool + useToolHandlers hook for drawing tool dispatch"
 ```
 
 ---
@@ -977,12 +1189,15 @@ git commit -m "feat: rectangle drawing tool — stamps characters into text"
 **Files:**
 - Create: `src/tools/stampLine.ts`
 - Create: `src/tools/stampLine.test.ts`
-- Modify: `src/KonvaCanvas.tsx`
+- Modify: `src/useToolHandlers.ts` (add line tool branch)
 
-Same pattern as Task 6. The `stampLine` function constrains to the
-dominant axis (horizontal if `abs(dCol) >= abs(dRow)`, else vertical),
-stamps `─` or `│` characters, minimum length 2. Wire into
-KonvaCanvas with a preview Line node.
+Same pattern as Task 6's rect. The `stampLine` function constrains to
+the dominant axis (horizontal if `abs(dCol) >= abs(dRow)`, else
+vertical), stamps `─` or `│` characters, minimum length 2.
+
+Add line tool state and branches to `useToolHandlers` (same pattern
+as rect: `useRef` for start cell, `useState` for preview, branches
+in `onMouseDown`/`onMouseMove`/`onMouseUp`, preview node returned).
 
 **Step 1: Tests**
 
@@ -1017,10 +1232,10 @@ describe("stampLine", () => {
 });
 ```
 
-**Step 2: Implement, wire, verify, commit**
+**Step 2: Implement, add to useToolHandlers, verify, commit**
 
 ```bash
-git add src/tools/stampLine.ts src/tools/stampLine.test.ts src/KonvaCanvas.tsx
+git add src/tools/stampLine.ts src/tools/stampLine.test.ts src/useToolHandlers.ts
 git commit -m "feat: line drawing tool — stamps horizontal/vertical lines"
 ```
 
@@ -1031,11 +1246,14 @@ git commit -m "feat: line drawing tool — stamps horizontal/vertical lines"
 **Files:**
 - Create: `src/tools/stampText.ts`
 - Create: `src/tools/stampText.test.ts`
-- Modify: `src/KonvaCanvas.tsx`
+- Modify: `src/useToolHandlers.ts` (add text tool branch)
 
 Text tool: click to place cursor, type to insert characters into a
 local buffer, commit on Escape or click-away. On commit, call
 `stampText(toText(), row, col, buffer)` → `loadFromText`.
+
+The text tool's keyboard listener is managed inside `useToolHandlers`
+(installed when text tool activates a cursor, removed on commit).
 
 **Step 1: Tests**
 
@@ -1068,7 +1286,7 @@ describe("stampText", () => {
 **Step 2: Implement, wire cursor/preview, verify, commit**
 
 ```bash
-git add src/tools/stampText.ts src/tools/stampText.test.ts src/KonvaCanvas.tsx
+git add src/tools/stampText.ts src/tools/stampText.test.ts src/useToolHandlers.ts
 git commit -m "feat: text tool — click to place cursor, type to insert characters"
 ```
 
@@ -1079,7 +1297,7 @@ git commit -m "feat: text tool — click to place cursor, type to insert charact
 **Files:**
 - Create: `src/tools/stampErase.ts`
 - Create: `src/tools/stampErase.test.ts`
-- Modify: `src/KonvaCanvas.tsx`
+- Modify: `src/useToolHandlers.ts` (add eraser tool branch)
 
 Eraser: drag across cells, write spaces. On mouseUp, call
 `stampErase(toText(), cells)` → `loadFromText`.
@@ -1106,7 +1324,7 @@ describe("stampErase", () => {
 **Step 2: Implement, wire red highlight preview, verify, commit**
 
 ```bash
-git add src/tools/stampErase.ts src/tools/stampErase.test.ts src/KonvaCanvas.tsx
+git add src/tools/stampErase.ts src/tools/stampErase.test.ts src/useToolHandlers.ts
 git commit -m "feat: eraser tool — drag to clear characters"
 ```
 
@@ -1114,16 +1332,18 @@ git commit -m "feat: eraser tool — drag to clear characters"
 
 ## Phase 3: File handling
 
-### Task 10: File open, save, and file watcher
+### Task 10: File open, save, and reload
 
 **Files:**
 - Modify: `src/App.tsx`
+- Modify: `src/Toolbar.tsx` (add Reload button)
 
 **NOTE:** `lastModifiedRef` and `lastWrittenTextRef` already exist in
 App.tsx (applied in Fix 1/2). The autosave subscriber also already
 exists with the skip-if-unchanged and lastModified-update logic.
-This task adds Open, Save, and the file watcher. It does NOT
-re-create the autosave subscriber.
+This task adds Open, Save, and Reload. File watcher (polling for
+external changes) is deferred — Reload covers the "Claude edited
+my file" workflow without the autosave/watcher loop complexity.
 
 **Step 1: Implement open handler**
 
@@ -1142,6 +1362,9 @@ const handleOpen = async () => {
     // autosave from seeing the open as a "change" and writing back
     lastModifiedRef.current = file.lastModified;
     lastWrittenTextRef.current = text;
+    // Reset before loading new file — clears layers to [],
+    // which resets KonvaCanvas high-water mark for dynamic sizing
+    useEditorStore.getState().reset();
     useEditorStore.getState().setFileHandle(handle);
     useEditorStore.getState().loadFromText(text);
   } catch (e) {
@@ -1171,110 +1394,128 @@ const handleSave = async () => {
   await writable.write(text);
   await writable.close();
   lastWrittenTextRef.current = text;
-  // Update lastModified so watcher ignores this write
+  // Update lastModified so reload knows what we last wrote
   const file = await handle.getFile();
   lastModifiedRef.current = file.lastModified;
 };
 ```
 
-**Step 3: Add file watcher for external changes**
+**Step 3: Implement reload handler**
 
-Uses `lastModifiedRef` already declared in App.tsx.
+Re-reads the current file handle and reloads the canvas. This is the
+manual alternative to a file watcher — the user presses Cmd+Shift+R
+(or clicks the Reload button) after Claude or another editor modifies
+the file.
 
 ```typescript
-useEffect(() => {
-  const interval = setInterval(async () => {
-    const handle = useEditorStore.getState().fileHandle;
-    if (!handle) return;
-    try {
-      const file = await handle.getFile();
-      if (file.lastModified > lastModifiedRef.current) {
-        const text = await file.text();
-        lastModifiedRef.current = file.lastModified;
-        lastWrittenTextRef.current = text;
-        useEditorStore.getState().loadFromText(text);
-      }
-    } catch { /* permission revoked or file deleted */ }
-  }, 2000);
-  return () => clearInterval(interval);
-}, []);
+const handleReload = async () => {
+  const handle = useEditorStore.getState().fileHandle;
+  if (!handle) return;
+  try {
+    const file = await handle.getFile();
+    const text = await file.text();
+    lastModifiedRef.current = file.lastModified;
+    lastWrittenTextRef.current = text;
+    useEditorStore.getState().loadFromText(text);
+  } catch (e) {
+    console.error("Reload failed:", e);
+  }
+};
 ```
 
-**Step 4: Add tests (Fix 6)**
+**Step 4: Add Reload button to Toolbar and keyboard shortcut**
+
+In `src/Toolbar.tsx`, add a Reload button after Save:
+
+```typescript
+import { IconRefresh } from "@tabler/icons-react";
+
+// Add onReload prop:
+export function Toolbar({
+  onOpen,
+  onSave,
+  onReload,
+}: {
+  onOpen: () => void;
+  onSave: () => void;
+  onReload: () => void;
+}) {
+  // ... existing code ...
+
+  // After Save button:
+  <Tooltip label="Reload file (Cmd+Shift+R)" position="bottom">
+    <ActionIcon variant="subtle" color="gray" size="lg" onClick={onReload}>
+      <IconRefresh size={20} />
+    </ActionIcon>
+  </Tooltip>
+```
+
+In App.tsx keyboard handler, add:
+
+```typescript
+if (mod && e.shiftKey && e.key === "r") {
+  e.preventDefault(); handleReload(); return;
+}
+```
+
+And pass to Toolbar:
+
+```typescript
+<Toolbar onOpen={handleOpen} onSave={handleSave} onReload={handleReload} />
+```
+
+**Step 5: Add tests (Fix 6)**
+
+Note: `setFileHandle` and `reset` tests are already covered in Task 5's
+"tool state" describe block. Do NOT duplicate them here. Only add the
+autosave-specific tests below.
 
 Add to `src/store.test.ts`:
 
 ```typescript
-describe("file state", () => {
+describe("autosave guards", () => {
   beforeEach(() => useEditorStore.getState().reset());
 
-  it("setFileHandle stores a handle", () => {
-    const fakeHandle = {} as FileSystemFileHandle;
-    useEditorStore.getState().setFileHandle(fakeHandle);
-    expect(useEditorStore.getState().fileHandle).toBe(fakeHandle);
-  });
-
-  it("reset clears fileHandle to null", () => {
-    useEditorStore.getState().setFileHandle({} as FileSystemFileHandle);
-    useEditorStore.getState().reset();
-    expect(useEditorStore.getState().fileHandle).toBeNull();
+  it("toText is stable across selection changes", () => {
+    // Verifies that non-text-affecting state changes don't produce
+    // different toText output (which would trigger unnecessary writes)
+    useEditorStore.getState().loadFromText("┌─┐\n│ │\n└─┘");
+    const text1 = useEditorStore.getState().toText();
+    useEditorStore.getState().selectLayer(
+      useEditorStore.getState().layers[1]?.id ?? null
+    );
+    const text2 = useEditorStore.getState().toText();
+    expect(text2).toBe(text1);
   });
 });
 ```
 
-**Step 4: Verify**
+**Step 6: Verify**
 
 Open a `.md` file → renders on canvas. Draw a rect → autosaves.
 Open the file in a text editor → see the new rect characters.
-Edit the file externally → canvas updates within 2s.
+Edit the file externally → press Cmd+Shift+R → canvas updates.
 
-**Step 5: Commit**
+**Step 7: Commit**
 
 ```bash
-git add src/App.tsx
-git commit -m "feat: file open/save/autosave with File System Access API"
+git add src/App.tsx src/Toolbar.tsx src/store.test.ts
+git commit -m "feat: file open/save/reload with File System Access API"
 ```
 
 ---
 
-### Task 11: File System Access API type declarations
-
-**Files:**
-- Create: `src/file-system.d.ts`
-
-The File System Access API types may not be in the default TypeScript
-lib. Add a declaration file if needed:
-
-```typescript
-// src/file-system.d.ts
-// File System Access API types (Chrome 86+)
-// Only needed if TS doesn't recognize showOpenFilePicker etc.
-interface FileSystemFileHandle {
-  getFile(): Promise<File>;
-  createWritable(): Promise<FileSystemWritableFileStream>;
-}
-interface FileSystemWritableFileStream extends WritableStream {
-  write(data: string | BufferSource | Blob): Promise<void>;
-  close(): Promise<void>;
-}
-declare function showOpenFilePicker(options?: any): Promise<FileSystemFileHandle[]>;
-declare function showSaveFilePicker(options?: any): Promise<FileSystemFileHandle>;
-```
-
-Only create this if `npx tsc -b` errors on `showOpenFilePicker`.
-
-**Commit**
-
-```bash
-git add src/file-system.d.ts
-git commit -m "chore: File System Access API type declarations"
-```
+**Note:** If `npx tsc -b` errors on `showOpenFilePicker` or
+`FileSystemFileHandle`, add a `src/file-system.d.ts` with type
+declarations for the File System Access API (Chrome 86+). The
+project already uses `FileSystemFileHandle` in `store.ts` without
+errors, so this is likely unnecessary with current TS lib settings.
 
 ---
 
 ## Phase 4: Polish and cleanup
 
-### Task 12: CLAUDE.md for gridpad
+### Task 11: CLAUDE.md for gridpad
 
 **Files:**
 - Create: `CLAUDE.md`
@@ -1330,7 +1571,7 @@ git commit -m "docs: add CLAUDE.md with project architecture"
 
 ---
 
-### Task 13: Final verification
+### Task 12: Final verification
 
 Run: `npm test` → all pass
 Run: `npm run build` → succeeds

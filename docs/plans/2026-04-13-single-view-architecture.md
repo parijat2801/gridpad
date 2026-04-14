@@ -64,29 +64,24 @@ await writable.close();
 Debounce writes by 500ms to avoid thrashing disk on rapid edits
 (e.g., dragging a shape). This is the ONLY debounce in the system.
 
-### Watching for external changes
+### Reloading external changes
 
 Claude (or any editor) may modify the `.md` file while the app has
-it open. Poll the file every 2 seconds:
+it open. The user presses Cmd+Shift+R (or clicks the Reload button)
+to re-read the file:
 
 ```typescript
-setInterval(async () => {
-  const file = await handle.getFile();
-  if (file.lastModified > lastKnownModified) {
-    const text = await file.text();
-    store.loadFromText(text);
-    lastKnownModified = file.lastModified;
-  }
-}, 2000);
+const file = await handle.getFile();
+const text = await file.text();
+store.loadFromText(text);
 ```
 
 The diff pass preserves groups, labels, visibility, and selection
-when the file's content changes — same as today. A wholesale
-rewrite (Claude replaces the entire document) clears all metadata
-— by design.
+when the file's content changes. A wholesale rewrite (Claude
+replaces the entire document) clears all metadata — by design.
 
-Future upgrade: `FileSystemObserver` API (Chrome 129+) replaces
-polling with push notifications. Drop-in replacement.
+Future upgrade: automatic file watcher via polling or
+`FileSystemObserver` API (Chrome 129+) to replace manual reload.
 
 ### New file / no file
 
@@ -95,22 +90,12 @@ wireframe (the Dashboard example). The user can draw on it
 immediately. "Save" prompts `showSaveFilePicker` to create a new
 `.md` file.
 
-## What we delete from the current codebase
+## What was deleted (already done)
 
-- **CodeMirror and all its deps** — `@codemirror/state`,
-  `@codemirror/view`, `@codemirror/theme-one-dark`, `codemirror`
-  (basicSetup). ~200KB removed from bundle.
-- **The entire sync layer in App.tsx** — `canvasEditAnnotation`,
-  `applyingFromCanvas`, `textDebounceRef`, the 100ms
-  layers→CodeMirror subscriber, the 300ms CodeMirror→layers
-  listener. All gone.
-- **`CanvasEditor.tsx`** — replaced by Konva canvas.
-- **`ResizeHandles.tsx`** — replaced by Konva Transformer.
-- **`rot-js`** — replaced by Konva.
-
-This eliminates Race 1 (stale debounce), Race 2 (controlled prop
-jitter — already solved by API research), Race 5 (stale CodeMirror
-push), and the entire `cancelPendingTextSync` mechanism.
+CodeMirror, rot-js, CanvasEditor, ResizeHandles, and the entire
+sync layer (canvasEditAnnotation, debounce subscribers, etc.) were
+removed before implementation began. The codebase starts clean —
+no old renderer to migrate away from.
 
 ## What we keep
 
@@ -338,15 +323,42 @@ CHAR_HEIGHT = (metrics.actualBoundingBoxAscent +
                metrics.actualBoundingBoxDescent) * 1.15;
 ```
 
-## Migration strategy
+## Dynamic canvas sizing
 
-Feature flag `?renderer=konva` during development. Both renderers
-coexist. Old code deleted in Phase 4 after parity verified.
+The canvas is unbounded to the right and down — like a normal
+document. `GRID_WIDTH` (100) and `GRID_HEIGHT` (40) are *minimums*,
+not hard caps. The Stage grows as content grows.
 
-**Phase 1:** Konva renders character grid (visual parity).
-**Phase 2:** Select + move + resize (interaction parity).
-**Phase 3:** Toolbar + drawing tools + file open/save (new features).
-**Phase 4:** Remove CodeMirror, rot.js, old components.
+**Algorithm:** After every `layers` change, derive the effective
+grid dimensions:
+
+1. Composite the cell map.
+2. Find `maxRow` and `maxCol` from cell keys.
+3. `effectiveRows = max(GRID_HEIGHT, maxRow + 1 + CANVAS_PADDING)`
+4. `effectiveCols = max(GRID_WIDTH, maxCol + 1 + CANVAS_PADDING)`
+5. Compare with a high-water mark ref — only grow, never shrink.
+6. Stage = `effectiveCols × charWidth` by `effectiveRows × charHeight`.
+7. `sceneFunc` iterates `0..effectiveRows-1`, `0..effectiveCols-1`.
+
+`CANVAS_PADDING = 5` cells. Enough empty space at the edges to
+click and draw into without scrolling first.
+
+**Never shrinks** — deleting content near the edge doesn't yank the
+scrollbar. The high-water mark resets on `reset()` or file open
+(fresh computation from the new content).
+
+**Scrolling:** `.canvas-area` uses `overflow: auto`. Scrollbars
+appear when the Stage exceeds the viewport. Pan/zoom remains a v2
+non-goal.
+
+## Implementation phases
+
+Old renderer is already gone — no feature flag or coexistence needed.
+
+**Phase 1:** Konva renders character grid + select/move/resize.
+**Phase 2:** Toolbar + drawing tools (rect, line, text, eraser).
+**Phase 3:** File open/save/autosave + file watcher.
+**Phase 4:** Polish and cleanup (CLAUDE.md, loose ends).
 
 ## Future: Obsidian plugin
 
@@ -371,7 +383,8 @@ Konva canvas, scanner, layers, tools — all reused as-is.
 
 ## Non-goals
 
-- Pan/zoom (v2)
+- Pan/zoom — canvas scrolls via CSS `overflow: auto` (v2 for
+  inertial pan/pinch-zoom)
 - Style picker for shapes (v2)
 - Freehand drawing
 - Multi-select on canvas
