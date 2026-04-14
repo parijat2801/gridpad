@@ -12,6 +12,8 @@ import {
   layerToText,
   moveLayerCascading,
   regenerateCells,
+  compositeLayersWithOwnership,
+  recomputeBbox,
   toggleVisible as toggleVisiblePure,
   type Layer,
 } from "./layers";
@@ -51,6 +53,8 @@ export interface EditorState {
   resizeLayerLive: (id: string, newBbox: Bbox) => void;
   resizeLayerCommit: (id: string, newBbox: Bbox) => void;
   setViewport: (v: Partial<Viewport>) => void;
+  addLayer: (layer: Omit<Layer, "id" | "z" | "parentId">) => void;
+  eraseCells: (cellKeys: string[]) => void;
   setActiveTool: (tool: ToolId) => void;
   setFileHandle: (h: FileSystemFileHandle | null) => void;
   // Layer panel actions
@@ -199,6 +203,67 @@ export const useEditorStore = create<EditorState>()(
 
     setViewport: (v: Partial<Viewport>) => {
       set({ viewport: { ...get().viewport, ...v } });
+    },
+
+    addLayer: (layer: Omit<Layer, "id" | "z" | "parentId">) => {
+      const layers = get().layers;
+      const rootSiblings = layers.filter((l) => (l.parentId ?? null) === null);
+      const maxZ = rootSiblings.reduce((m, l) => Math.max(m, l.z), 0);
+      const newLayer: Layer = {
+        ...layer,
+        id: randomId(),
+        z: maxZ + 1,
+        parentId: null,
+      };
+      set({ layers: [...layers, newLayer] });
+    },
+
+    eraseCells: (cellKeys: string[]) => {
+      const layers = get().layers;
+      const ownership = compositeLayersWithOwnership(layers);
+
+      // Find which layers are affected
+      const affectedCells = new Map<string, string[]>();
+      for (const ck of cellKeys) {
+        const owner = ownership.get(ck);
+        if (!owner) continue;
+        const arr = affectedCells.get(owner.layerId) ?? [];
+        arr.push(ck);
+        affectedCells.set(owner.layerId, arr);
+      }
+
+      if (affectedCells.size === 0) return;
+
+      const next = layers.map((l) => {
+        const toErase = affectedCells.get(l.id);
+        if (!toErase) return l;
+
+        const newCells = new Map(l.cells);
+        for (const ck of toErase) {
+          newCells.delete(ck);
+        }
+
+        const newBbox = recomputeBbox(newCells);
+
+        let newContent = l.content;
+        if (l.type === "text") {
+          const entries = [...newCells.entries()].sort((a, b) => {
+            const [, ca] = a[0].split(",").map(Number);
+            const [, cb] = b[0].split(",").map(Number);
+            return ca - cb;
+          });
+          newContent = entries.map(([, ch]) => ch).join("");
+        }
+
+        return {
+          ...l,
+          cells: newCells,
+          bbox: newBbox,
+          ...(l.type === "text" ? { content: newContent } : {}),
+        };
+      }).filter((l) => l.cells.size > 0);
+
+      set({ layers: next });
     },
 
     setActiveTool: (tool: ToolId) => {

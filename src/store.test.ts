@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useEditorStore } from "./store";
 import type { Layer } from "./layers";
+import { regenerateCells, LIGHT_RECT_STYLE, buildTextCells } from "./layers";
 
 describe("editor store", () => {
   beforeEach(() => {
@@ -410,5 +411,151 @@ describe("autosave guards", () => {
     );
     const text2 = useEditorStore.getState().toText();
     expect(text2).toBe(text1);
+  });
+});
+
+describe("addLayer", () => {
+  beforeEach(() => useEditorStore.getState().reset());
+
+  it("appends a new layer with generated id and z", () => {
+    const cells = new Map([["0,0", "┌"], ["0,1", "─"], ["0,2", "┐"],
+      ["1,0", "│"], ["1,2", "│"], ["2,0", "└"], ["2,1", "─"], ["2,2", "┘"]]);
+    useEditorStore.getState().addLayer({
+      type: "rect",
+      bbox: { row: 0, col: 0, w: 3, h: 3 },
+      cells,
+      visible: true,
+      style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" },
+    });
+    const { layers } = useEditorStore.getState();
+    expect(layers).toHaveLength(1);
+    expect(layers[0].id).toBeTruthy();
+    expect(layers[0].z).toBe(1);
+    expect(layers[0].parentId).toBeNull();
+    expect(layers[0].type).toBe("rect");
+    expect(layers[0].cells).toBe(cells);
+  });
+
+  it("z is computed among root siblings", () => {
+    useEditorStore.getState().addLayer({
+      type: "rect", bbox: { row: 0, col: 0, w: 3, h: 3 },
+      cells: new Map(), visible: true,
+    });
+    useEditorStore.getState().addLayer({
+      type: "text", bbox: { row: 5, col: 5, w: 3, h: 1 },
+      cells: new Map(), visible: true, content: "Hi",
+    });
+    const { layers } = useEditorStore.getState();
+    expect(layers[0].z).toBe(1);
+    expect(layers[1].z).toBe(2);
+  });
+
+  it("zundo captures addLayer for undo", () => {
+    useEditorStore.temporal.getState().clear();
+    useEditorStore.getState().addLayer({
+      type: "rect", bbox: { row: 0, col: 0, w: 3, h: 3 },
+      cells: new Map(), visible: true,
+    });
+    expect(useEditorStore.temporal.getState().pastStates.length).toBe(1);
+    useEditorStore.temporal.getState().undo();
+    expect(useEditorStore.getState().layers).toHaveLength(0);
+  });
+});
+
+describe("eraseCells", () => {
+  beforeEach(() => useEditorStore.getState().reset());
+
+  it("erases a cell from the topmost owning layer", () => {
+    const cells = regenerateCells({ row: 0, col: 0, w: 3, h: 3 }, LIGHT_RECT_STYLE);
+    useEditorStore.getState().addLayer({
+      type: "rect", bbox: { row: 0, col: 0, w: 3, h: 3 },
+      cells, visible: true, style: LIGHT_RECT_STYLE,
+    });
+    const id = useEditorStore.getState().layers[0].id;
+    useEditorStore.getState().eraseCells(["0,0"]);
+    const layer = useEditorStore.getState().layers.find((l: Layer) => l.id === id)!;
+    expect(layer.cells.has("0,0")).toBe(false);
+    expect(layer.cells.has("0,1")).toBe(true);
+  });
+
+  it("removes layer with zero cells after erase", () => {
+    useEditorStore.getState().addLayer({
+      type: "text", bbox: { row: 0, col: 0, w: 1, h: 1 },
+      cells: new Map([["0,0", "A"]]), visible: true, content: "A",
+    });
+    expect(useEditorStore.getState().layers).toHaveLength(1);
+    useEditorStore.getState().eraseCells(["0,0"]);
+    expect(useEditorStore.getState().layers).toHaveLength(0);
+  });
+
+  it("recomputes bbox after partial erase", () => {
+    const { cells, content, bbox } = buildTextCells(0, 0, "ABCDE");
+    useEditorStore.getState().addLayer({
+      type: "text", bbox, cells, visible: true, content,
+    });
+    useEditorStore.getState().eraseCells(["0,0", "0,4"]);
+    const layer = useEditorStore.getState().layers[0];
+    expect(layer.bbox).toEqual({ row: 0, col: 1, w: 3, h: 1 });
+  });
+
+  it("recomputes text content after erase", () => {
+    const { cells, content, bbox } = buildTextCells(0, 0, "ABCDE");
+    useEditorStore.getState().addLayer({
+      type: "text", bbox, cells, visible: true, content,
+    });
+    useEditorStore.getState().eraseCells(["0,0"]);
+    const layer = useEditorStore.getState().layers[0];
+    expect(layer.content).toBe("BCDE");
+  });
+
+  it("does not mutate original layer object (clone before mutating)", () => {
+    const origCells = new Map([["0,0", "A"], ["0,1", "B"]]);
+    useEditorStore.getState().addLayer({
+      type: "text", bbox: { row: 0, col: 0, w: 2, h: 1 },
+      cells: origCells, visible: true, content: "AB",
+    });
+    const layerBefore = useEditorStore.getState().layers[0];
+    const cellsBefore = layerBefore.cells;
+    useEditorStore.getState().eraseCells(["0,0"]);
+    expect(cellsBefore.has("0,0")).toBe(true);
+    expect(cellsBefore.size).toBe(2);
+  });
+
+  it("zundo captures eraseCells for undo", () => {
+    useEditorStore.getState().addLayer({
+      type: "text", bbox: { row: 0, col: 0, w: 2, h: 1 },
+      cells: new Map([["0,0", "A"], ["0,1", "B"]]), visible: true, content: "AB",
+    });
+    useEditorStore.temporal.getState().clear();
+    useEditorStore.getState().eraseCells(["0,0"]);
+    expect(useEditorStore.temporal.getState().pastStates.length).toBe(1);
+    useEditorStore.temporal.getState().undo();
+    const layer = useEditorStore.getState().layers[0];
+    expect(layer.cells.has("0,0")).toBe(true);
+    expect(layer.content).toBe("AB");
+  });
+
+  it("erasing cells not owned by any layer is a no-op", () => {
+    useEditorStore.getState().addLayer({
+      type: "text", bbox: { row: 0, col: 0, w: 1, h: 1 },
+      cells: new Map([["0,0", "A"]]), visible: true, content: "A",
+    });
+    const before = useEditorStore.getState().layers;
+    useEditorStore.getState().eraseCells(["5,5"]);
+    expect(useEditorStore.getState().layers).toBe(before);
+  });
+
+  it("erasing top-layer cell reveals underlying layer cell", () => {
+    useEditorStore.getState().addLayer({
+      type: "text", bbox: { row: 0, col: 0, w: 1, h: 1 },
+      cells: new Map([["0,0", "A"]]), visible: true, content: "A",
+    });
+    useEditorStore.getState().addLayer({
+      type: "text", bbox: { row: 0, col: 0, w: 1, h: 1 },
+      cells: new Map([["0,0", "B"]]), visible: true, content: "B",
+    });
+    useEditorStore.getState().eraseCells(["0,0"]);
+    expect(useEditorStore.getState().layers).toHaveLength(1);
+    expect(useEditorStore.getState().layers[0].cells.get("0,0")).toBe("A");
   });
 });
