@@ -386,38 +386,66 @@ export default function Demo() {
 
   function onMouseUp() {
     const g = gestureRef.current;
-    if (g) {
-      // Persist the mutation: stitch regions back into docText
-      const parts: string[] = [];
-      for (const lr of laidRef.current) {
-        if (lr.region.type === "wireframe" && lr.region.layers) {
-          // Rebuild wireframe text from mutated layers
-          const composite = compositeLayers(lr.region.layers);
-          const sparse = buildSparseRows(composite);
-          const rows = lr.region.endRow - lr.region.startRow + 1;
-          const textLines: string[] = [];
-          for (let r = 0; r < rows; r++) {
-            const sr = sparse.find(s => s.row === r);
-            if (sr) {
-              const prefix = " ".repeat(sr.startCol);
-              textLines.push((prefix + sr.text).trimEnd());
-            } else {
-              textLines.push("");
-            }
-          }
-          // Trim trailing empty lines
-          while (textLines.length > 0 && textLines[textLines.length - 1] === "") textLines.pop();
-          parts.push(textLines.join("\n"));
-        } else {
-          parts.push(lr.region.text);
+    if (!g) return;
+
+    // Persist the drag/resize into the wireframe region's text.
+    // Instead of reconstructing from composite (which loses junction chars),
+    // edit the original text as a character grid: erase old, write new.
+    const lr = laidRef.current[g.regionIdx];
+    if (lr?.region.type === "wireframe") {
+      const textLines = lr.region.text.split("\n");
+      // Pad lines to a grid
+      const maxCols = Math.max(...textLines.map(l => [...l].length), 0);
+      const grid: string[][] = textLines.map(l => {
+        const chars = [...l];
+        while (chars.length < maxCols) chars.push(" ");
+        return chars;
+      });
+      // Ensure enough rows
+      const rows = lr.region.endRow - lr.region.startRow + 1;
+      while (grid.length < rows) grid.push(Array(maxCols).fill(" "));
+
+      // Erase old position (write spaces where the layer's cells WERE)
+      const dRow = g.mode === "drag"
+        ? (lr.region.layers!.find(l => l.id === g.layerId)!.bbox.row - g.startBbox.row)
+        : (lr.region.layers!.find(l => l.id === g.layerId)!.bbox.row - g.startBbox.row);
+      const dCol = g.mode === "drag"
+        ? (lr.region.layers!.find(l => l.id === g.layerId)!.bbox.col - g.startBbox.col)
+        : 0;
+
+      // Erase old cells
+      for (const [key] of lr.region.layers!.find(l => l.id === g.layerId)!.cells) {
+        const ci = key.indexOf(",");
+        const r = Number(key.slice(0, ci)) - dRow; // original position
+        const c = Number(key.slice(ci + 1)) - dCol;
+        if (r >= 0 && r < grid.length && c >= 0 && c < (grid[r]?.length ?? 0)) {
+          grid[r][c] = " ";
         }
       }
-      docTextRef.current = parts.join("\n\n");
-      gestureRef.current = null;
-      // Re-layout with updated text so layers match
-      doLayout();
-      paint();
+
+      // Write new cells
+      const layer = lr.region.layers!.find(l => l.id === g.layerId)!;
+      for (const [key, ch] of layer.cells) {
+        const ci = key.indexOf(",");
+        const r = Number(key.slice(0, ci));
+        const c = Number(key.slice(ci + 1));
+        // Expand grid if needed
+        while (grid.length <= r) grid.push(Array(maxCols).fill(" "));
+        while ((grid[r]?.length ?? 0) <= c) grid[r].push(" ");
+        grid[r][c] = ch;
+      }
+
+      // Convert back to text
+      const newText = grid.map(row => row.join("").trimEnd()).join("\n");
+      lr.region.text = newText;
+
+      // Stitch all regions back
+      docTextRef.current = laidRef.current.map(l => l.region.text).join("\n\n");
     }
+
+    gestureRef.current = null;
+    doLayout();
+    paint();
   }
 
   function onWheel(e: React.WheelEvent) {
