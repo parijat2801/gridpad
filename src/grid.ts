@@ -12,6 +12,11 @@ let _charWidth = 0;
 let _charHeight = 0;
 let _measured = false;
 
+export const CANVAS_PADDING = 5; // cells of empty space beyond content
+
+const FALLBACK_CHAR_WIDTH = 9.6;  // typical 16px Menlo
+const FALLBACK_CHAR_HEIGHT = 18.4;
+
 export async function measureCellSize(): Promise<{
   charWidth: number;
   charHeight: number;
@@ -27,6 +32,9 @@ export async function measureCellSize(): Promise<{
     metrics.actualBoundingBoxAscent !== undefined
       ? (metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent) * 1.15
       : FONT_SIZE * 1.25;
+  // Fix 9: fallback for failed font load
+  if (_charWidth < 4 || _charWidth > 40) _charWidth = FALLBACK_CHAR_WIDTH;
+  if (_charHeight < 4 || _charHeight > 40) _charHeight = FALLBACK_CHAR_HEIGHT;
   _measured = true;
   return { charWidth: _charWidth, charHeight: _charHeight };
 }
@@ -52,5 +60,14 @@ export function cellToPixel(row: number, col: number): { x: number; y: number } 
   return {
     x: col * _charWidth,
     y: row * _charHeight,
+  };
+}
+
+export function snapToGrid(
+  px: number, py: number,
+): { x: number; y: number } {
+  return {
+    x: Math.round(px / _charWidth) * _charWidth,
+    y: Math.round(py / _charHeight) * _charHeight,
   };
 }

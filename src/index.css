@@ -40,6 +40,6 @@ body {
 .canvas-area {
   flex: 1 1 auto;
   position: relative;
-  overflow: hidden;
+  overflow: auto;
   background: #1a1a1a;
 }

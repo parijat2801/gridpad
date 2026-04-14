@@ -6,7 +6,7 @@ import type { LayerType } from "./layers";
 
 export const BASE_LAYER_ID = "base";
 
-type Bbox = { row: number; col: number; w: number; h: number };
+import type { Bbox } from "./types";
 
 export function fnv32hex(s: string): string {
   let h = 0x811c9dc5;

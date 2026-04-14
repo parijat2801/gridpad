@@ -5,7 +5,7 @@ import type { Layer } from "./layers";
 
 // ── Factories ───────────────────────────────────────────────
 
-type Bbox = { row: number; col: number; w: number; h: number };
+import type { Bbox } from "./types";
 
 function makeRect(id: string, bbox: Bbox, extras: Partial<Layer> = {}): Layer {
   return {

@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "./store";
 import LayerPanel from "./LayerPanel";
+import { KonvaCanvas } from "./KonvaCanvas";
+import { Toolbar } from "./Toolbar";
 
 const DEFAULT_ASCII = `┌─────────────────────────────────────────────────┐
 │                   Dashboard                     │
@@ -21,8 +23,6 @@ export default function App() {
   }, []);
 
   // Autosave: write to file on every layer change (debounced).
-  // Fix 1: update lastModifiedRef after write to prevent watcher loop.
-  // Fix 2: skip write if toText() hasn't actually changed.
   const lastModifiedRef = useRef<number>(0);
   const lastWrittenTextRef = useRef<string>("");
 
@@ -35,15 +35,12 @@ export default function App() {
         const handle = useEditorStore.getState().fileHandle;
         if (!handle) return;
         const newText = useEditorStore.getState().toText();
-        // Skip write if text is unchanged (e.g., selection change,
-        // moveLayerLive no-op on drag start)
         if (newText === lastWrittenTextRef.current) return;
         try {
           const writable = await handle.createWritable();
           await writable.write(newText);
           await writable.close();
           lastWrittenTextRef.current = newText;
-          // Update lastModified so the file watcher ignores this write
           const file = await handle.getFile();
           lastModifiedRef.current = file.lastModified;
         } catch (e) {
@@ -57,6 +54,94 @@ export default function App() {
     };
   }, []);
 
+  // File handlers
+  const handleOpen = async () => {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
+      });
+      const file = await handle.getFile();
+      const text = await file.text();
+      lastModifiedRef.current = file.lastModified;
+      lastWrittenTextRef.current = text;
+      useEditorStore.getState().reset();
+      useEditorStore.getState().setFileHandle(handle);
+      useEditorStore.getState().loadFromText(text);
+    } catch {
+      // User cancelled
+    }
+  };
+
+  const handleSave = async () => {
+    let handle: FileSystemFileHandle | null = useEditorStore.getState().fileHandle;
+    if (!handle) {
+      try {
+        handle = await window.showSaveFilePicker({
+          suggestedName: "wireframe.md",
+          types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
+        });
+        useEditorStore.getState().setFileHandle(handle);
+      } catch { return; }
+    }
+    if (!handle) return;
+    const text = useEditorStore.getState().toText();
+    const writable = await handle.createWritable();
+    await writable.write(text);
+    await writable.close();
+    lastWrittenTextRef.current = text;
+    const file = await handle.getFile();
+    lastModifiedRef.current = file.lastModified;
+  };
+
+  const handleReload = async () => {
+    const handle = useEditorStore.getState().fileHandle;
+    if (!handle) return;
+    try {
+      const file = await handle.getFile();
+      const text = await file.text();
+      lastModifiedRef.current = file.lastModified;
+      lastWrittenTextRef.current = text;
+      useEditorStore.getState().loadFromText(text);
+    } catch (e) {
+      console.error("Reload failed:", e);
+    }
+  };
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const isMac = navigator.platform.includes("Mac");
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLTextAreaElement ||
+          e.target instanceof HTMLInputElement) return;
+      const store = useEditorStore.getState();
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (mod && e.key === "o") { e.preventDefault(); handleOpen(); return; }
+      if (mod && e.key === "s") { e.preventDefault(); handleSave(); return; }
+      if (mod && e.shiftKey && e.key === "r") { e.preventDefault(); handleReload(); return; }
+      // Tool shortcuts suppressed in text typing mode
+      if (store.activeTool === "text") {
+        if (e.key === "Escape") store.setActiveTool("select");
+        return;
+      }
+      switch (e.key.toLowerCase()) {
+        case "v": store.setActiveTool("select"); break;
+        case "r": store.setActiveTool("rect"); break;
+        case "l": store.setActiveTool("line"); break;
+        case "t": store.setActiveTool("text"); break;
+        case "e": store.setActiveTool("eraser"); break;
+        case "escape": store.setActiveTool("select"); break;
+        case "delete": case "backspace":
+          if (store.activeTool === "select" && store.selectedId) {
+            e.preventDefault();
+            store.deleteLayer(store.selectedId);
+          }
+          break;
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   return (
     <div className="app">
       <div className="panel-pane">
@@ -64,14 +149,10 @@ export default function App() {
       </div>
       <div className="main-area">
         <div className="toolbar-pane">
-          {/* Toolbar will go here */}
-          <span style={{ color: "#666", padding: 8 }}>Gridpad — tools coming soon</span>
+          <Toolbar onOpen={handleOpen} onSave={handleSave} onReload={handleReload} />
         </div>
         <div className="canvas-area">
-          {/* KonvaCanvas will go here */}
-          <pre style={{ color: "#e0e0e0", padding: 16, fontFamily: "monospace", fontSize: 14 }}>
-            {useEditorStore((s) => s.toText()) || DEFAULT_ASCII}
-          </pre>
+          <KonvaCanvas />
         </div>
       </div>
     </div>

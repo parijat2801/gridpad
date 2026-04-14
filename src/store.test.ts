@@ -367,3 +367,48 @@ describe("editor store", () => {
     });
   });
 });
+
+describe("tool state", () => {
+  beforeEach(() => useEditorStore.getState().reset());
+
+  it("defaults to select tool", () => {
+    expect(useEditorStore.getState().activeTool).toBe("select");
+  });
+
+  it("setActiveTool changes the active tool", () => {
+    useEditorStore.getState().setActiveTool("rect");
+    expect(useEditorStore.getState().activeTool).toBe("rect");
+  });
+
+  it("reset restores activeTool to select", () => {
+    useEditorStore.getState().setActiveTool("eraser");
+    useEditorStore.getState().reset();
+    expect(useEditorStore.getState().activeTool).toBe("select");
+  });
+
+  it("setFileHandle stores a handle", () => {
+    const fakeHandle = {} as FileSystemFileHandle;
+    useEditorStore.getState().setFileHandle(fakeHandle);
+    expect(useEditorStore.getState().fileHandle).toBe(fakeHandle);
+  });
+
+  it("reset clears fileHandle to null", () => {
+    useEditorStore.getState().setFileHandle({} as FileSystemFileHandle);
+    useEditorStore.getState().reset();
+    expect(useEditorStore.getState().fileHandle).toBeNull();
+  });
+});
+
+describe("autosave guards", () => {
+  beforeEach(() => useEditorStore.getState().reset());
+
+  it("toText is stable across selection changes", () => {
+    useEditorStore.getState().loadFromText("┌─┐\n│ │\n└─┘");
+    const text1 = useEditorStore.getState().toText();
+    useEditorStore.getState().selectLayer(
+      useEditorStore.getState().layers[1]?.id ?? null
+    );
+    const text2 = useEditorStore.getState().toText();
+    expect(text2).toBe(text1);
+  });
+});

@@ -54,7 +54,7 @@ function getGridCell(grid: string[][], row: number, col: number): string {
   return r[col];
 }
 
-type Bbox = { row: number; col: number; w: number; h: number };
+import type { Bbox } from "./types";
 
 /** Regenerate the perimeter cells of a rectangle from a style descriptor.
  * Pure function — no grid access. Interior cells are left unclaimed so text

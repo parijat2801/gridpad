@@ -4,7 +4,7 @@
 
 import type { Layer } from "./layers";
 
-type Bbox = { row: number; col: number; w: number; h: number };
+import type { Bbox } from "./types";
 
 /** Compute the union bbox of an array of bboxes. */
 function unionBboxes(bboxes: Bbox[]): Bbox {

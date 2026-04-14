@@ -32,7 +32,8 @@ export interface Viewport {
   zoom: number;
 }
 
-export type Bbox = { row: number; col: number; w: number; h: number };
+export type { Bbox } from "./types";
+import type { Bbox } from "./types";
 
 export interface EditorState {
   layers: Layer[];
@@ -260,6 +261,7 @@ export const useEditorStore = create<EditorState>()(
         activeTool: "select" as ToolId,
         fileHandle: null,
       });
+      t.clear();
     },
   })),
 );
