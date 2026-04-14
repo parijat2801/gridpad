@@ -4,13 +4,13 @@
 
 Gridpad is a visual ASCII wireframe editor. Open a .md file, see
 shapes rendered on a Konva canvas, draw with MS-Paint-style tools.
-Text is the source of truth — tools stamp characters, the scanner
-derives layers.
+Layers are the source of truth — tools create layers directly,
+the scanner only runs on file import.
 
 ## Architecture
 
-Text (the document) <-> Scanner -> Layers (derived) -> Konva renders
-Drawing tools -> stamp chars into text -> loadFromText -> scanner
+Drawing tools -> addLayer/eraseCells -> Layers (source of truth) -> Konva renders
+File import -> Scanner -> diff -> Layers
 Move/resize -> mutate layers -> toText -> autosave to file
 
 ## Stack
@@ -26,7 +26,7 @@ Zustand + Zundo + Vitest
 - src/store.ts — zustand store (no CodeMirror)
 - src/KonvaCanvas.tsx — Konva Stage with grid + interactive shapes
 - src/Toolbar.tsx — tool buttons
-- src/tools/ — stamp helpers (stampRect, stampLine, etc.)
+- src/useToolHandlers.tsx — drawing tool event handlers
 - src/grid.ts — cell measurement constants
 - src/LayerPanel.tsx — layer tree panel
 
