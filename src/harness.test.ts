@@ -713,6 +713,110 @@ describe("demo simulation", () => {
   });
 });
 
+// ── 9. Performance targets ───────────────────────────────
+
+describe("performance targets", () => {
+  const planDir = "/Users/parijat/dev/colex-platform/docs/plans";
+  const hasColex = fs.existsSync(planDir);
+
+  it.skipIf(!hasColex)("file open pipeline < 500ms for 300-line plan file", () => {
+    // Use the runtime-ux plan file (367 lines, 4 rects)
+    const filePath = path.join(planDir, "gardener-plans-pending/g-plan-garden-runtime-ux-v1-pending.md");
+    if (!fs.existsSync(filePath)) return;
+    const text = fs.readFileSync(filePath, "utf8");
+
+    const start = performance.now();
+    const scanResult = scan(text);
+    const regions = detectRegions(scanResult);
+    // Simulate layout: composite each wireframe region
+    for (const r of regions) {
+      if (r.type === "wireframe" && r.layers) {
+        compositeLayers(r.layers);
+      }
+    }
+    const elapsed = performance.now() - start;
+
+    console.log(`  File open pipeline: ${elapsed.toFixed(1)}ms (target: <500ms)`);
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("region detection < 50ms for dashboard fixture", () => {
+    const start = performance.now();
+    for (let i = 0; i < 10; i++) {
+      detectRegions(scan(DASHBOARD));
+    }
+    const elapsed = (performance.now() - start) / 10;
+
+    console.log(`  Region detection (avg): ${elapsed.toFixed(1)}ms (target: <50ms)`);
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  it("pretext layout < 5ms per prose region", async () => {
+    const { prepareWithSegments, layoutWithLines } = await import("@chenglou/pretext");
+    const font = '16px Menlo, Monaco, "Courier New", monospace';
+    // Use a realistic prose block
+    const proseText = "This wireframe shows the main layout for task management.\n".repeat(20);
+
+    const prepared = prepareWithSegments(proseText, font);
+    const start = performance.now();
+    for (let i = 0; i < 100; i++) {
+      layoutWithLines(prepared, 800, 19);
+    }
+    const elapsed = (performance.now() - start) / 100;
+
+    console.log(`  Pretext layout (avg): ${elapsed.toFixed(2)}ms (target: <5ms)`);
+    expect(elapsed).toBeLessThan(5);
+  });
+
+  it("drag recomposite < 16ms (60fps budget)", () => {
+    const regions = detectRegions(scan(DASHBOARD));
+    const wf = regions.find(r => r.type === "wireframe")!;
+    const layers = wf.layers!;
+
+    // Simulate 60 frames of drag
+    const start = performance.now();
+    for (let frame = 0; frame < 60; frame++) {
+      // Move first rect by 1 cell each frame
+      const rect = layers.find(l => l.type === "rect")!;
+      const newCells = new Map<string, string>();
+      for (const [key, val] of rect.cells) {
+        const ci = key.indexOf(",");
+        const r = Number(key.slice(0, ci)) + 1;
+        const c = key.slice(ci + 1);
+        newCells.set(`${r},${c}`, val);
+      }
+      rect.cells = newCells;
+      rect.bbox.row += 1;
+
+      // Recomposite + sparse rows (what paint() needs)
+      const composite = compositeLayers(layers);
+      buildSparseRows(composite);
+    }
+    const elapsed = performance.now() - start;
+    const perFrame = elapsed / 60;
+
+    console.log(`  Drag recomposite (avg per frame): ${perFrame.toFixed(2)}ms (target: <16ms)`);
+    expect(perFrame).toBeLessThan(16);
+  });
+
+  it.skipIf(!hasColex)("largest wireframe file: all regions < 500 layers", () => {
+    // workspace-redesign.md has 20 rects
+    const filePath = path.join(planDir, "workspace-redesign.md");
+    if (!fs.existsSync(filePath)) return;
+    const text = fs.readFileSync(filePath, "utf8");
+    const regions = detectRegions(scan(text));
+
+    let maxLayers = 0;
+    for (const r of regions) {
+      if (r.layers) {
+        maxLayers = Math.max(maxLayers, r.layers.length);
+      }
+    }
+    console.log(`  Max layers per region: ${maxLayers} (target: <500)`);
+    expect(maxLayers).toBeLessThan(500);
+  });
+});
+
 // ── Helpers ──────────────────────────────────────────────
 
 function findMdFiles(dir: string): string[] {
