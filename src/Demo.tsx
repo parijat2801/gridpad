@@ -20,7 +20,7 @@
 import { useEffect, useRef, useState } from "react";
 import { scan } from "./scanner";
 import { detectRegions } from "./regions";
-import { compositeLayers } from "./layers";
+import { compositeLayers, moveLayer } from "./layers";
 import type { Layer } from "./layers";
 import { buildSparseRows, type SparseRow } from "./KonvaCanvas";
 import {
@@ -30,6 +30,7 @@ import {
 import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pretext";
 import { reflowLayout, type PositionedLine, type Obstacle } from "./reflowLayout";
 import { DEMO_DEFAULT_TEXT } from "./demoDefaults";
+import { handleProseKeyPress } from "./spatialKeyHandler";
 
 export const SPATIAL_FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 export const SPATIAL_LH = Math.ceil(FONT_SIZE * 1.15);
@@ -51,11 +52,25 @@ export interface Wireframe {
   originalText: string;
 }
 
+// ── Prose cursor ─────────────────────────────────────────
+interface ProseCursorState {
+  /** Source line index in proseTextRef.split("\n") */
+  row: number;
+  /** Character offset within that source line */
+  col: number;
+}
+
 // ── Drag state ───────────────────────────────────────────
 interface DragState {
   wireframeId: string;
+  /** If set, we are dragging an individual layer (not the whole wireframe) */
+  layerId?: string;
+  /** Layer's bbox at drag start, in wireframe-local grid coords */
+  startBbox?: { row: number; col: number; w: number; h: number };
   startY: number;   // pixel docY at drag start
   startWfY: number; // wireframe.y at drag start
+  /** pixel mouseX at drag start (for layer column delta) */
+  startMX?: number;
 }
 
 export default function Demo() {
@@ -68,12 +83,20 @@ export default function Demo() {
   const wireframesRef = useRef<Wireframe[]>([]);
   const posLinesRef = useRef<PositionedLine[]>([]);
 
+  // Prose cursor + blink
+  const proseCursorRef = useRef<ProseCursorState | null>(null);
+  const blinkVisibleRef = useRef(true);
+  const blinkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // Scroll + UI state
   const scrollYRef = useRef(0);
   const sizeRef = useRef({ w: window.innerWidth, h: window.innerHeight });
   const cwRef = useRef(0);
   const chRef = useRef(0);
+  /** Selected wireframe id (for whole-wf selection highlight + block drag) */
   const selectedIdRef = useRef<string | null>(null);
+  /** Selected individual layer id within a wireframe */
+  const selectedLayerIdRef = useRef<string | null>(null);
   const dragRef = useRef<DragState | null>(null);
 
   const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
@@ -81,6 +104,124 @@ export default function Demo() {
 
   const [, forceRender] = useState(0);
   const kick = () => forceRender(t => t + 1);
+
+  // ── Blink cursor ─────────────────────────────────────────
+  function startBlink() {
+    stopBlink();
+    blinkVisibleRef.current = true;
+    blinkTimerRef.current = setInterval(() => {
+      blinkVisibleRef.current = !blinkVisibleRef.current;
+      paint();
+    }, 530);
+  }
+
+  function stopBlink() {
+    if (blinkTimerRef.current) {
+      clearInterval(blinkTimerRef.current);
+      blinkTimerRef.current = null;
+    }
+  }
+
+  function resetBlink() {
+    blinkVisibleRef.current = true;
+    startBlink();
+  }
+
+  // ── Compute prose cursor pixel position ──────────────────
+  /**
+   * Map {row, col} source cursor to document-space pixel {x, y}.
+   * Walk visual lines from posLinesRef, accumulating consumed source chars.
+   */
+  function cursorDocPos(cursor: ProseCursorState): { x: number; y: number } | null {
+    const text = proseTextRef.current;
+    const sourceLines = text.split("\n");
+    const cw = cwRef.current;
+
+    // Linear offset of cursor in source text
+    let targetOffset = 0;
+    for (let r = 0; r < cursor.row; r++) {
+      targetOffset += (sourceLines[r] ?? "").length + 1; // +1 for \n
+    }
+    targetOffset += cursor.col;
+
+    const posLines = posLinesRef.current;
+    let consumed = 0;
+    for (let i = 0; i < posLines.length; i++) {
+      const line = posLines[i];
+      const lineLen = line.text.length;
+      if (targetOffset <= consumed + lineLen) {
+        const colInLine = targetOffset - consumed;
+        return { x: line.x + colInLine * cw, y: line.y };
+      }
+      consumed += lineLen;
+      // If the source text has a \n here (source line break), skip it
+      if (text[consumed] === "\n") {
+        if (targetOffset === consumed) {
+          return { x: line.x + lineLen * cw, y: line.y };
+        }
+        consumed += 1;
+      }
+    }
+
+    // Past all visual lines — place at end of last line
+    const last = posLines[posLines.length - 1];
+    if (last) {
+      return { x: last.x + last.text.length * cw, y: last.y };
+    }
+    return { x: 0, y: 0 };
+  }
+
+  // ── Find prose cursor position from click ────────────────
+  function findProseCursorAt(px: number, docY: number): ProseCursorState | null {
+    const posLines = posLinesRef.current;
+    if (posLines.length === 0) return null;
+
+    const cw = cwRef.current;
+    const text = proseTextRef.current;
+
+    // Find the visual line closest to the click (by y midpoint)
+    let closestIdx = 0;
+    let closestDist = Infinity;
+    for (let i = 0; i < posLines.length; i++) {
+      const dist = Math.abs(docY - (posLines[i].y + SPATIAL_LH / 2));
+      if (dist < closestDist) {
+        closestDist = dist;
+        closestIdx = i;
+      }
+    }
+
+    const closestLine = posLines[closestIdx];
+
+    // Walk visual lines 0..closestIdx-1, accumulating consumed source chars
+    let consumed = 0;
+    for (let i = 0; i < closestIdx; i++) {
+      const line = posLines[i];
+      consumed += line.text.length;
+      if (text[consumed] === "\n") consumed += 1;
+    }
+
+    // Col within the visual line based on x click
+    const colInLine = Math.max(
+      0,
+      Math.min(closestLine.text.length, Math.round((px - closestLine.x) / cw)),
+    );
+    const offsetInSource = consumed + colInLine;
+
+    // Convert linear offset → { row, col } in source lines
+    const sourceLines = text.split("\n");
+    let remaining = offsetInSource;
+    for (let r = 0; r < sourceLines.length; r++) {
+      const lineLen = (sourceLines[r] ?? "").length;
+      if (remaining <= lineLen) {
+        return { row: r, col: remaining };
+      }
+      remaining -= lineLen + 1; // +1 for \n
+    }
+
+    // Past end — clamp to last line
+    const lastRow = sourceLines.length - 1;
+    return { row: lastRow, col: (sourceLines[lastRow] ?? "").length };
+  }
 
   // ── Document parsing ─────────────────────────────────────
   function loadDocument(text: string) {
@@ -230,10 +371,36 @@ export default function Demo() {
       }
 
       // Draw selection highlight
-      if (selectedIdRef.current !== null && wf.id === selectedIdRef.current) {
+      if (selectedLayerIdRef.current !== null) {
+        // Individual layer selected within this wireframe
+        const selLayer = wf.layers.find(l => l.id === selectedLayerIdRef.current);
+        if (selLayer) {
+          const { row, col, w: bw, h: bh } = selLayer.bbox;
+          ctx.strokeStyle = "#4a90e2";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(
+            wf.x + col * cw + 1,
+            top + row * ch + 1,
+            bw * cw - 2,
+            bh * ch - 2,
+          );
+        }
+      } else if (selectedIdRef.current !== null && wf.id === selectedIdRef.current) {
+        // Whole wireframe selected
         ctx.strokeStyle = "#4a90e2";
         ctx.lineWidth = 2;
         ctx.strokeRect(wf.x + 1, top + 1, wf.w - 2, wf.h - 2);
+      }
+    }
+
+    // Draw prose cursor
+    const pc = proseCursorRef.current;
+    if (pc && blinkVisibleRef.current) {
+      const pos = cursorDocPos(pc);
+      if (pos) {
+        const screenY = pos.y - scrollY;
+        ctx.fillStyle = FG_COLOR;
+        ctx.fillRect(pos.x, screenY, 2, SPATIAL_LH);
       }
     }
   }
@@ -286,6 +453,39 @@ export default function Demo() {
   useEffect(() => {
     const fn = async (e: KeyboardEvent) => {
       const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
+
+      // ── Prose cursor keyboard handling ──────────────────
+      const pc = proseCursorRef.current;
+      if (pc && !mod) {
+        const result = handleProseKeyPress(
+          e,
+          { regionIdx: 0, row: pc.row, col: pc.col },
+          proseTextRef.current,
+        );
+        if (result) {
+          e.preventDefault();
+          if (result.newText !== null) {
+            proseTextRef.current = result.newText;
+            preparedRef.current = prepareWithSegments(
+              proseTextRef.current,
+              SPATIAL_FONT,
+              { whiteSpace: "pre-wrap" },
+            );
+            doLayout();
+            scheduleAutosave();
+          }
+          if (result.cursor === null) {
+            proseCursorRef.current = null;
+            stopBlink();
+          } else {
+            proseCursorRef.current = { row: result.cursor.row, col: result.cursor.col };
+            if (result.resetBlink) resetBlink();
+          }
+          paint();
+          return;
+        }
+      }
+
       if (mod && e.key === "o") {
         e.preventDefault();
         try {
@@ -297,7 +497,10 @@ export default function Demo() {
           loadDocument(text);
           scrollYRef.current = 0;
           selectedIdRef.current = null;
+          selectedLayerIdRef.current = null;
           dragRef.current = null;
+          proseCursorRef.current = null;
+          stopBlink();
           kick();
         } catch {
           /* cancelled */
@@ -317,6 +520,11 @@ export default function Demo() {
     };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
+  }, []);
+
+  // Cleanup blink timer on unmount
+  useEffect(() => {
+    return () => stopBlink();
   }, []);
 
   // On every render: layout + paint
@@ -343,22 +551,70 @@ export default function Demo() {
   function onMouseDown(e: React.MouseEvent) {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    canvas.focus();
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const docY = e.clientY - rect.top + scrollYRef.current;
 
     const wf = hitTestWireframe(px, docY);
     if (wf) {
-      selectedIdRef.current = wf.id;
-      dragRef.current = {
-        wireframeId: wf.id,
-        startY: docY,
-        startWfY: wf.y,
-      };
+      const cw = cwRef.current;
+      const ch = chRef.current;
+      // Convert click to wireframe-local grid coords
+      const gridRow = Math.floor((docY - wf.y) / ch);
+      const gridCol = Math.floor(px / cw);
+
+      // Find the topmost layer (highest z) whose bbox contains this grid cell
+      const sortedLayers = [...wf.layers]
+        .filter(l => l.visible && l.type !== "group")
+        .sort((a, b) => b.z - a.z); // descending z — topmost first
+      const hitLayer = sortedLayers.find(l =>
+        gridRow >= l.bbox.row &&
+        gridRow < l.bbox.row + l.bbox.h &&
+        gridCol >= l.bbox.col &&
+        gridCol < l.bbox.col + l.bbox.w,
+      ) ?? null;
+
+      // Clear prose cursor when clicking into a wireframe
+      proseCursorRef.current = null;
+      stopBlink();
+
+      if (hitLayer) {
+        // Individual layer selected
+        selectedIdRef.current = null;
+        selectedLayerIdRef.current = hitLayer.id;
+        dragRef.current = {
+          wireframeId: wf.id,
+          layerId: hitLayer.id,
+          startBbox: { ...hitLayer.bbox },
+          startY: docY,
+          startWfY: wf.y,
+          startMX: px,
+        };
+      } else {
+        // Whole wireframe block drag
+        selectedIdRef.current = wf.id;
+        selectedLayerIdRef.current = null;
+        dragRef.current = {
+          wireframeId: wf.id,
+          startY: docY,
+          startWfY: wf.y,
+        };
+      }
       paint();
     } else {
       selectedIdRef.current = null;
+      selectedLayerIdRef.current = null;
       dragRef.current = null;
+      // Try to place prose cursor in prose area
+      const cursor = findProseCursorAt(px, docY);
+      if (cursor) {
+        proseCursorRef.current = cursor;
+        resetBlink();
+      } else {
+        proseCursorRef.current = null;
+        stopBlink();
+      }
       paint();
     }
   }
@@ -369,18 +625,49 @@ export default function Demo() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
     const docY = e.clientY - rect.top + scrollYRef.current;
 
-    const dy = docY - drag.startY;
     const wf = wireframesRef.current.find(w => w.id === drag.wireframeId);
     if (!wf) return;
 
-    const newY = Math.max(0, drag.startWfY + dy);
-    wf.y = newY;
+    if (drag.layerId && drag.startBbox && drag.startMX !== undefined) {
+      // Individual layer drag — no reflow, just recomposite within wireframe
+      const cw = cwRef.current;
+      const ch = chRef.current;
+      const deltaRow = Math.round((docY - drag.startY) / ch);
+      const deltaCol = Math.round((px - drag.startMX) / cw);
 
-    // Reflow text around updated wireframe position — this is the "wow" moment
-    doLayout();
-    paint();
+      const newRow = drag.startBbox.row + deltaRow;
+      const newCol = drag.startBbox.col + deltaCol;
+
+      // Find the layer and move it
+      const layerIdx = wf.layers.findIndex(l => l.id === drag.layerId);
+      if (layerIdx !== -1) {
+        const layer = wf.layers[layerIdx];
+        const actualDeltaRow = newRow - layer.bbox.row;
+        const actualDeltaCol = newCol - layer.bbox.col;
+        if (actualDeltaRow !== 0 || actualDeltaCol !== 0) {
+          const movedLayer = moveLayer(layer, actualDeltaRow, actualDeltaCol);
+          wf.layers = [
+            ...wf.layers.slice(0, layerIdx),
+            movedLayer,
+            ...wf.layers.slice(layerIdx + 1),
+          ];
+          // Recomposite wireframe (wireframe position unchanged — no reflow)
+          wf.sparse = buildSparseRows(compositeLayers(wf.layers));
+          // Keep selectedLayerIdRef in sync (id is unchanged)
+          paint();
+        }
+      }
+    } else {
+      // Whole wireframe block drag — reflow text around updated position
+      const dy = docY - drag.startY;
+      const newY = Math.max(0, drag.startWfY + dy);
+      wf.y = newY;
+      doLayout();
+      paint();
+    }
   }
 
   function onMouseUp() {
@@ -423,7 +710,7 @@ export default function Demo() {
         width: sizeRef.current.w,
         height: sizeRef.current.h,
         outline: "none",
-        cursor: isDragging ? "grabbing" : "default",
+        cursor: isDragging ? "grabbing" : "text",
       }}
       onWheel={onWheel}
       onMouseDown={onMouseDown}
