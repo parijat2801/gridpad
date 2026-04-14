@@ -87,6 +87,11 @@ export default function Demo() {
   const wireframesRef = useRef<Wireframe[]>([]);
   const posLinesRef = useRef<PositionedLine[]>([]);
 
+  // Region order for correct document reconstruction on save
+  const regionOrderRef = useRef<Array<{ type: "prose" | "wireframe"; wireframeId?: string }>>([]);
+  // Individual prose parts (one per prose region) for reconstruction
+  const prosePartsRef = useRef<string[]>([]);
+
   // Prose cursor + blink
   const proseCursorRef = useRef<ProseCursorState | null>(null);
   const blinkVisibleRef = useRef(true);
@@ -227,16 +232,36 @@ export default function Demo() {
     return { row: lastRow, col: (sourceLines[lastRow] ?? "").length };
   }
 
+  // ── Build full document text from region order ───────────
+  function buildDocText(): string {
+    const order = regionOrderRef.current;
+    const proseParts = prosePartsRef.current;
+    const wireframes = wireframesRef.current;
+    let proseIdx = 0;
+    const parts: string[] = [];
+    for (const entry of order) {
+      if (entry.type === "prose") {
+        parts.push(proseParts[proseIdx] ?? "");
+        proseIdx++;
+      } else {
+        const wf = wireframes.find(w => w.id === entry.wireframeId);
+        if (wf) parts.push(wf.originalText);
+      }
+    }
+    return parts.join("\n\n");
+  }
+
   // ── Document parsing ─────────────────────────────────────
   function loadDocument(text: string) {
     const scanResult = scan(text);
     const regions = detectRegions(scanResult);
 
-    // Concatenate all prose text
+    // Concatenate all prose text and build region order + prose parts
     const proseParts: string[] = [];
     regions.forEach(r => {
       if (r.type === "prose") proseParts.push(r.text);
     });
+    prosePartsRef.current = proseParts;
     proseTextRef.current = proseParts.join("\n\n");
 
     // Build prepared text (cached — re-created on content change)
@@ -258,6 +283,7 @@ export default function Demo() {
     // at the current canvas width.
     const cw = canvasRef.current?.width ?? sizeRef.current.w;
     const wireframes: Wireframe[] = [];
+    const regionOrder: Array<{ type: "prose" | "wireframe"; wireframeId?: string }> = [];
 
     // Do a quick sequential layout pass to figure out initial y positions
     let curY = 0;
@@ -275,8 +301,9 @@ export default function Demo() {
         const layers = r.layers ?? [];
         const comp = compositeLayers(layers);
         const sparse = buildSparseRows(comp);
+        const wfId = `wf-${wireframes.length}`;
         wireframes.push({
-          id: `wf-${wireframes.length}`,
+          id: wfId,
           x: 0,
           y: curY,
           w: cw,
@@ -285,13 +312,16 @@ export default function Demo() {
           sparse,
           originalText: r.text,
         });
+        regionOrder.push({ type: "wireframe", wireframeId: wfId });
         curY += h;
       } else {
         // Estimate prose height: rough line count * LH
         const lines = r.text.split("\n");
         curY += lines.length * SPATIAL_LH;
+        regionOrder.push({ type: "prose" });
       }
     }
+    regionOrderRef.current = regionOrder;
 
     wireframesRef.current = wireframes;
   }
@@ -323,10 +353,19 @@ export default function Demo() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const { w, h } = sizeRef.current;
-    if (canvas.width !== w) canvas.width = w;
-    if (canvas.height !== h) canvas.height = h;
+
+    // Retina / HiDPI: set physical pixel size to CSS pixel size * devicePixelRatio
+    const dpr = window.devicePixelRatio || 1;
+    const physW = Math.floor(w * dpr);
+    const physH = Math.floor(h * dpr);
+    if (canvas.width !== physW || canvas.height !== physH) {
+      canvas.width = physW;
+      canvas.height = physH;
+    }
 
     const ctx = canvas.getContext("2d")!;
+    // Scale all drawing operations so coordinates remain in CSS pixels
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const scrollY = scrollYRef.current;
     const cw = cwRef.current;
     const ch = chRef.current;
@@ -443,9 +482,8 @@ export default function Demo() {
       // For v1 we just save the original document text unchanged unless
       // prose was edited (prose editing not wired in this version)
       try {
-        const docText = wireframesRef.current.map(wf => wf.originalText).join("\n\n");
         const w = await handle.createWritable();
-        await w.write(proseTextRef.current + "\n\n" + docText);
+        await w.write(buildDocText());
         await w.close();
       } catch (e) {
         console.error("Autosave failed:", e);
@@ -493,6 +531,12 @@ export default function Demo() {
           e.preventDefault();
           if (result.newText !== null) {
             proseTextRef.current = result.newText;
+            // Keep prosePartsRef in sync: distribute updated text back into prose parts.
+            // Simple v1 strategy: assign updated flat text to first prose region only;
+            // subsequent prose regions become empty (they were joined via "\n\n").
+            if (prosePartsRef.current.length > 0) {
+              prosePartsRef.current = [result.newText, ...prosePartsRef.current.slice(1).map(() => "")];
+            }
             preparedRef.current = prepareWithSegments(
               proseTextRef.current,
               SPATIAL_FONT,
@@ -568,7 +612,7 @@ export default function Demo() {
         if (!handle) return;
         try {
           const w = await handle.createWritable();
-          await w.write(proseTextRef.current);
+          await w.write(buildDocText());
           await w.close();
         } catch (e) {
           console.error("Save failed:", e);
