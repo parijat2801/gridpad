@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { prepareWithSegments, layoutWithLines, type LayoutLine } from "@chenglou/pretext";
 import { scan } from "./scanner";
 import { detectRegions, type Region } from "./regions";
-import { compositeLayers, regenerateCells } from "./layers";
+import { compositeLayers, regenerateCells, buildTextCells } from "./layers";
 import type { Layer } from "./layers";
 import { buildSparseRows, type SparseRow } from "./KonvaCanvas";
 import type { Bbox } from "./types";
@@ -57,6 +57,13 @@ interface LayoutRegion {
   sparse?: SparseRow[];
 }
 
+/** State for in-place editing of a text label inside a wireframe region. */
+interface WireframeTextEdit {
+  lrIdx: number;      // index into laidRef.current
+  layerId: string;    // id of the text layer being edited
+  col: number;        // cursor column within the text (0-based char offset)
+}
+
 type GestureMode = "drag" | "resize";
 type ResizeEdge = { top: boolean; bottom: boolean; left: boolean; right: boolean };
 
@@ -87,6 +94,8 @@ export default function Demo() {
   const proseCursorRef = useRef<ProseCursor | null>(null);
   const blinkVisibleRef = useRef(true);
   const blinkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wireframeTextEditRef = useRef<WireframeTextEdit | null>(null);
+  const lastClickRef = useRef<{ time: number; px: number; docY: number } | null>(null);
 
   const [, forceRender] = useState(0);
   const kick = () => forceRender(t => t + 1);
@@ -158,6 +167,9 @@ export default function Demo() {
       } else if (mod && e.key === "s") {
         e.preventDefault();
         saveNow();
+      } else if (wireframeTextEditRef.current) {
+        // Wireframe text label editing
+        handleWireframeTextKey(e);
       } else {
         // Prose cursor editing
         handleProseKey(e);
@@ -303,6 +315,117 @@ export default function Demo() {
       doLayout();
       paint();
     }
+  }
+
+  // ── Wireframe text label editing ───────────────────────
+  function handleWireframeTextKey(e: KeyboardEvent) {
+    const wte = wireframeTextEditRef.current;
+    if (!wte) return;
+
+    const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
+    if (mod) return;
+
+    const lr = laidRef.current[wte.lrIdx];
+    if (!lr || lr.region.type !== "wireframe" || !lr.region.layers) return;
+
+    const layer = lr.region.layers.find(l => l.id === wte.layerId);
+    if (!layer || layer.type !== "text") return;
+
+    const key = e.key;
+
+    if (key === "Escape" || key === "Enter") {
+      e.preventDefault();
+      // Commit: stitch regions back and autosave
+      docTextRef.current = laidRef.current.map(l => l.region.text).join("\n\n");
+      wireframeTextEditRef.current = null;
+      stopBlink();
+      scheduleAutosave();
+      doLayout();
+      paint();
+      return;
+    }
+
+    if (key === "ArrowLeft") {
+      e.preventDefault();
+      resetBlink();
+      if (wte.col > 0) {
+        wireframeTextEditRef.current = { ...wte, col: wte.col - 1 };
+      }
+      paint();
+      return;
+    }
+
+    if (key === "ArrowRight") {
+      e.preventDefault();
+      resetBlink();
+      const content = layer.content ?? "";
+      if (wte.col < content.length) {
+        wireframeTextEditRef.current = { ...wte, col: wte.col + 1 };
+      }
+      paint();
+      return;
+    }
+
+    if (key === "Backspace") {
+      e.preventDefault();
+      resetBlink();
+      const content = layer.content ?? "";
+      if (wte.col === 0) return;
+      const newContent = content.slice(0, wte.col - 1) + content.slice(wte.col);
+      applyWireframeTextEdit(lr, layer, newContent);
+      wireframeTextEditRef.current = { ...wte, col: wte.col - 1 };
+      paint();
+      return;
+    }
+
+    // Printable character
+    if (key.length === 1 && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      resetBlink();
+      const content = layer.content ?? "";
+      const newContent = content.slice(0, wte.col) + key + content.slice(wte.col);
+      applyWireframeTextEdit(lr, layer, newContent);
+      wireframeTextEditRef.current = { ...wte, col: wte.col + 1 };
+      paint();
+    }
+  }
+
+  /** Update a text layer's cells/content/bbox and recomposite the region's sparse rows.
+   * Also splices the change into region.text so autosave is consistent. */
+  function applyWireframeTextEdit(lr: LayoutRegion, layer: Layer, newContent: string) {
+    // Capture old width before mutating the layer
+    const oldWidth = [...(layer.content ?? "")].length;
+    const col = layer.bbox.col;
+    const row = layer.bbox.row;
+
+    const { cells, content: filteredContent } = buildTextCells(row, col, newContent);
+    layer.cells = cells;
+    layer.content = filteredContent;
+    layer.bbox = { ...layer.bbox, w: Math.max(1, filteredContent.length) };
+
+    // Splice the change into region.text: update the text grid at the layer's row
+    const textLines = lr.region.text.split("\n");
+    if (row < textLines.length) {
+      const lineChars = [...textLines[row]];
+      // Expand line if it's shorter than what we need to touch
+      const maxNeeded = col + Math.max(filteredContent.length, oldWidth);
+      while (lineChars.length < maxNeeded) lineChars.push(" ");
+      // Clear the old content area (up to max of old and new width)
+      for (let i = col; i < col + Math.max(filteredContent.length, oldWidth); i++) {
+        lineChars[i] = " ";
+      }
+      // Write new content
+      const newChars = [...filteredContent];
+      for (let i = 0; i < newChars.length; i++) {
+        lineChars[col + i] = newChars[i];
+      }
+      textLines[row] = lineChars.join("").trimEnd();
+      lr.region.text = textLines.join("\n");
+    }
+
+    // Recomposite
+    const comp = compositeLayers(lr.region.layers!);
+    lr.sparse = buildSparseRows(comp);
   }
 
   // ── Blink helpers ──────────────────────────────────────
@@ -467,10 +590,29 @@ export default function Demo() {
         ctx.fillRect(cursorX, cursorY, 2, LH);
       }
     }
+
+    // ── Wireframe text edit cursor ─────────────────────────
+    const wte = wireframeTextEditRef.current;
+    if (wte && blinkVisibleRef.current) {
+      const lr = laidRef.current[wte.lrIdx];
+      if (lr && lr.region.type === "wireframe" && lr.region.layers) {
+        const layer = lr.region.layers.find(l => l.id === wte.layerId);
+        if (layer && layer.type === "text") {
+          const top = lr.y - scrollY;
+          const cursorX = (layer.bbox.col + wte.col) * cw;
+          const cursorY = top + layer.bbox.row * ch;
+          ctx.fillStyle = FG_COLOR;
+          ctx.fillRect(cursorX, cursorY, 2, ch);
+        }
+      }
+    }
   }
 
-  // Only re-layout when not mid-gesture (gesture directly mutates layers + repaints)
-  if (ready && !gestureRef.current) doLayout();
+  // INVARIANT: doLayout() is NEVER called from the render body.
+  // It's called explicitly after: initial load, file open, mouseUp, prose edit, resize.
+  // This prevents timing-dependent bugs where React re-renders reset state.
+
+  // Paint on every render (cheap — just draws from laidRef)
   useEffect(() => { if (ready) paint(); });
 
   // ── Hit test ───────────────────────────────────────────
@@ -571,12 +713,51 @@ export default function Demo() {
     const docY = e.clientY - rect.top + scrollYRef.current;
     const cw = cwRef.current;
     const ch = chRef.current;
+    const now = Date.now();
+
+    // Detect double-click: same position within 300ms
+    const lastClick = lastClickRef.current;
+    const isDoubleClick = lastClick !== null &&
+      now - lastClick.time < 300 &&
+      Math.abs(px - lastClick.px) < cw * 2 &&
+      Math.abs(docY - lastClick.docY) < ch * 2;
+    lastClickRef.current = { time: now, px, docY };
+
     const hit = findLayerAt(px, docY);
 
     if (hit) {
-      // Clicked a wireframe layer — clear prose cursor
+      // Check for double-click on a text layer → enter wireframe text edit mode
+      if (isDoubleClick && hit.layer.type === "text") {
+        proseCursorRef.current = null;
+        gestureRef.current = null;
+        selectedIdRef.current = hit.layer.id;
+
+        // Compute cursor col from click position within the text layer
+        const content = hit.layer.content ?? "";
+        const textStartCol = hit.layer.bbox.col;
+        const clickCol = Math.floor(px / cw);
+        const offsetInText = Math.max(0, Math.min([...content].length, clickCol - textStartCol));
+
+        wireframeTextEditRef.current = {
+          lrIdx: hit.lrIdx,
+          layerId: hit.layer.id,
+          col: offsetInText,
+        };
+        canvasRef.current?.focus();
+        startBlink();
+        paint();
+        return;
+      }
+
+      // Single click on a wireframe layer — exit any text edit mode, start gesture
+      if (wireframeTextEditRef.current) {
+        // Commit pending wireframe text edit
+        docTextRef.current = laidRef.current.map(l => l.region.text).join("\n\n");
+        wireframeTextEditRef.current = null;
+        stopBlink();
+        scheduleAutosave();
+      }
       proseCursorRef.current = null;
-      stopBlink();
       selectedIdRef.current = hit.layer.id;
       const lr = laidRef.current[hit.lrIdx];
       const localY = docY - lr.y;
@@ -599,6 +780,13 @@ export default function Demo() {
       };
       paint(); // repaint selection without re-layout
     } else {
+      // Clicked outside any wireframe layer — commit wireframe text edit if active
+      if (wireframeTextEditRef.current) {
+        docTextRef.current = laidRef.current.map(l => l.region.text).join("\n\n");
+        wireframeTextEditRef.current = null;
+        stopBlink();
+        scheduleAutosave();
+      }
       // Check if clicked in a prose region
       const proseHit = findProseAt(px, docY);
       if (proseHit) {
