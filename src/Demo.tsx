@@ -4,7 +4,7 @@
  * Model:
  *   proseTextRef      — all prose from document concatenated with "\n\n"
  *   preparedRef       — cached Pretext PreparedTextWithSegments
- *   wireframesRef     — array of Wireframe obstacles (full-width, vertical-only drag)
+ *   wireframesRef     — array of Wireframe obstacles (real x/w positions)
  *   posLinesRef       — output of reflowLayout(): PositionedLine[]
  *
  * On every paint cycle:
@@ -12,9 +12,9 @@
  *   Draw positioned lines at their (x, y) coordinates
  *   Draw wireframes at their pixel (x, y) positions
  *
- * Drag model (v1):
- *   Wireframes always span full canvas width (x=0, w=canvasWidth)
- *   They can only be dragged vertically (change y only)
+ * Drag model:
+ *   Wireframes have real x/w based on content bbox — text flows on both sides
+ *   They can be dragged both horizontally and vertically
  *   Text reflows in real-time around dragged wireframe
  */
 import { useEffect, useRef, useState } from "react";
@@ -40,11 +40,11 @@ export const SPATIAL_LH = Math.ceil(FONT_SIZE * 1.15);
 // ── Wireframe type ───────────────────────────────────────
 export interface Wireframe {
   id: string;
-  /** Pixel x — always 0 for v1 (full-width) */
+  /** Pixel x — horizontal position in document space */
   x: number;
   /** Pixel y — vertical position in document space */
   y: number;
-  /** Pixel width — always canvasWidth for v1 */
+  /** Pixel width — actual content width (not full canvas) */
   w: number;
   /** Pixel height */
   h: number;
@@ -102,6 +102,8 @@ interface DragState {
   startBbox?: { row: number; col: number; w: number; h: number };
   startY: number;   // pixel docY at drag start
   startWfY: number; // wireframe.y at drag start
+  startX: number;   // pixel mouseX at drag start (for whole-wireframe horizontal drag)
+  startWfX: number; // wireframe.x at drag start
   /** pixel mouseX at drag start (for layer column delta) */
   startMX?: number;
   /** If set, this is a resize gesture (not a move) */
@@ -344,11 +346,26 @@ export default function Demo() {
         const comp = compositeLayers(layers);
         const sparse = buildSparseRows(comp);
         const wfId = `wf-${wireframes.length}`;
+
+        // Compute real content width from layer bboxes
+        let maxCol = 0;
+        for (const l of layers) {
+          maxCol = Math.max(maxCol, l.bbox.col + l.bbox.w);
+        }
+        // Fallback: scan sparse rows for widest content
+        if (maxCol === 0) {
+          for (const row of sparse) {
+            maxCol = Math.max(maxCol, row.startCol + row.text.length);
+          }
+        }
+        // If still no content, use a reasonable default width
+        const wfW = maxCol > 0 ? maxCol * cwRef.current : Math.floor(cw * 0.5);
+
         wireframes.push({
           id: wfId,
           x: 0,
           y: curY,
-          w: cw,
+          w: wfW,
           h,
           layers,
           sparse,
@@ -379,11 +396,11 @@ export default function Demo() {
       return;
     }
 
-    // Build obstacles from wireframes
+    // Build obstacles from wireframes — use real x/w so text flows on both sides
     const obstacles: Obstacle[] = wireframes.map(wf => ({
       x: wf.x,
       y: wf.y,
-      w: canvasWidth, // full width for v1
+      w: wf.w,
       h: wf.h,
     }));
 
@@ -436,7 +453,7 @@ export default function Demo() {
 
       for (const { row, startCol, text } of wf.sparse) {
         // Use fillText per row for Retina sharpness (atlas drawImage is low-res)
-        ctx.fillText(text, startCol * cw, top + row * ch);
+        ctx.fillText(text, wf.x + startCol * cw, top + row * ch);
       }
 
       // Draw selection highlight
@@ -502,7 +519,7 @@ export default function Demo() {
       const wf = wireframesRef.current.find(w => w.id === wte.wfId);
       const layer = wf?.layers.find(l => l.id === wte.layerId);
       if (wf && layer && layer.type === "text") {
-        const cursorX = (layer.bbox.col + wte.col) * cw;
+        const cursorX = wf.x + (layer.bbox.col + wte.col) * cw;
         const cursorY = wf.y - scrollY + layer.bbox.row * ch;
         ctx.fillStyle = FG_COLOR;
         ctx.fillRect(cursorX, cursorY, 2, ch);
@@ -514,14 +531,14 @@ export default function Demo() {
     if (tp && blinkVisibleRef.current) {
       const wfForTp = wireframesRef.current.find(w => w.id === tp.wfId);
       if (wfForTp) {
-        const cursorX = (tp.col + tp.buffer.length) * cw;
+        const cursorX = wfForTp.x + (tp.col + tp.buffer.length) * cw;
         const cursorY = wfForTp.y - scrollY + tp.row * ch;
         // Draw typed buffer text preview
         if (tp.buffer.length > 0) {
           ctx.font = SPATIAL_FONT;
           ctx.fillStyle = "#4a90e2";
           ctx.textBaseline = "top";
-          ctx.fillText(tp.buffer, tp.col * cw, cursorY);
+          ctx.fillText(tp.buffer, wfForTp.x + tp.col * cw, cursorY);
         }
         ctx.fillStyle = FG_COLOR;
         ctx.fillRect(cursorX, cursorY, 2, ch);
@@ -538,13 +555,14 @@ export default function Demo() {
         ctx.strokeStyle = "#4a90e2";
         ctx.lineWidth = 1.5;
         ctx.setLineDash([4, 3]);
+        const wfX = wfForDg.x;
         if (dg.tool === "rect") {
           const minR = Math.min(dg.startRow, dg.endRow);
           const maxR = Math.max(dg.startRow, dg.endRow);
           const minC = Math.min(dg.startCol, dg.endCol);
           const maxC = Math.max(dg.startCol, dg.endCol);
           ctx.strokeRect(
-            minC * cw,
+            wfX + minC * cw,
             top + minR * ch,
             (maxC - minC + 1) * cw,
             (maxR - minR + 1) * ch,
@@ -556,10 +574,10 @@ export default function Demo() {
           ctx.beginPath();
           if (isH) {
             const y = top + dg.startRow * ch + ch / 2;
-            ctx.moveTo(dg.startCol * cw, y);
-            ctx.lineTo((dg.endCol + 1) * cw, y);
+            ctx.moveTo(wfX + dg.startCol * cw, y);
+            ctx.lineTo(wfX + (dg.endCol + 1) * cw, y);
           } else {
-            const x = dg.startCol * cw + cw / 2;
+            const x = wfX + dg.startCol * cw + cw / 2;
             const minR = Math.min(dg.startRow, dg.endRow);
             const maxR = Math.max(dg.startRow, dg.endRow);
             ctx.moveTo(x, top + minR * ch);
@@ -605,11 +623,7 @@ export default function Demo() {
   useEffect(() => {
     const fn = () => {
       sizeRef.current = { w: window.innerWidth, h: window.innerHeight };
-      // Update wireframe widths when canvas resizes
-      wireframesRef.current = wireframesRef.current.map(wf => ({
-        ...wf,
-        w: window.innerWidth,
-      }));
+      // Wireframes keep their real x/w on resize — no override needed
       kick();
     };
     window.addEventListener("resize", fn);
@@ -891,7 +905,7 @@ export default function Demo() {
     const ch = chRef.current;
     return {
       row: Math.max(0, Math.floor((docY - wf.y) / ch)),
-      col: Math.max(0, Math.floor(px / cw)),
+      col: Math.max(0, Math.floor((px - wf.x) / cw)),
     };
   }
 
@@ -905,13 +919,16 @@ export default function Demo() {
     if (existing) return existing;
 
     // Create a new wireframe at this y position (snapped to ch grid)
+    // Use a default content width (40 cols) rather than full canvas width
     const ch = chRef.current;
+    const cw = cwRef.current;
     const snappedY = Math.floor(docY / ch) * ch;
+    const defaultCols = 40;
     const newWf: Wireframe = {
       id: `wf-${Date.now()}`,
       x: 0,
       y: snappedY,
-      w: sizeRef.current.w,
+      w: defaultCols * cw,
       h: ch * 8, // default 8 rows tall
       layers: [],
       sparse: [],
@@ -929,12 +946,15 @@ export default function Demo() {
     wf.layers = [...wf.layers, layerWithZ];
     wf.sparse = buildSparseRows(compositeLayers(wf.layers));
 
-    // Grow wireframe height to fit
+    // Grow wireframe to fit all layers
     let maxRow = 0;
+    let maxCol = 0;
     for (const l of wf.layers) {
       maxRow = Math.max(maxRow, l.bbox.row + l.bbox.h);
+      maxCol = Math.max(maxCol, l.bbox.col + l.bbox.w);
     }
     wf.h = Math.max(wf.h, maxRow * chRef.current);
+    wf.w = Math.max(wf.w, maxCol * cwRef.current);
     doLayout();
   }
 
@@ -1004,9 +1024,9 @@ export default function Demo() {
     if (wf) {
       const cw = cwRef.current;
       const ch = chRef.current;
-      // Convert click to wireframe-local grid coords
+      // Convert click to wireframe-local grid coords (account for wf.x offset)
       const gridRow = Math.floor((docY - wf.y) / ch);
-      const gridCol = Math.floor(px / cw);
+      const gridCol = Math.floor((px - wf.x) / cw);
 
       // Find the topmost layer (highest z) whose bbox contains this grid cell
       const sortedLayers = [...wf.layers]
@@ -1077,6 +1097,8 @@ export default function Demo() {
           startBbox: { ...hitLayer.bbox },
           startY: docY,
           startWfY: wf.y,
+          startX: px,
+          startWfX: wf.x,
           startMX: px,
           resizeEdge,
         };
@@ -1088,6 +1110,8 @@ export default function Demo() {
           wireframeId: wf.id,
           startY: docY,
           startWfY: wf.y,
+          startX: px,
+          startWfX: wf.x,
         };
       }
       paint();
@@ -1218,8 +1242,11 @@ export default function Demo() {
     } else {
       // Whole wireframe block drag — reflow text around updated position
       const dy = docY - drag.startY;
+      const dx = px - drag.startX;
       const newY = Math.max(0, drag.startWfY + dy);
+      const newX = Math.max(0, drag.startWfX + dx);
       wf.y = newY;
+      wf.x = newX;
       doLayout();
       paint();
     }
