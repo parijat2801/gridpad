@@ -49,54 +49,12 @@ npm test — run vitest (367 tests)
 npm run build — production build
 npx playwright test — browser smoke tests
 
-## Code quality rules
+## Rules
 
-These are enforced during every code review and agent dispatch.
-Violations must be fixed before committing.
-
-### 1. No function longer than 60 lines
-Extract into named helpers. "JSX is verbose" is not an excuse.
-
-### 2. No file longer than 300 lines
-Extract modules. Demo.tsx is a thin shell — logic lives in pure modules.
-
-### 3. Every exported function validates inputs
-Return structured errors for invalid input. No silent failures.
-
-### 4. Smallest possible scope
-Variables declared in the narrowest scope. If a value is only used
-in one branch, compute it there. Don't hoist state.
-
-### 5. No `any` in new code
-Define interfaces. Existing `any` in modified files is tolerated.
-
-### 6. Separation of concerns
-Each function/module does one thing. Demo.tsx wires refs and events.
-Pure modules handle logic. Never mix UI + mutation + validation.
-
-### 7. Pure functions are testable
-Logic extracted into pure modules (no React, no refs, no state).
-Tested with vitest. Demo.tsx is NOT the place to test logic.
-
-### 8. Parse once, mutate model, serialize on save
-NEVER re-scan the document on every render or interaction.
-Regions/layers are the in-memory source of truth.
-
-### 9. No useEffect for data flow
-useEffect is for DOM setup (canvas ref, event listeners, resize).
-NEVER for data flow. Call functions explicitly at mutation sites.
-
-### 10. Playwright tests must not lie
-Canvas render tests use full-image pixel counting, not sparse sampling.
-A test that passes on a black screen is worse than no test.
-
-## Invariants
-
-These are checked at runtime via console.assert in Demo.tsx:
-- doLayout: laid.length === regionsRef.length
-- doLayout: y-offsets monotonically increasing
-- doLayout: every wireframe has sparse rows, every prose has lines
-- paint: canvas dimensions non-zero
-- onMouseDown: layout computed, no gesture in progress
-- onMouseMove: gesture exists, layer still in region
-- onMouseUp: gesture cleared, layout rebuilt
+1. Functions ≤60 lines, files ≤300 lines
+2. Validate exported function inputs
+3. No `any` in new code
+4. Logic in pure modules, Demo.tsx is a thin shell
+5. Parse once → mutate model → serialize on save. Never re-scan on render.
+6. No useEffect for data flow — explicit calls only
+7. Playwright pixel tests use full-image scan, never sparse sampling
