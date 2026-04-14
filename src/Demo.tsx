@@ -16,6 +16,7 @@ import {
   measureCellSize, getCharWidth, getCharHeight,
   getGlyphAtlas,
 } from "./grid";
+import { insertChar, deleteChar } from "./proseCursor";
 
 const DEFAULT_TEXT = `# Welcome to Gridpad
 
@@ -41,6 +42,12 @@ Click a box to select, drag edges to resize, drag interior to move.`;
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 const LH = Math.ceil(FONT_SIZE * 1.15);
 const EDGE_THRESHOLD = 1; // grid cells from edge to trigger resize
+
+interface ProseCursor {
+  regionIdx: number;
+  row: number; // source line index within the region's text
+  col: number; // character offset within that source line
+}
 
 interface LayoutRegion {
   region: Region;
@@ -74,9 +81,43 @@ export default function Demo() {
   const cwRef = useRef(0);
   const chRef = useRef(0);
   const gestureRef = useRef<GestureState | null>(null);
+  const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const proseCursorRef = useRef<ProseCursor | null>(null);
+  const blinkVisibleRef = useRef(true);
+  const blinkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [, forceRender] = useState(0);
   const kick = () => forceRender(t => t + 1);
+
+  function scheduleAutosave() {
+    if (!fileHandleRef.current) return;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(async () => {
+      const handle = fileHandleRef.current;
+      if (!handle) return;
+      try {
+        const writable = await handle.createWritable();
+        await writable.write(docTextRef.current);
+        await writable.close();
+      } catch (e) {
+        console.error("Autosave failed:", e);
+      }
+    }, 500);
+  }
+
+  async function saveNow() {
+    const handle = fileHandleRef.current;
+    if (!handle) return;
+    if (autosaveTimerRef.current) { clearTimeout(autosaveTimerRef.current); autosaveTimerRef.current = null; }
+    try {
+      const writable = await handle.createWritable();
+      await writable.write(docTextRef.current);
+      await writable.close();
+    } catch (e) {
+      console.error("Save failed:", e);
+    }
+  }
 
   useEffect(() => {
     measureCellSize().then(() => {
@@ -101,18 +142,185 @@ export default function Demo() {
           const [handle] = await window.showOpenFilePicker({
             types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
           });
+          fileHandleRef.current = handle;
           const file = await handle.getFile();
           docTextRef.current = await file.text();
           scrollYRef.current = 0;
           selectedIdRef.current = null;
           gestureRef.current = null;
+          proseCursorRef.current = null;
+          stopBlink();
           kick();
         } catch { /* cancelled */ }
+      } else if (mod && e.key === "s") {
+        e.preventDefault();
+        saveNow();
+      } else {
+        // Prose cursor editing
+        handleProseKey(e);
       }
     };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
   }, []);
+
+  // ── Prose key editing ──────────────────────────────────
+  function handleProseKey(e: KeyboardEvent) {
+    const pc = proseCursorRef.current;
+    if (!pc) return;
+
+    const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
+    // Don't intercept modifier-key combos (Cmd+S, Cmd+O handled above)
+    if (mod) return;
+
+    const lr = laidRef.current[pc.regionIdx];
+    if (!lr || lr.region.type !== "prose") return;
+
+    const key = e.key;
+
+    if (key === "Escape") {
+      e.preventDefault();
+      proseCursorRef.current = null;
+      stopBlink();
+      paint();
+      return;
+    }
+
+    const sourceLines = lr.region.text.split("\n");
+
+    if (key === "ArrowLeft") {
+      e.preventDefault();
+      resetBlink();
+      if (pc.col > 0) {
+        proseCursorRef.current = { ...pc, col: pc.col - 1 };
+      } else if (pc.row > 0) {
+        const prevLine = sourceLines[pc.row - 1] ?? "";
+        proseCursorRef.current = { ...pc, row: pc.row - 1, col: prevLine.length };
+      }
+      paint();
+      return;
+    }
+
+    if (key === "ArrowRight") {
+      e.preventDefault();
+      resetBlink();
+      const line = sourceLines[pc.row] ?? "";
+      if (pc.col < line.length) {
+        proseCursorRef.current = { ...pc, col: pc.col + 1 };
+      } else if (pc.row < sourceLines.length - 1) {
+        proseCursorRef.current = { ...pc, row: pc.row + 1, col: 0 };
+      }
+      paint();
+      return;
+    }
+
+    if (key === "ArrowUp") {
+      e.preventDefault();
+      resetBlink();
+      if (pc.row > 0) {
+        const prevLine = sourceLines[pc.row - 1] ?? "";
+        proseCursorRef.current = { ...pc, row: pc.row - 1, col: Math.min(pc.col, prevLine.length) };
+      }
+      paint();
+      return;
+    }
+
+    if (key === "ArrowDown") {
+      e.preventDefault();
+      resetBlink();
+      if (pc.row < sourceLines.length - 1) {
+        const nextLine = sourceLines[pc.row + 1] ?? "";
+        proseCursorRef.current = { ...pc, row: pc.row + 1, col: Math.min(pc.col, nextLine.length) };
+      }
+      paint();
+      return;
+    }
+
+    if (key === "Backspace") {
+      e.preventDefault();
+      resetBlink();
+      const result = deleteChar(lr.region.text, { row: pc.row, col: pc.col });
+      lr.region.text = result.text;
+      proseCursorRef.current = { ...pc, row: result.cursor.row, col: result.cursor.col };
+      // Stitch and save
+      docTextRef.current = laidRef.current.map(l => l.region.text).join("\n\n");
+      scheduleAutosave();
+      doLayout();
+      paint();
+      return;
+    }
+
+    if (key === "Delete") {
+      e.preventDefault();
+      resetBlink();
+      // Delete char at cursor = move right by 1, then backspace
+      const line = sourceLines[pc.row] ?? "";
+      let delCursor = { row: pc.row, col: pc.col };
+      if (pc.col < line.length) {
+        delCursor = { row: pc.row, col: pc.col + 1 };
+      } else if (pc.row < sourceLines.length - 1) {
+        delCursor = { row: pc.row + 1, col: 0 };
+      } else {
+        // Nothing to delete
+        return;
+      }
+      const result = deleteChar(lr.region.text, delCursor);
+      lr.region.text = result.text;
+      // cursor stays at original position (deleteChar moves it back)
+      proseCursorRef.current = { ...pc, row: result.cursor.row, col: result.cursor.col };
+      docTextRef.current = laidRef.current.map(l => l.region.text).join("\n\n");
+      scheduleAutosave();
+      doLayout();
+      paint();
+      return;
+    }
+
+    if (key === "Enter") {
+      e.preventDefault();
+      resetBlink();
+      const result = insertChar(lr.region.text, { row: pc.row, col: pc.col }, "\n");
+      lr.region.text = result.text;
+      proseCursorRef.current = { ...pc, row: result.cursor.row, col: result.cursor.col };
+      docTextRef.current = laidRef.current.map(l => l.region.text).join("\n\n");
+      scheduleAutosave();
+      doLayout();
+      paint();
+      return;
+    }
+
+    // Printable character (length === 1, no ctrl/meta)
+    if (key.length === 1 && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      resetBlink();
+      const result = insertChar(lr.region.text, { row: pc.row, col: pc.col }, key);
+      lr.region.text = result.text;
+      proseCursorRef.current = { ...pc, row: result.cursor.row, col: result.cursor.col };
+      docTextRef.current = laidRef.current.map(l => l.region.text).join("\n\n");
+      scheduleAutosave();
+      doLayout();
+      paint();
+    }
+  }
+
+  // ── Blink helpers ──────────────────────────────────────
+  function startBlink() {
+    if (blinkTimerRef.current) clearInterval(blinkTimerRef.current);
+    blinkVisibleRef.current = true;
+    blinkTimerRef.current = setInterval(() => {
+      blinkVisibleRef.current = !blinkVisibleRef.current;
+      paint();
+    }, 530);
+  }
+
+  function stopBlink() {
+    if (blinkTimerRef.current) { clearInterval(blinkTimerRef.current); blinkTimerRef.current = null; }
+    blinkVisibleRef.current = true;
+  }
+
+  function resetBlink() {
+    blinkVisibleRef.current = true;
+    if (!blinkTimerRef.current) startBlink();
+  }
 
   // ── Layout ─────────────────────────────────────────────
   function doLayout() {
@@ -216,6 +424,33 @@ export default function Demo() {
         }
       }
     }
+
+    // ── Prose cursor ──────────────────────────────────────
+    const pc = proseCursorRef.current;
+    if (pc && blinkVisibleRef.current) {
+      const lr = laidRef.current[pc.regionIdx];
+      if (lr && lr.region.type === "prose") {
+        // Map source row → visual line index.
+        // Each source line may wrap into multiple visual lines.
+        // Walk the source lines counting visual lines until we reach pc.row.
+        const sourceLines = lr.region.text.split("\n");
+        let visualLine = 0;
+        for (let si = 0; si < pc.row && si < sourceLines.length; si++) {
+          // Count how many visual lines this source line uses.
+          // We can check laidRef lines that start with this source line's content,
+          // but the simplest/correct approach: measure wrapping via charWidth.
+          const srcLen = sourceLines[si].length;
+          const maxCols = cw > 0 ? Math.floor(w / cw) : 80;
+          const wrappedLines = Math.max(1, Math.ceil(srcLen / maxCols));
+          visualLine += wrappedLines;
+        }
+        const top = lr.y - scrollY;
+        const cursorX = pc.col * cw;
+        const cursorY = top + visualLine * LH;
+        ctx.fillStyle = FG_COLOR;
+        ctx.fillRect(cursorX, cursorY, 2, LH);
+      }
+    }
   }
 
   // Only re-layout when not mid-gesture (gesture directly mutates layers + repaints)
@@ -244,6 +479,40 @@ export default function Demo() {
         }
       }
       if (best) return { lrIdx: i, layer: best };
+    }
+    return null;
+  }
+
+  /** Find a prose region at the given document coordinates and compute cursor position */
+  function findProseAt(px: number, docY: number): ProseCursor | null {
+    const cw = cwRef.current;
+    const canvasW = sizeRef.current.w;
+    for (let i = 0; i < laidRef.current.length; i++) {
+      const lr = laidRef.current[i];
+      if (docY < lr.y || docY >= lr.y + lr.height) continue;
+      if (lr.region.type !== "prose") continue;
+      const localY = docY - lr.y;
+      // Which visual line did we click?
+      const visualLineIdx = Math.floor(localY / LH);
+      // Map visual line → source line by counting wrapped lines per source line
+      const sourceLines = lr.region.text.split("\n");
+      const maxCols = cw > 0 ? Math.floor(canvasW / cw) : 80;
+      let visualCount = 0;
+      let srcRow = 0;
+      for (let si = 0; si < sourceLines.length; si++) {
+        const srcLen = sourceLines[si].length;
+        const wrappedLines = Math.max(1, Math.ceil(srcLen / maxCols));
+        if (visualLineIdx < visualCount + wrappedLines) {
+          srcRow = si;
+          break;
+        }
+        visualCount += wrappedLines;
+        srcRow = si;
+      }
+      // Clamp col to the line length
+      const line = sourceLines[srcRow] ?? "";
+      const col = Math.max(0, Math.min(line.length, Math.round(px / cw)));
+      return { regionIdx: i, row: srcRow, col };
     }
     return null;
   }
@@ -285,6 +554,9 @@ export default function Demo() {
     const hit = findLayerAt(px, docY);
 
     if (hit) {
+      // Clicked a wireframe layer — clear prose cursor
+      proseCursorRef.current = null;
+      stopBlink();
       selectedIdRef.current = hit.layer.id;
       const lr = laidRef.current[hit.lrIdx];
       const localY = docY - lr.y;
@@ -307,9 +579,22 @@ export default function Demo() {
       };
       paint(); // repaint selection without re-layout
     } else {
-      selectedIdRef.current = null;
-      gestureRef.current = null;
-      paint();
+      // Check if clicked in a prose region
+      const proseHit = findProseAt(px, docY);
+      if (proseHit) {
+        proseCursorRef.current = proseHit;
+        selectedIdRef.current = null;
+        gestureRef.current = null;
+        canvasRef.current?.focus();
+        startBlink();
+        paint();
+      } else {
+        proseCursorRef.current = null;
+        stopBlink();
+        selectedIdRef.current = null;
+        gestureRef.current = null;
+        paint();
+      }
     }
   }
 
@@ -444,6 +729,7 @@ export default function Demo() {
     }
 
     gestureRef.current = null;
+    scheduleAutosave();
     doLayout();
     paint();
   }
@@ -455,6 +741,12 @@ export default function Demo() {
     paint();
   }
 
+  // Cleanup blink timer on unmount
+  useEffect(() => {
+    return () => { stopBlink(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   if (!ready) {
     return <div style={{ background: BG_COLOR, width: "100vw", height: "100vh" }} />;
   }
@@ -462,11 +754,13 @@ export default function Demo() {
   return (
     <canvas
       ref={canvasRef}
+      tabIndex={0}
       style={{
         background: BG_COLOR, display: "block",
         position: "fixed", top: 0, left: 0,
         width: sizeRef.current.w, height: sizeRef.current.h,
         cursor: getCursor(),
+        outline: "none",
       }}
       onWheel={onWheel}
       onMouseDown={onMouseDown}
