@@ -288,6 +288,20 @@ export function compositeLayers(layers: Layer[]): Map<string, string> {
   return result;
 }
 
+// ── Shared composite cache ────────────────────────────────
+// TextLayer sets this after computing composite; layerToText
+// reuses it to avoid a redundant O(all-cells) pass during autosave.
+
+let _lastComposite: Map<string, string> | null = null;
+
+export function setLastComposite(c: Map<string, string> | null): void {
+  _lastComposite = c;
+}
+
+export function getLastComposite(): Map<string, string> | null {
+  return _lastComposite;
+}
+
 /**
  * Like compositeLayers but returns ownership info: each cell maps to
  * { char, layerId } indicating which layer is visually topmost.
@@ -354,7 +368,7 @@ export function isEffectivelyVisible(
  * are preserved so that layer offsets are faithful.
  */
 export function layerToText(layers: Layer[]): string {
-  const composite = compositeLayers(layers);
+  const composite = _lastComposite ?? compositeLayers(layers);
   if (composite.size === 0) return "";
 
   let minR = Infinity,

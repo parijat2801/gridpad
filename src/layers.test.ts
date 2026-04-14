@@ -13,6 +13,8 @@ import {
   buildLineCells,
   buildTextCells,
   toggleVisible,
+  setLastComposite,
+  getLastComposite,
   LIGHT_RECT_STYLE,
   type Layer,
 } from "./layers";
@@ -826,5 +828,28 @@ describe("regenerateCells", () => {
     expect(cells.get("2,1")).toBe("-");
     expect(cells.get("2,2")).toBe("+");
     expect(cells.size).toBe(8);
+  });
+});
+
+describe("shared composite cache", () => {
+  it("stores and retrieves composite", () => {
+    const composite = new Map([["0,0", "A"]]);
+    setLastComposite(composite);
+    expect(getLastComposite()).toBe(composite);
+    setLastComposite(null);
+    expect(getLastComposite()).toBeNull();
+  });
+
+  it("layerToText uses cached composite when set", () => {
+    const cached = new Map([["0,0", "Z"], ["0,1", "Z"]]);
+    setLastComposite(cached);
+    // layerToText should use the cached composite, not recompute
+    expect(layerToText([])).toBe("ZZ");
+    setLastComposite(null);
+  });
+
+  it("layerToText recomputes when no cache", () => {
+    setLastComposite(null);
+    expect(layerToText([])).toBe("");
   });
 });
