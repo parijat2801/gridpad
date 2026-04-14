@@ -1079,8 +1079,8 @@ export default function Demo() {
       wireframeTextEditRef.current = null;
       stopBlink();
 
-      if (hitLayer) {
-        // Individual layer selected
+      if (hitLayer && !e.altKey) {
+        // Individual layer selected (Alt+click bypasses to whole-wireframe drag)
         selectedIdRef.current = null;
         selectedLayerIdRef.current = hitLayer.id;
 
