@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.5",
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/state": "^6.6.0",
     "@mantine/core": "^9.0.2",
     "@mantine/hooks": "^9.0.2",
     "react": "^19.2.4",
