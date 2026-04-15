@@ -1,0 +1,278 @@
+// Frame model: pixel-space tree of renderable regions.
+// Each Frame is either a container (clip: true, children: Frame[]) or a
+// leaf with content. All coordinates are in pixels.
+
+import { regenerateCells, buildLineCells } from "./layers";
+import type { RectStyle } from "./scanner";
+import type { Region } from "./regions";
+import type { Bbox } from "./types";
+
+// ── Types ──────────────────────────────────────────────────
+
+export interface FrameContent {
+  type: "rect" | "line" | "text";
+  cells: Map<string, string>;
+  /** Present for rect frames */
+  style?: RectStyle;
+  /** Present for text frames */
+  text?: string;
+}
+
+export interface Frame {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  children: Frame[];
+  content: FrameContent | null;
+  clip: boolean;
+}
+
+export interface Obstacle {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// ── ID generation ──────────────────────────────────────────
+
+let _counter = 0;
+
+function nextId(): string {
+  return `frame-${++_counter}-${Date.now()}`;
+}
+
+// ── createFrame ────────────────────────────────────────────
+
+export function createFrame(params: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}): Frame {
+  return {
+    id: nextId(),
+    x: params.x,
+    y: params.y,
+    w: params.w,
+    h: params.h,
+    children: [],
+    content: null,
+    clip: true,
+  };
+}
+
+// ── createRectFrame ────────────────────────────────────────
+
+export function createRectFrame(params: {
+  gridW: number;
+  gridH: number;
+  style: RectStyle;
+  charWidth: number;
+  charHeight: number;
+}): Frame {
+  const { gridW, gridH, style, charWidth, charHeight } = params;
+  const bbox: Bbox = { row: 0, col: 0, w: gridW, h: gridH };
+  const cells = regenerateCells(bbox, style);
+  return {
+    id: nextId(),
+    x: 0,
+    y: 0,
+    w: gridW * charWidth,
+    h: gridH * charHeight,
+    children: [],
+    content: { type: "rect", cells, style },
+    clip: true,
+  };
+}
+
+// ── createTextFrame ────────────────────────────────────────
+
+export function createTextFrame(params: {
+  text: string;
+  row: number;
+  col: number;
+  charWidth: number;
+  charHeight: number;
+}): Frame {
+  const { text, row, col, charWidth, charHeight } = params;
+  const codepoints = [...text];
+  const cells = new Map<string, string>();
+  for (let i = 0; i < codepoints.length; i++) {
+    cells.set(`0,${i}`, codepoints[i]);
+  }
+  return {
+    id: nextId(),
+    x: col * charWidth,
+    y: row * charHeight,
+    w: codepoints.length * charWidth,
+    h: charHeight,
+    children: [],
+    content: { type: "text", cells, text },
+    clip: true,
+  };
+}
+
+// ── createLineFrame ────────────────────────────────────────
+
+export function createLineFrame(params: {
+  r1: number;
+  c1: number;
+  r2: number;
+  c2: number;
+  charWidth: number;
+  charHeight: number;
+}): Frame {
+  const { r1, c1, r2, c2, charWidth, charHeight } = params;
+  const { bbox, cells } = buildLineCells(r1, c1, r2, c2);
+  return {
+    id: nextId(),
+    x: bbox.col * charWidth,
+    y: bbox.row * charHeight,
+    w: bbox.w * charWidth,
+    h: bbox.h * charHeight,
+    children: [],
+    content: { type: "line", cells },
+    clip: true,
+  };
+}
+
+// ── framesToObstacles ──────────────────────────────────────
+
+export function framesToObstacles(frames: Frame[]): Obstacle[] {
+  return frames.map((f) => ({ id: f.id, x: f.x, y: f.y, w: f.w, h: f.h }));
+}
+
+// ── hitTestFrames ──────────────────────────────────────────
+
+function hitTestOne(frame: Frame, px: number, py: number): Frame | null {
+  if (px < frame.x || px >= frame.x + frame.w) return null;
+  if (py < frame.y || py >= frame.y + frame.h) return null;
+  // Try children first (relative coords)
+  const relX = px - frame.x;
+  const relY = py - frame.y;
+  for (const child of frame.children) {
+    const hit = hitTestOne(child, relX, relY);
+    if (hit) return hit;
+  }
+  return frame;
+}
+
+export function hitTestFrames(frames: Frame[], px: number, py: number): Frame | null {
+  for (const frame of frames) {
+    const hit = hitTestOne(frame, px, py);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// ── moveFrame ──────────────────────────────────────────────
+
+export function moveFrame(frame: Frame, delta: { dx: number; dy: number }): Frame {
+  return { ...frame, x: frame.x + delta.dx, y: frame.y + delta.dy };
+}
+
+// ── resizeFrame ────────────────────────────────────────────
+
+export function resizeFrame(
+  frame: Frame,
+  size: { w: number; h: number },
+  charWidth: number,
+  charHeight: number,
+): Frame {
+  const minW = 2 * charWidth;
+  const minH = 2 * charHeight;
+  const w = Math.max(minW, size.w);
+  const h = Math.max(minH, size.h);
+
+  let content = frame.content;
+  if (content?.type === "rect" && content.style) {
+    const gridW = Math.round(w / charWidth);
+    const gridH = Math.round(h / charHeight);
+    const bbox: Bbox = { row: 0, col: 0, w: gridW, h: gridH };
+    const cells = regenerateCells(bbox, content.style);
+    content = { ...content, cells };
+  }
+
+  return { ...frame, w, h, content };
+}
+
+// ── framesFromRegions ──────────────────────────────────────
+
+type FramesResult = Frame[] & {
+  frames: Frame[];
+  prose: { startRow: number; text: string }[];
+};
+
+export function framesFromRegions(
+  regions: Region[],
+  charWidth: number,
+  charHeight: number,
+): FramesResult {
+  const frames: Frame[] = [];
+  const prose: { startRow: number; text: string }[] = [];
+
+  for (const region of regions) {
+    if (region.type === "prose") {
+      prose.push({ startRow: region.startRow, text: region.text });
+      continue;
+    }
+
+    // wireframe region → container + child frames per layer
+    const layers = region.layers ?? [];
+    if (layers.length === 0) continue;
+
+    // Compute bbox of all layers for container sizing
+    let maxRow = 0;
+    let maxCol = 0;
+    for (const layer of layers) {
+      const r = layer.bbox.row + layer.bbox.h;
+      const c = layer.bbox.col + layer.bbox.w;
+      if (r > maxRow) maxRow = r;
+      if (c > maxCol) maxCol = c;
+    }
+
+    const containerW = maxCol * charWidth;
+    const containerH = maxRow * charHeight;
+    const containerX = 0;
+    const containerY = region.startRow * charHeight;
+
+    const children: Frame[] = layers.map((layer) => {
+      const x = layer.bbox.col * charWidth;
+      const y = layer.bbox.row * charHeight;
+      const w = layer.bbox.w * charWidth;
+      const h = layer.bbox.h * charHeight;
+      let content: FrameContent | null = null;
+
+      if (layer.type === "rect" && layer.style) {
+        content = { type: "rect", cells: layer.cells, style: layer.style };
+      } else if (layer.type === "line") {
+        content = { type: "line", cells: layer.cells };
+      } else if (layer.type === "text") {
+        content = { type: "text", cells: layer.cells, text: layer.content ?? "" };
+      } else {
+        content = { type: "rect", cells: layer.cells, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" } };
+      }
+
+      return { id: nextId(), x, y, w, h, children: [], content, clip: false };
+    });
+
+    const container: Frame = {
+      id: nextId(),
+      x: containerX,
+      y: containerY,
+      w: containerW,
+      h: containerH,
+      children,
+      content: null,
+      clip: true,
+    };
+
+    frames.push(container);
+  }
+
+  return Object.assign(frames, { frames, prose }) as FramesResult;
+}
