@@ -102,8 +102,6 @@ export default function DemoV2() {
   const textPlacementRef = useRef<{ x: number; y: number; chars: string } | null>(null);
   const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const regionsRef = useRef<Region[]>([]);
-  const prosePartsRef = useRef<{ startRow: number; text: string }[]>([]);
 
   type WritableHandle = FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> };
   async function saveToHandle(h: FileSystemFileHandle) {
@@ -298,7 +296,6 @@ export default function DemoV2() {
         }
       }
     }
-    const hit = hitTestFrames(framesRef.current, px, py);
     // Drill-down UX: first click selects container, second click on child selects child
     const hitContainer = hit ? framesRef.current.find(f => f.id === hit.id || f.children.some(c => c.id === hit.id)) : null;
     const targetId = hit ? (
