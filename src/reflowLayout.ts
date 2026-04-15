@@ -95,6 +95,7 @@ export function reflowLayout(
 
     for (const slot of slots) {
       const slotWidth = slot.right - slot.left;
+      const startCursor = { segmentIndex: cursor.segmentIndex, graphemeIndex: cursor.graphemeIndex };
       const line = layoutNextLine(prepared, cursor, slotWidth);
       if (line === null) {
         exhausted = true;
@@ -105,7 +106,7 @@ export function reflowLayout(
         y: Math.round(lineTop),
         text: line.text,
         width: line.width,
-        startCursor: { segmentIndex: line.start.segmentIndex, graphemeIndex: line.start.graphemeIndex },
+        startCursor,
       });
       cursor = line.end;
     }

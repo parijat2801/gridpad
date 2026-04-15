@@ -1,6 +1,4 @@
 import type { ScanResult } from "./scanner";
-import { buildLayersFromScan } from "./layers";
-import type { Layer } from "./layers";
 
 export interface Region {
   type: "prose" | "wireframe";
@@ -8,8 +6,6 @@ export interface Region {
   endRow: number;
   /** Original text lines joined with \n */
   text: string;
-  /** For wireframe regions: layers with row-rebased coordinates */
-  layers?: Layer[];
 }
 
 // Unicode box-drawing characters used to identify wireframe lines.
@@ -92,7 +88,6 @@ export function detectRegions(scanResult: ScanResult): Region[] {
   // Build regions
   const regions: Region[] = [];
   let currentRow = 0;
-  const allLayers = buildLayersFromScan(scanResult);
 
   for (const wf of merged) {
     // Prose before wireframe
@@ -109,13 +104,11 @@ export function detectRegions(scanResult: ScanResult): Region[] {
     }
 
     // Wireframe region
-    const layers = buildLayersForRegion(allLayers, wf.start, wf.end);
     regions.push({
       type: "wireframe",
       startRow: wf.start,
       endRow: wf.end,
       text: gridSliceToText(grid, wf.start, wf.end),
-      layers,
     });
 
     currentRow = wf.end + 1;
@@ -146,37 +139,3 @@ function gridSliceToText(grid: string[][], startRow: number, endRow: number): st
   return lines.join("\n");
 }
 
-/**
- * Build layers for shapes overlapping [startRow, endRow].
- * Rebases both bbox.row and cell keys to be relative to startRow.
- */
-function buildLayersForRegion(
-  allLayers: Layer[],
-  startRow: number,
-  endRow: number,
-): Layer[] {
-  return allLayers
-    .filter((l) => {
-      const layerEnd = l.bbox.row + l.bbox.h - 1;
-      return layerEnd >= startRow && l.bbox.row <= endRow;
-    })
-    .map((l) => ({
-      ...l,
-      bbox: { ...l.bbox, row: l.bbox.row - startRow },
-      cells: rebaseCellRows(l.cells, startRow),
-    }));
-}
-
-function rebaseCellRows(
-  cells: Map<string, string>,
-  startRow: number,
-): Map<string, string> {
-  const result = new Map<string, string>();
-  for (const [key, ch] of cells) {
-    const i = key.indexOf(",");
-    const r = Number(key.slice(0, i)) - startRow;
-    const c = key.slice(i + 1);
-    result.set(`${r},${c}`, ch);
-  }
-  return result;
-}

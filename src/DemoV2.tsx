@@ -3,16 +3,25 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pretext";
-import { scan } from "./scanner";
-import { detectRegions } from "./regions";
-import { type Frame, framesFromRegions, framesToObstacles, hitTestFrames, moveFrame, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
+import type { EditorState } from "@codemirror/state";
+import { Transaction } from "@codemirror/state";
+import {
+  createEditorStateFromText, getDoc, getFrames,
+  selectFrameEffect, getSelectedId,
+  moveFrameEffect, resizeFrameEffect,
+  applyAddFrame, applyDeleteFrame,
+  proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
+  proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
+  editorUndo, editorRedo,
+  rebuildProseParts, getRegions,
+  setTextEditEffect, editTextFrameEffect, getTextEdit,
+  type CursorPos,
+} from "./editorState";
+import { framesToMarkdown } from "./serialize";
+import { type Frame, framesToObstacles, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT_FAMILY } from "./grid";
-import { insertChar, deleteChar, type CursorPos } from "./proseCursor";
-import { framesToMarkdown } from "./serialize";
-import type { Region } from "./regions";
-// import corpusText from "./fixtures/corpus.md?raw";
 
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 const LH = Math.ceil(FONT_SIZE * 1.15);
@@ -73,12 +82,12 @@ const TOOL_BUTTONS: { tool: ToolName; label: string }[] = [
 
 export default function DemoV2() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stateRef = useRef<EditorState>(null!);
   const [ready, setReady] = useState(false);
   const framesRef = useRef<Frame[]>([]);
   const proseRef = useRef("");
   const preparedRef = useRef<PreparedTextWithSegments | null>(null);
   const linesRef = useRef<PositionedLine[]>([]);
-  const selectedRef = useRef<string | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const cwRef = useRef(0);
   const chRef = useRef(0);
@@ -99,14 +108,18 @@ export default function DemoV2() {
   type WritableHandle = FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> };
   async function saveToHandle(h: FileSystemFileHandle) {
     try {
+      const state = stateRef.current;
       const md = framesToMarkdown(
-        framesRef.current, prosePartsRef.current,
-        regionsRef.current, cwRef.current, chRef.current,
+        getFrames(state),
+        rebuildProseParts(state),
+        getRegions(state),
+        cwRef.current,
+        chRef.current,
       );
       const w = await (h as WritableHandle).createWritable();
       await w.write(md);
       await w.close();
-    } catch { /* ignore */ }
+    } catch { /* ignore write errors */ }
   }
   function scheduleAutosave() {
     if (!fileHandleRef.current) return;
@@ -117,20 +130,13 @@ export default function DemoV2() {
 
   function loadDocument(text: string) {
     const cw = cwRef.current, ch = chRef.current;
-    const regions = detectRegions(scan(text));
-    const { frames, prose } = framesFromRegions(regions, cw, ch);
-    const proseText = prose.map(p => p.text).join("\n\n");
-    preparedRef.current = proseText.length > 0 ? prepareWithSegments(proseText, FONT, { whiteSpace: "pre-wrap" }) : null;
-    let curY = 0, frameIdx = 0;
-    for (const r of regions) {
-      if (r.type === "prose") { curY += r.text.split("\n").length * LH; }
-      else if (frameIdx < frames.length) { frames[frameIdx].y = curY; curY += frames[frameIdx].h; frameIdx++; }
-    }
+    stateRef.current = createEditorStateFromText(text, cw, ch);
+    // Sync old refs for un-migrated code paths
+    const frames = getFrames(stateRef.current);
+    const proseText = getDoc(stateRef.current);
     proseRef.current = proseText;
     framesRef.current = frames;
-    regionsRef.current = regions;
-    prosePartsRef.current = prose;
-    selectedRef.current = null;
+    preparedRef.current = proseText.length > 0 ? prepareWithSegments(proseText, FONT, { whiteSpace: "pre-wrap" }) : null;
     dragRef.current = null;
     proseCursorRef.current = null;
   }
@@ -143,23 +149,30 @@ export default function DemoV2() {
   function paint() {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const { w } = sizeRef.current;
+    const { w, h: viewH } = sizeRef.current;
     let contentH = 100;
     for (const line of linesRef.current) contentH = Math.max(contentH, line.y + LH);
     for (const f of framesRef.current) contentH = Math.max(contentH, f.y + f.h);
-    contentH = Math.max(contentH + 40, sizeRef.current.h);
+    contentH = Math.max(contentH + 40, viewH);
+    // Update scroll spacer to enable scrolling over full content
+    const spacer = canvas.parentElement?.querySelector("[data-spacer]") as HTMLElement | null;
+    if (spacer) spacer.style.height = `${contentH}px`;
+    const scrollTop = canvas.parentElement?.scrollTop ?? 0;
+    // Canvas is viewport-sized (never exceeds GPU limits), drawing is offset by scrollTop
     const dpr = window.devicePixelRatio || 1;
-    const pw = Math.floor(w * dpr), ph = Math.floor(contentH * dpr);
+    const pw = Math.floor(w * dpr), ph = Math.floor(viewH * dpr);
     if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
     const ctx = canvas.getContext("2d")!;
+    // Clear entire canvas in device space first (no transform)
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = BG; ctx.fillRect(0, 0, pw, ph);
+    // DPR scaling, then translate by scroll offset in CSS coords
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = BG; ctx.fillRect(0, 0, w, contentH);
+    ctx.translate(0, -scrollTop);
     ctx.font = FONT; ctx.fillStyle = FG_COLOR; ctx.textBaseline = "top";
     // Viewport culling — only draw visible content
-    const scrollTop = canvas.parentElement?.scrollTop ?? 0;
-    const viewH = sizeRef.current.h;
-    const viewTop = scrollTop - LH; // pad one line above
-    const viewBot = scrollTop + viewH + LH; // pad one line below
+    const viewTop = scrollTop - LH;
+    const viewBot = scrollTop + viewH + LH;
     for (const line of linesRef.current) {
       if (line.y + LH >= viewTop && line.y <= viewBot) ctx.fillText(line.text, line.x, line.y);
     }
@@ -167,8 +180,9 @@ export default function DemoV2() {
     for (const frame of framesRef.current) {
       if (frame.y + frame.h >= viewTop && frame.y <= viewBot) renderFrame(ctx, frame, 0, 0, cw, ch);
     }
-    if (selectedRef.current) {
-      const sel = findFrameById(framesRef.current, selectedRef.current);
+    const selectedId = getSelectedId(stateRef.current);
+    if (selectedId) {
+      const sel = findFrameById(framesRef.current, selectedId);
       if (sel) renderFrameSelection(ctx, sel.frame, sel.absX, sel.absY);
     }
     // Prose cursor (blinking)
@@ -228,32 +242,18 @@ export default function DemoV2() {
     return null;
   }
 
-  function replaceFrame(frames: Frame[], id: string, newFrame: Frame): Frame[] {
-    return frames.map(f => {
-      if (f.id === id) return newFrame;
-      if (f.children.length > 0) return { ...f, children: replaceFrame(f.children, id, newFrame) };
-      return f;
-    });
-  }
-
-  function buildTextCells(text: string): Map<string, string> {
-    const cells = new Map<string, string>();
-    const codepoints = [...text];
-    for (let i = 0; i < codepoints.length; i++) cells.set(`0,${i}`, codepoints[i]);
-    return cells;
-  }
 
   function proseCursorFromClick(px: number, py: number): CursorPos | null {
     if (linesRef.current.length === 0) return null;
     const charWidth = getCharWidth();
-    // Find the closest reflow line by Y
-    let bestIdx = 0, bestDist = Infinity;
-    for (let i = 0; i < linesRef.current.length; i++) {
-      const dist = Math.abs(linesRef.current[i].y + LH / 2 - py);
-      if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+    // Find closest visual line by vertical distance
+    let best: PositionedLine | null = null, bestDist = Infinity;
+    for (const pl of linesRef.current) {
+      const dist = Math.abs(pl.y + LH / 2 - py);
+      if (dist < bestDist) { bestDist = dist; best = pl; }
     }
-    const best = linesRef.current[bestIdx];
-    // Use Pretext's cursor directly — segmentIndex = source line, graphemeIndex = column offset
+    if (!best) return null;
+    // Use Pretext's startCursor — segmentIndex = source line, graphemeIndex = column offset
     const row = best.startCursor.segmentIndex;
     const clickCol = Math.max(0, Math.floor((px - best.x) / charWidth));
     const col = best.startCursor.graphemeIndex + Math.min(clickCol, best.text.length);
@@ -287,8 +287,9 @@ export default function DemoV2() {
       textPlacementRef.current = { x: snappedX, y: snappedY, chars: "" };
       paint(); return;
     }
-    if (selectedRef.current) {
-      const sel = findFrameById(framesRef.current, selectedRef.current);
+    const currentSelectedId = getSelectedId(stateRef.current);
+    if (currentSelectedId) {
+      const sel = findFrameById(framesRef.current, currentSelectedId);
       if (sel) {
         const handleHit = hitTestHandle(computeHandleRects(sel.absX, sel.absY, sel.frame.w, sel.frame.h), px, py);
         if (handleHit) {
@@ -297,29 +298,47 @@ export default function DemoV2() {
         }
       }
     }
+    const hit = hitTestFrames(framesRef.current, px, py);
+    // Drill-down UX: first click selects container, second click on child selects child
+    const hitContainer = hit ? framesRef.current.find(f => f.id === hit.id || f.children.some(c => c.id === hit.id)) : null;
+    const targetId = hit ? (
+      // If the hit IS what's already selected (child or container), keep it
+      currentSelectedId === hit.id ? hit.id
+      // If the container is selected and we click a child, drill down
+      : hitContainer && currentSelectedId === hitContainer.id ? hit.id
+      // Otherwise select the container
+      : hitContainer?.id ?? hit.id
+    ) : null;
     const now = Date.now();
     const last = lastClickRef.current;
     const isDblClick = last !== null && now - last.time < 300 && Math.abs(px - last.px) < 10 && Math.abs(py - last.py) < 10;
     lastClickRef.current = { time: now, px, py };
-    if (hit) {
+    if (hit && targetId) {
       if (isDblClick && hit.content?.type === "text") {
         const found = findFrameById(framesRef.current, hit.id);
         if (found) {
           const cw2 = getCharWidth(), text = hit.content.text ?? "";
-          const col = Math.max(0, Math.min(Math.round((px - found.absX) / cw2), [...text].length));
-          textEditRef.current = { frameId: hit.id, col }; selectedRef.current = hit.id;
+          const textLen = Math.max(0, Math.min(Math.round((px - found.absX) / cw2), [...text].length));
+          stateRef.current = stateRef.current.update({
+            effects: [selectFrameEffect.of(hit.id), setTextEditEffect.of({ frameId: hit.id, col: textLen })],
+          }).state;
+          textEditRef.current = getTextEdit(stateRef.current); // sync for paint
           proseCursorRef.current = null; dragRef.current = null;
           blinkRef.current = true; canvas.focus(); paint(); return;
         }
       }
-      selectedRef.current = hit.id; proseCursorRef.current = null; textEditRef.current = null;
-      const found = findFrameById(framesRef.current, hit.id);
-      if (found) dragRef.current = { frameId: hit.id, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false };
+      stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(targetId) }).state;
+      proseCursorRef.current = null; textEditRef.current = null;
+      const found = findFrameById(framesRef.current, targetId);
+      if (found) dragRef.current = { frameId: targetId, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false };
       paint();
     } else {
-      selectedRef.current = null; dragRef.current = null;
+      stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
+      dragRef.current = null;
       textEditRef.current = null;
-      proseCursorRef.current = proseCursorFromClick(px, py);
+      const cursor = proseCursorFromClick(px, py);
+      proseCursorRef.current = cursor;
+      if (cursor) stateRef.current = moveCursorTo(stateRef.current, cursor);
       blinkRef.current = true; paint();
     }
   }
@@ -356,12 +375,31 @@ export default function DemoV2() {
       const newAbsX = newDx !== 0 ? anchorX - resized.w : drag.startFrameX;
       const newAbsY = newDy !== 0 ? anchorY - resized.h : drag.startFrameY;
       const parentOffX = found.absX - found.frame.x, parentOffY = found.absY - found.frame.y;
-      const finalFrame = moveFrame(resized, { dx: newAbsX - parentOffX - resized.x, dy: newAbsY - parentOffY - resized.y });
-      framesRef.current = replaceFrame(framesRef.current, drag.frameId, finalFrame);
+      const moveDx = newAbsX - parentOffX - found.frame.x;
+      const moveDy = newAbsY - parentOffY - found.frame.y;
+      const effects = [
+        resizeFrameEffect.of({ id: drag.frameId, w: newW, h: newH, charWidth: cw, charHeight: ch }),
+        moveFrameEffect.of({ id: drag.frameId, dx: moveDx, dy: moveDy }),
+      ];
+      stateRef.current = stateRef.current.update({
+        effects,
+        annotations: [Transaction.addToHistory.of(false)],
+      }).state;
+      framesRef.current = getFrames(stateRef.current);
     } else {
-      const newX = Math.max(0, drag.startFrameX + dx - (found.absX - found.frame.x));
-      const newY = Math.max(0, drag.startFrameY + dy - (found.absY - found.frame.y));
-      framesRef.current = replaceFrame(framesRef.current, drag.frameId, moveFrame(found.frame, { dx: newX - found.frame.x, dy: newY - found.frame.y }));
+      // Compute target position from drag start + mouse delta
+      const targetX = Math.max(0, drag.startFrameX + dx);
+      const targetY = Math.max(0, drag.startFrameY + dy);
+      // Delta from current frame position to target
+      const frameDx = targetX - found.absX;
+      const frameDy = targetY - found.absY;
+      if (frameDx !== 0 || frameDy !== 0) {
+        stateRef.current = stateRef.current.update({
+          effects: moveFrameEffect.of({ id: drag.frameId, dx: frameDx, dy: frameDy }),
+          annotations: [Transaction.addToHistory.of(false)],
+        }).state;
+        framesRef.current = getFrames(stateRef.current);
+      }
     }
     doLayout(); paint();
   }
@@ -377,10 +415,14 @@ export default function DemoV2() {
     drawPreviewRef.current = null;
     if (tool === "rect" && x2 - x1 >= cw && y2 - y1 >= ch) {
       const f = createRectFrame({ gridW: Math.max(2, Math.round((x2 - x1) / cw)), gridH: Math.max(2, Math.round((y2 - y1) / ch)), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
-      framesRef.current = [...framesRef.current, { ...f, x: x1, y: y1 }]; scheduleAutosave();
+      stateRef.current = applyAddFrame(stateRef.current, { ...f, x: x1, y: y1 });
+      framesRef.current = getFrames(stateRef.current); scheduleAutosave();
     } else if (tool === "line") {
       const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
-      if (r1 !== r2 || c1 !== c2) { framesRef.current = [...framesRef.current, createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch })]; scheduleAutosave(); }
+      if (r1 !== r2 || c1 !== c2) {
+        stateRef.current = applyAddFrame(stateRef.current, createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch }));
+        framesRef.current = getFrames(stateRef.current); scheduleAutosave();
+      }
     }
     setTool("select"); // one-shot: revert to Select after drawing
     doLayout(); paint();
@@ -394,10 +436,18 @@ export default function DemoV2() {
   }, []);
 
   useEffect(() => {
-    const fn = () => { sizeRef.current = { w: window.innerWidth, h: window.innerHeight }; };
+    const fn = () => { sizeRef.current = { w: window.innerWidth, h: window.innerHeight }; doLayout(); paint(); };
     window.addEventListener("resize", fn);
     return () => window.removeEventListener("resize", fn);
   }, []);
+
+  useEffect(() => {
+    const container = canvasRef.current?.parentElement;
+    if (!container) return;
+    const onScroll = () => paint();
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => container.removeEventListener("scroll", onScroll);
+  });
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -409,6 +459,24 @@ export default function DemoV2() {
   useEffect(() => {
     const fn = async (e: KeyboardEvent) => {
       const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
+      if (mod && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        stateRef.current = editorUndo(stateRef.current);
+        framesRef.current = getFrames(stateRef.current);
+        proseRef.current = getDoc(stateRef.current);
+        preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
+        doLayout(); paint();
+        return;
+      }
+      if (mod && e.key === "z" && e.shiftKey) {
+        e.preventDefault();
+        stateRef.current = editorRedo(stateRef.current);
+        framesRef.current = getFrames(stateRef.current);
+        proseRef.current = getDoc(stateRef.current);
+        preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
+        doLayout(); paint();
+        return;
+      }
       if (mod && e.key === "o") {
         e.preventDefault();
         try {
@@ -416,7 +484,7 @@ export default function DemoV2() {
           fileHandleRef.current = handle;
           const file = await handle.getFile();
           loadDocument(await file.text()); doLayout(); paint();
-        } catch { /* cancelled */ }
+        } catch (err) { if (err instanceof DOMException && err.name === "AbortError") { /* cancelled */ } else { console.error("File open failed:", err); throw err; } }
       }
       if (mod && e.key === "s") {
         e.preventDefault();
@@ -431,7 +499,8 @@ export default function DemoV2() {
           e.preventDefault();
           if (tp.chars.length > 0) {
             const cw = cwRef.current, ch = chRef.current;
-            framesRef.current = [...framesRef.current, createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch })];
+            stateRef.current = applyAddFrame(stateRef.current, createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch }));
+            framesRef.current = getFrames(stateRef.current);
             scheduleAutosave(); doLayout();
           }
           setTool("select"); paint(); return; // one-shot: revert to Select
@@ -443,23 +512,33 @@ export default function DemoV2() {
       if (textEditRef.current) {
         const te = textEditRef.current;
         const found = findFrameById(framesRef.current, te.frameId);
-        if (!found || found.frame.content?.type !== "text") { textEditRef.current = null; paint(); return; }
-        const frame = found.frame;
-        const content = frame.content!;
-        const text = content.text ?? "";
+        if (!found || found.frame.content?.type !== "text") {
+          stateRef.current = stateRef.current.update({ effects: setTextEditEffect.of(null) }).state;
+          textEditRef.current = getTextEdit(stateRef.current);
+          paint(); return;
+        }
+        const text = found.frame.content!.text ?? "";
         const codepoints = [...text];
         if (e.key === "Escape" || e.key === "Enter") {
           e.preventDefault();
-          textEditRef.current = null; blinkRef.current = true; paint(); return;
+          stateRef.current = stateRef.current.update({ effects: setTextEditEffect.of(null) }).state;
+          textEditRef.current = getTextEdit(stateRef.current);
+          blinkRef.current = true; paint(); return;
         }
         if (e.key === "ArrowLeft") {
           e.preventDefault();
-          textEditRef.current = { ...te, col: Math.max(0, te.col - 1) };
+          stateRef.current = stateRef.current.update({
+            effects: setTextEditEffect.of({ frameId: te.frameId, col: Math.max(0, te.col - 1) }),
+          }).state;
+          textEditRef.current = getTextEdit(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "ArrowRight") {
           e.preventDefault();
-          textEditRef.current = { ...te, col: Math.min(codepoints.length, te.col + 1) };
+          stateRef.current = stateRef.current.update({
+            effects: setTextEditEffect.of({ frameId: te.frameId, col: Math.min(codepoints.length, te.col + 1) }),
+          }).state;
+          textEditRef.current = getTextEdit(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "Backspace") {
@@ -467,11 +546,16 @@ export default function DemoV2() {
           if (te.col > 0) {
             const newCp = [...codepoints.slice(0, te.col - 1), ...codepoints.slice(te.col)];
             const newText = newCp.join("");
-            const newCells = buildTextCells(newText);
             const charWidth = getCharWidth();
-            const newFrame: Frame = { ...frame, w: Math.max(newCp.length, 1) * charWidth, content: { ...content, text: newText, cells: newCells } };
-            framesRef.current = replaceFrame(framesRef.current, te.frameId, newFrame);
-            textEditRef.current = { ...te, col: te.col - 1 };
+            stateRef.current = stateRef.current.update({
+              effects: [
+                editTextFrameEffect.of({ id: te.frameId, text: newText, charWidth }),
+                setTextEditEffect.of({ frameId: te.frameId, col: te.col - 1 }),
+              ],
+              annotations: [Transaction.addToHistory.of(true)],
+            }).state;
+            framesRef.current = getFrames(stateRef.current);
+            textEditRef.current = getTextEdit(stateRef.current);
             scheduleAutosave();
           }
           blinkRef.current = true; paint(); return;
@@ -480,68 +564,85 @@ export default function DemoV2() {
           e.preventDefault();
           const newCp = [...codepoints.slice(0, te.col), e.key, ...codepoints.slice(te.col)];
           const newText = newCp.join("");
-          const newCells = buildTextCells(newText);
           const charWidth = getCharWidth();
-          const newFrame: Frame = { ...frame, w: newCp.length * charWidth, content: { ...content, text: newText, cells: newCells } };
-          framesRef.current = replaceFrame(framesRef.current, te.frameId, newFrame);
-          textEditRef.current = { ...te, col: te.col + 1 };
+          stateRef.current = stateRef.current.update({
+            effects: [
+              editTextFrameEffect.of({ id: te.frameId, text: newText, charWidth }),
+              setTextEditEffect.of({ frameId: te.frameId, col: te.col + 1 }),
+            ],
+            annotations: [Transaction.addToHistory.of(true)],
+          }).state;
+          framesRef.current = getFrames(stateRef.current);
+          textEditRef.current = getTextEdit(stateRef.current);
           scheduleAutosave(); blinkRef.current = true; paint(); return;
         }
         return;
       }
       if (proseCursorRef.current) {
-        const cursor = proseCursorRef.current;
-        const lines = proseRef.current.split("\n");
         if (e.key === "Escape") { proseCursorRef.current = null; paint(); return; }
         if (e.key === "ArrowLeft") {
           e.preventDefault();
-          proseCursorRef.current = cursor.col > 0 ? { ...cursor, col: cursor.col - 1 } : cursor.row > 0 ? { row: cursor.row - 1, col: (lines[cursor.row - 1] ?? "").length } : cursor;
+          stateRef.current = proseMoveLeft(stateRef.current);
+          proseCursorRef.current = getCursor(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "ArrowRight") {
           e.preventDefault();
-          const lineLen = (lines[cursor.row] ?? "").length;
-          proseCursorRef.current = cursor.col < lineLen ? { ...cursor, col: cursor.col + 1 } : cursor.row < lines.length - 1 ? { row: cursor.row + 1, col: 0 } : cursor;
+          stateRef.current = proseMoveRight(stateRef.current);
+          proseCursorRef.current = getCursor(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "ArrowUp") {
           e.preventDefault();
-          if (cursor.row > 0) proseCursorRef.current = { row: cursor.row - 1, col: Math.min(cursor.col, (lines[cursor.row - 1] ?? "").length) };
+          stateRef.current = proseMoveUp(stateRef.current);
+          proseCursorRef.current = getCursor(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "ArrowDown") {
           e.preventDefault();
-          if (cursor.row < lines.length - 1) proseCursorRef.current = { row: cursor.row + 1, col: Math.min(cursor.col, (lines[cursor.row + 1] ?? "").length) };
+          stateRef.current = proseMoveDown(stateRef.current);
+          proseCursorRef.current = getCursor(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "Backspace") {
           e.preventDefault();
-          const r = deleteChar(proseRef.current, cursor);
-          proseRef.current = r.text; proseCursorRef.current = r.cursor;
-          preparedRef.current = prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" });
+          stateRef.current = proseDeleteBefore(stateRef.current, getCursor(stateRef.current)!);
+          proseRef.current = getDoc(stateRef.current);
+          framesRef.current = getFrames(stateRef.current);
+          preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
+          proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key === "Enter") {
           e.preventDefault();
-          const r = insertChar(proseRef.current, cursor, "\n");
-          proseRef.current = r.text; proseCursorRef.current = r.cursor;
-          preparedRef.current = prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" });
+          stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, "\n");
+          proseRef.current = getDoc(stateRef.current);
+          framesRef.current = getFrames(stateRef.current);
+          preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
+          proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key.length === 1 && !mod) {
           e.preventDefault();
-          const r = insertChar(proseRef.current, cursor, e.key);
-          proseRef.current = r.text; proseCursorRef.current = r.cursor;
-          preparedRef.current = prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" });
+          stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, e.key);
+          proseRef.current = getDoc(stateRef.current);
+          framesRef.current = getFrames(stateRef.current);
+          preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
+          proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         return;
       }
       // Global shortcuts (no prose cursor)
-      if (e.key === "Escape") { selectedRef.current = null; paint(); }
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedRef.current) {
-        framesRef.current = framesRef.current.filter(f => f.id !== selectedRef.current).map(f => ({ ...f, children: f.children.filter(c => c.id !== selectedRef.current) }));
-        selectedRef.current = null; doLayout(); paint();
+      if (e.key === "Escape") {
+        stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
+        paint();
+      }
+      const deleteSelectedId = getSelectedId(stateRef.current);
+      if ((e.key === "Delete" || e.key === "Backspace") && deleteSelectedId) {
+        stateRef.current = applyDeleteFrame(stateRef.current, deleteSelectedId);
+        framesRef.current = getFrames(stateRef.current);
+        doLayout(); paint();
       }
       if (!mod) {
         if (e.key === "v" || e.key === "V") setTool("select");
@@ -570,11 +671,12 @@ export default function DemoV2() {
       <canvas
         ref={canvasRef}
         tabIndex={0}
-        style={{ display: "block", width: sizeRef.current.w, outline: "none", cursor: "default" }}
+        style={{ display: "block", width: sizeRef.current.w, height: sizeRef.current.h, position: "sticky", top: 0, outline: "none", cursor: "default" }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
       />
+      <div data-spacer="" style={{ pointerEvents: "none" }} />
     </div>
   );
 }
