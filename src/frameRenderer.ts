@@ -2,8 +2,6 @@
 
 import type { Frame } from "./frame";
 import { buildSparseRows } from "./sparseRows";
-import { compositeLayers } from "./layers";
-import type { Layer } from "./layers";
 import { FONT_SIZE, FONT_FAMILY, FG_COLOR } from "./grid";
 
 // ── renderFrame ────────────────────────────────────────────
@@ -53,18 +51,7 @@ function renderContent(
   charWidth: number,
   charHeight: number,
 ): void {
-  // Build a synthetic Layer so we can reuse compositeLayers + buildSparseRows
-  const syntheticLayer: Layer = {
-    id: "__render__",
-    type: "rect",
-    z: 0,
-    visible: true,
-    bbox: { row: 0, col: 0, w: 0, h: 0 },
-    cells,
-  };
-
-  const composite = compositeLayers([syntheticLayer]);
-  const rows = buildSparseRows(composite);
+  const rows = buildSparseRows(cells);
 
   ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
   ctx.fillStyle = FG_COLOR;

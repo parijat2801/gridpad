@@ -344,7 +344,7 @@ describe("framesFromRegions", () => {
     const scanResult = scan(text);
     const regions = detectRegions(scanResult);
 
-    const frames = framesFromRegions(regions, CHAR_W, CHAR_H);
+    const { frames } = framesFromRegions(regions, CHAR_W, CHAR_H);
 
     expect(frames).toBeDefined();
     expect(frames.length).toBeGreaterThan(0);
@@ -355,7 +355,7 @@ describe("framesFromRegions", () => {
     const text = "┌──────┐\n│      │\n└──────┘";
     const scanResult = scan(text);
     const regions = detectRegions(scanResult);
-    const frames = framesFromRegions(regions, CHAR_W, CHAR_H);
+    const { frames } = framesFromRegions(regions, CHAR_W, CHAR_H);
 
     expect(frames).toHaveLength(1);
     const container = frames[0];
@@ -383,13 +383,10 @@ describe("framesFromRegions", () => {
     const regions = detectRegions(scanResult);
     const result = framesFromRegions(regions, CHAR_W, CHAR_H);
 
-    // result should be { frames, prose } or just frames with prose separated
-    // The frames array only contains wireframe-derived frames
-    const frameResult = result as { frames: Frame[]; prose: { startRow: number; text: string }[] };
-    expect(frameResult.frames).toHaveLength(1); // one wireframe region → one container frame
-    expect(frameResult.prose).toHaveLength(2);  // two prose regions
-    expect(frameResult.prose[0].text).toContain("Heading");
-    expect(frameResult.prose[1].text).toContain("More prose");
+    expect(result.frames).toHaveLength(1); // one wireframe region → one container frame
+    expect(result.prose).toHaveLength(2);  // two prose regions
+    expect(result.prose[0].text).toContain("Heading");
+    expect(result.prose[1].text).toContain("More prose");
   });
 
   it("child frame positions are relative to container frame (not absolute)", () => {
@@ -406,7 +403,7 @@ describe("framesFromRegions", () => {
 
     const scanResult = scan(text);
     const regions = detectRegions(scanResult);
-    const frames = framesFromRegions(regions, CHAR_W, CHAR_H);
+    const { frames } = framesFromRegions(regions, CHAR_W, CHAR_H);
 
     // There should be exactly 1 frame (the wireframe container)
     expect(frames).toHaveLength(1);
@@ -420,5 +417,22 @@ describe("framesFromRegions", () => {
       expect(child.x).toBeLessThan(container.w + 1); // allow 1px tolerance
       expect(child.y).toBeLessThan(container.h + 1);
     }
+  });
+});
+
+// ── framesFromRegions return type ─────────────────────────────────────────
+
+describe("framesFromRegions return type", () => {
+  it("returns a plain object with frames and prose arrays", () => {
+    const text = "Hello world\n\n┌──┐\n│  │\n└──┘\n\nGoodbye";
+    const regions = detectRegions(scan(text));
+    const result = framesFromRegions(regions, CHAR_W, CHAR_H);
+    // Should be a plain object, NOT an array
+    expect(Array.isArray(result)).toBe(false);
+    expect(result.frames).toBeInstanceOf(Array);
+    expect(result.prose).toBeInstanceOf(Array);
+    expect(result.prose.length).toBeGreaterThan(0);
+    expect(result.prose[0]).toHaveProperty("text");
+    expect(result.prose[0]).toHaveProperty("startRow");
   });
 });

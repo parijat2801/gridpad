@@ -92,6 +92,7 @@ export function detectRegions(scanResult: ScanResult): Region[] {
   // Build regions
   const regions: Region[] = [];
   let currentRow = 0;
+  const allLayers = buildLayersFromScan(scanResult);
 
   for (const wf of merged) {
     // Prose before wireframe
@@ -108,7 +109,7 @@ export function detectRegions(scanResult: ScanResult): Region[] {
     }
 
     // Wireframe region
-    const layers = buildLayersForRegion(scanResult, wf.start, wf.end);
+    const layers = buildLayersForRegion(allLayers, wf.start, wf.end);
     regions.push({
       type: "wireframe",
       startRow: wf.start,
@@ -150,12 +151,11 @@ function gridSliceToText(grid: string[][], startRow: number, endRow: number): st
  * Rebases both bbox.row and cell keys to be relative to startRow.
  */
 function buildLayersForRegion(
-  scanResult: ScanResult,
+  allLayers: Layer[],
   startRow: number,
   endRow: number,
 ): Layer[] {
-  const layers = buildLayersFromScan(scanResult);
-  return layers
+  return allLayers
     .filter((l) => {
       const layerEnd = l.bbox.row + l.bbox.h - 1;
       return layerEnd >= startRow && l.bbox.row <= endRow;

@@ -288,20 +288,6 @@ export function compositeLayers(layers: Layer[]): Map<string, string> {
   return result;
 }
 
-// ── Shared composite cache ────────────────────────────────
-// TextLayer sets this after computing composite; layerToText
-// reuses it to avoid a redundant O(all-cells) pass during autosave.
-
-let _lastComposite: Map<string, string> | null = null;
-
-export function setLastComposite(c: Map<string, string> | null): void {
-  _lastComposite = c;
-}
-
-export function getLastComposite(): Map<string, string> | null {
-  return _lastComposite;
-}
-
 /**
  * Like compositeLayers but returns ownership info: each cell maps to
  * { char, layerId } indicating which layer is visually topmost.
@@ -368,7 +354,7 @@ export function isEffectivelyVisible(
  * are preserved so that layer offsets are faithful.
  */
 export function layerToText(layers: Layer[]): string {
-  const composite = _lastComposite ?? compositeLayers(layers);
+  const composite = compositeLayers(layers);
   if (composite.size === 0) return "";
 
   let minR = Infinity,
@@ -397,6 +383,27 @@ export function layerToText(layers: Layer[]): string {
 }
 
 // ── Layer mutations (immutable) ────────────────────────────
+
+function collectDescendants(layers: Layer[], id: string): Set<string> {
+  const byParent = new Map<string, Layer[]>();
+  for (const l of layers) {
+    const pid = l.parentId ?? null;
+    if (pid === null) continue;
+    const arr = byParent.get(pid) ?? [];
+    arr.push(l);
+    byParent.set(pid, arr);
+  }
+  const result = new Set<string>();
+  const queue: string[] = [id];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    if (result.has(cur)) continue;
+    result.add(cur);
+    const kids = byParent.get(cur) ?? [];
+    for (const k of kids) queue.push(k.id);
+  }
+  return result;
+}
 
 /**
  * Move a layer by (deltaRow, deltaCol). Returns a NEW layer; the original is
@@ -440,25 +447,7 @@ export function moveLayerCascading(
   deltaRow: number,
   deltaCol: number,
 ): Layer[] {
-  const byParent = new Map<string, Layer[]>();
-  for (const l of layers) {
-    const pid = l.parentId ?? null;
-    if (pid === null) continue;
-    const arr = byParent.get(pid) ?? [];
-    arr.push(l);
-    byParent.set(pid, arr);
-  }
-
-  // BFS to collect the target and all descendants.
-  const targets = new Set<string>();
-  const queue: string[] = [id];
-  while (queue.length > 0) {
-    const cur = queue.shift()!;
-    if (targets.has(cur)) continue;
-    targets.add(cur);
-    const kids = byParent.get(cur) ?? [];
-    for (const k of kids) queue.push(k.id);
-  }
+  const targets = collectDescendants(layers, id);
 
   return layers.map((l) => {
     if (!targets.has(l.id)) return l;
@@ -472,24 +461,7 @@ export function moveLayerCascading(
  * no parent-child relationship) are preserved.
  */
 export function deleteLayer(layers: Layer[], id: string): Layer[] {
-  const byParent = new Map<string, Layer[]>();
-  for (const l of layers) {
-    const pid = l.parentId ?? null;
-    if (pid === null) continue;
-    const arr = byParent.get(pid) ?? [];
-    arr.push(l);
-    byParent.set(pid, arr);
-  }
-
-  const victims = new Set<string>();
-  const queue: string[] = [id];
-  while (queue.length > 0) {
-    const cur = queue.shift()!;
-    if (victims.has(cur)) continue;
-    victims.add(cur);
-    const kids = byParent.get(cur) ?? [];
-    for (const k of kids) queue.push(k.id);
-  }
+  const victims = collectDescendants(layers, id);
 
   return layers.filter((l) => !victims.has(l.id));
 }

@@ -211,16 +211,11 @@ export function resizeFrame(
 
 // ── framesFromRegions ──────────────────────────────────────
 
-type FramesResult = Frame[] & {
-  frames: Frame[];
-  prose: { startRow: number; text: string }[];
-};
-
 export function framesFromRegions(
   regions: Region[],
   charWidth: number,
   charHeight: number,
-): FramesResult {
+): { frames: Frame[]; prose: { startRow: number; text: string }[] } {
   const frames: Frame[] = [];
   const prose: { startRow: number; text: string }[] = [];
 
@@ -294,5 +289,5 @@ export function framesFromRegions(
     frames.push(container);
   }
 
-  return Object.assign(frames, { frames, prose }) as FramesResult;
+  return { frames, prose };
 }

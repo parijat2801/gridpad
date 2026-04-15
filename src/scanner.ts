@@ -253,7 +253,7 @@ function detectLines(
 
   // Vertical lines: same rule — only multi-cell runs become line shapes.
   const height = grid.length;
-  const maxWidth = Math.max(0, ...grid.map((r) => r.length));
+  const maxWidth = grid.reduce((m, r) => Math.max(m, r.length), 0);
   for (let col = 0; col < maxWidth; col++) {
     let runStart = -1;
     for (let row = 0; row <= height; row++) {

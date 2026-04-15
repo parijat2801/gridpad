@@ -104,11 +104,10 @@ export default function DemoV2() {
 
   function loadDocument(text: string) {
     const cw = cwRef.current, ch = chRef.current;
-    const result = framesFromRegions(detectRegions(scan(text)), cw, ch);
-    const frames = result.frames;
-    const proseText = (result as { prose: { text: string }[] }).prose.map((p: { text: string }) => p.text).join("\n\n");
-    preparedRef.current = proseText.length > 0 ? prepareWithSegments(proseText, FONT, { whiteSpace: "pre-wrap" }) : null;
     const regions = detectRegions(scan(text));
+    const { frames, prose } = framesFromRegions(regions, cw, ch);
+    const proseText = prose.map(p => p.text).join("\n\n");
+    preparedRef.current = proseText.length > 0 ? prepareWithSegments(proseText, FONT, { whiteSpace: "pre-wrap" }) : null;
     let curY = 0, frameIdx = 0;
     for (const r of regions) {
       if (r.type === "prose") { curY += r.text.split("\n").length * LH; }
@@ -530,7 +529,7 @@ export default function DemoV2() {
     return () => window.removeEventListener("keydown", fn);
   }, []);
 
-  useEffect(() => { if (ready) { doLayout(); paint(); } });
+  useEffect(() => { if (ready) { doLayout(); paint(); } }, [ready]);
 
   if (!ready) return <div style={{ background: BG, width: "100vw", height: "100vh" }} />;
 

@@ -13,8 +13,6 @@ import {
   buildLineCells,
   buildTextCells,
   toggleVisible,
-  setLastComposite,
-  getLastComposite,
   LIGHT_RECT_STYLE,
   type Layer,
 } from "./layers";
@@ -831,25 +829,18 @@ describe("regenerateCells", () => {
   });
 });
 
-describe("shared composite cache", () => {
-  it("stores and retrieves composite", () => {
-    const composite = new Map([["0,0", "A"]]);
-    setLastComposite(composite);
-    expect(getLastComposite()).toBe(composite);
-    setLastComposite(null);
-    expect(getLastComposite()).toBeNull();
+describe("layerToText", () => {
+  it("computes composite directly without cache", () => {
+    // layerToText should always compute composite from layers
+    const layers: Layer[] = [{
+      id: "t1", type: "text", z: 0, visible: true,
+      bbox: { row: 0, col: 0, w: 2, h: 1 },
+      cells: new Map([["0,0", "A"], ["0,1", "B"]]),
+    }];
+    expect(layerToText(layers)).toBe("AB");
   });
 
-  it("layerToText uses cached composite when set", () => {
-    const cached = new Map([["0,0", "Z"], ["0,1", "Z"]]);
-    setLastComposite(cached);
-    // layerToText should use the cached composite, not recompute
-    expect(layerToText([])).toBe("ZZ");
-    setLastComposite(null);
-  });
-
-  it("layerToText recomputes when no cache", () => {
-    setLastComposite(null);
+  it("returns empty string for empty layers", () => {
     expect(layerToText([])).toBe("");
   });
 });
