@@ -1012,9 +1012,9 @@ export default function Demo() {
       maxRow = Math.max(maxRow, l.bbox.row + l.bbox.h);
       maxCol = Math.max(maxCol, l.bbox.col + l.bbox.w);
     }
-    wf.h = (maxRow + 1) * ch; // +1 cell padding
+    wf.h = (maxRow + 1) * ch;
     wf.w = (maxCol + 1) * cw;
-    recalcFrameBounds(wf);
+    wf.sparse = buildSparseRows(compositeLayers(wf.layers));
   }
 
   function addLayerToWireframe(wf: Wireframe, newLayer: Layer) {
