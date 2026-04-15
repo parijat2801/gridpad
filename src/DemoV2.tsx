@@ -187,13 +187,16 @@ export default function DemoV2() {
     const cursor = proseCursorRef.current;
     if (cursor && blinkRef.current) {
       const charWidth = getCharWidth();
-      // Find the visual line that corresponds to cursor.row using Pretext's startCursor
+      const srcLines = proseRef.current.split("\n");
+      let srcRow = 0;
       for (const pl of linesRef.current) {
-        if (pl.startCursor.segmentIndex === cursor.row && cursor.col >= pl.startCursor.graphemeIndex && cursor.col <= pl.startCursor.graphemeIndex + pl.text.length) {
+        if (srcRow === cursor.row) {
           ctx.fillStyle = "#ffffff";
-          ctx.fillRect(pl.x + (cursor.col - pl.startCursor.graphemeIndex) * charWidth, pl.y, 2, LH);
+          ctx.fillRect(pl.x + cursor.col * charWidth, pl.y, 2, LH);
           break;
         }
+        const srcLineText = srcLines[srcRow] ?? "";
+        if (pl.text.length >= srcLineText.length) srcRow++;
       }
     }
     // Text frame cursor (blinking)
