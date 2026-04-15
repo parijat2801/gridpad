@@ -79,22 +79,19 @@ export const framesField = StateField.define<Frame[]>({
       if (e.is(restoreFramesEffect)) {
         return e.value;
       } else if (e.is(moveFrameEffect)) {
-        result = result.map((f) =>
-          f.id === e.value.id
-            ? moveFrame(f, { dx: e.value.dx, dy: e.value.dy })
-            : f,
-        );
+        const applyMove = (f: Frame): Frame => {
+          if (f.id === e.value.id) return moveFrame(f, { dx: e.value.dx, dy: e.value.dy });
+          if (f.children.length > 0) return { ...f, children: f.children.map(applyMove) };
+          return f;
+        };
+        result = result.map(applyMove);
       } else if (e.is(resizeFrameEffect)) {
-        result = result.map((f) =>
-          f.id === e.value.id
-            ? resizeFrame(
-                f,
-                { w: e.value.w, h: e.value.h },
-                e.value.charWidth,
-                e.value.charHeight,
-              )
-            : f,
-        );
+        const applyResize = (f: Frame): Frame => {
+          if (f.id === e.value.id) return resizeFrame(f, { w: e.value.w, h: e.value.h }, e.value.charWidth, e.value.charHeight);
+          if (f.children.length > 0) return { ...f, children: f.children.map(applyResize) };
+          return f;
+        };
+        result = result.map(applyResize);
       } else if (e.is(addFrameEffect)) {
         result = [...result, e.value];
       } else if (e.is(deleteFrameEffect)) {
