@@ -242,7 +242,7 @@ export default function DemoV2() {
           selectedRef.current = hit.id;
           proseCursorRef.current = null;
           dragRef.current = null;
-          blinkRef.current = true; paint(); return;
+          blinkRef.current = true; canvas.focus(); paint(); return;
         }
       }
       selectedRef.current = hit.id;
