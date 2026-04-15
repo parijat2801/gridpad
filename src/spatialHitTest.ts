@@ -119,12 +119,32 @@ export function detectResizeEdge(
   threshold: number,
 ): ResizeEdge | null {
   const { row, col, w, h } = layer.bbox;
-  const top = gridRow <= row + threshold;
-  const bottom = gridRow >= row + h - 1 - threshold;
-  const left = gridCol <= col + threshold;
-  const right = gridCol >= col + w - 1 - threshold;
-  if (top || bottom || left || right) {
-    return { top, bottom, left, right };
+  const distTop = gridRow - row;
+  const distBottom = (row + h - 1) - gridRow;
+  const distLeft = gridCol - col;
+  const distRight = (col + w - 1) - gridCol;
+
+  // Must be within threshold of at least one edge
+  const nearTop = distTop >= 0 && distTop <= threshold;
+  const nearBottom = distBottom >= 0 && distBottom <= threshold;
+  const nearLeft = distLeft >= 0 && distLeft <= threshold;
+  const nearRight = distRight >= 0 && distRight <= threshold;
+
+  if (!nearTop && !nearBottom && !nearLeft && !nearRight) return null;
+
+  // If both top and bottom are near (small rect), pick the closest
+  let top = nearTop;
+  let bottom = nearBottom;
+  if (top && bottom) {
+    if (distTop <= distBottom) bottom = false;
+    else top = false;
   }
-  return null;
+  let left = nearLeft;
+  let right = nearRight;
+  if (left && right) {
+    if (distLeft <= distRight) right = false;
+    else left = false;
+  }
+
+  return { top, bottom, left, right };
 }

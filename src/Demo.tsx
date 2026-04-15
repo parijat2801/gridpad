@@ -539,7 +539,7 @@ export default function Demo() {
             const hy = top + row * ch;
             const hw = bw * cw;
             const hh = bh * ch;
-            const hs = 6; // handle size in pixels
+            const hs = 10; // handle size in pixels
             const handlePositions = [
               { x: hx,           y: hy           }, // top-left
               { x: hx + hw / 2,  y: hy           }, // top-mid
