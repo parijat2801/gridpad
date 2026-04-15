@@ -25,7 +25,7 @@ beforeAll(() => {
           actualBoundingBoxAscent: 12,
           actualBoundingBoxDescent: 4,
         }),
-      })) as HTMLCanvasElement["getContext"];
+      })) as unknown as HTMLCanvasElement["getContext"];
     }
     return el;
   });

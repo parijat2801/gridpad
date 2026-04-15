@@ -2,9 +2,9 @@
 // Tests for canvasRenderer.ts — buildRenderState and paintCanvas.
 
 import { describe, it, expect, vi, beforeAll } from "vitest";
-import { buildRenderState, paintCanvas, type RenderState, type Viewport } from "./canvasRenderer";
+import { buildRenderState, paintCanvas, type Viewport } from "./canvasRenderer";
 import { createEditorState, getFrames } from "./editorState";
-import { createFrame, createRectFrame } from "./frame";
+import { createRectFrame } from "./frame";
 import { LIGHT_RECT_STYLE } from "./layers";
 
 // ── Canvas mock for Pretext ──────────────────────────────────────────────────
@@ -24,7 +24,7 @@ beforeAll(() => {
           actualBoundingBoxAscent: 12,
           actualBoundingBoxDescent: 4,
         }),
-      })) as HTMLCanvasElement["getContext"];
+      })) as unknown as HTMLCanvasElement["getContext"];
     }
     return el;
   });
