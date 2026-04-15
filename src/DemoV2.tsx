@@ -296,11 +296,14 @@ export default function DemoV2() {
       }
     }
     const hit = hitTestFrames(framesRef.current, px, py);
+    // For drag/select we need the top-level container, not a child.
+    // hitTestFrames may return a child — find which container owns it.
+    const containerId = hit ? framesRef.current.find(f => f.id === hit.id || f.children.some(c => c.id === hit.id))?.id ?? hit.id : null;
     const now = Date.now();
     const last = lastClickRef.current;
     const isDblClick = last !== null && now - last.time < 300 && Math.abs(px - last.px) < 10 && Math.abs(py - last.py) < 10;
     lastClickRef.current = { time: now, px, py };
-    if (hit) {
+    if (hit && containerId) {
       if (isDblClick && hit.content?.type === "text") {
         const found = findFrameById(framesRef.current, hit.id);
         if (found) {
@@ -314,10 +317,10 @@ export default function DemoV2() {
           blinkRef.current = true; canvas.focus(); paint(); return;
         }
       }
-      stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(hit.id) }).state;
+      stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(containerId) }).state;
       proseCursorRef.current = null; textEditRef.current = null;
-      const found = findFrameById(framesRef.current, hit.id);
-      if (found) dragRef.current = { frameId: hit.id, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false };
+      const found = findFrameById(framesRef.current, containerId);
+      if (found) dragRef.current = { frameId: containerId, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false };
       paint();
     } else {
       stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
