@@ -140,8 +140,12 @@ export default function DemoV2() {
     const pw = Math.floor(w * dpr), ph = Math.floor(viewH * dpr);
     if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
     const ctx = canvas.getContext("2d")!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, -scrollTop);
-    ctx.fillStyle = BG; ctx.fillRect(0, scrollTop, w, viewH);
+    // Clear entire canvas in device space first (no transform)
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = BG; ctx.fillRect(0, 0, pw, ph);
+    // DPR scaling, then translate by scroll offset in CSS coords
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.translate(0, -scrollTop);
     ctx.font = FONT; ctx.fillStyle = FG_COLOR; ctx.textBaseline = "top";
     for (const line of linesRef.current) ctx.fillText(line.text, line.x, line.y);
     const cw = cwRef.current, ch = chRef.current;
