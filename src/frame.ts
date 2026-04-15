@@ -245,16 +245,27 @@ export function framesFromRegions(
       const y = layer.bbox.row * charHeight;
       const w = layer.bbox.w * charWidth;
       const h = layer.bbox.h * charHeight;
-      let content: FrameContent | null = null;
 
+      // Rebase cells to origin (0,0) — the frame's pixel position handles the offset
+      const rebasedCells = new Map<string, string>();
+      const baseRow = layer.bbox.row;
+      const baseCol = layer.bbox.col;
+      for (const [key, val] of layer.cells) {
+        const ci = key.indexOf(",");
+        const r = Number(key.slice(0, ci)) - baseRow;
+        const c = Number(key.slice(ci + 1)) - baseCol;
+        rebasedCells.set(`${r},${c}`, val);
+      }
+
+      let content: FrameContent | null = null;
       if (layer.type === "rect" && layer.style) {
-        content = { type: "rect", cells: layer.cells, style: layer.style };
+        content = { type: "rect", cells: rebasedCells, style: layer.style };
       } else if (layer.type === "line") {
-        content = { type: "line", cells: layer.cells };
+        content = { type: "line", cells: rebasedCells };
       } else if (layer.type === "text") {
-        content = { type: "text", cells: layer.cells, text: layer.content ?? "" };
+        content = { type: "text", cells: rebasedCells, text: layer.content ?? "" };
       } else {
-        content = { type: "rect", cells: layer.cells, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" } };
+        content = { type: "rect", cells: rebasedCells, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" } };
       }
 
       return { id: nextId(), x, y, w, h, children: [], content, clip: false };
