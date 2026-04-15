@@ -84,6 +84,8 @@ export default function DemoV2() {
   const [activeTool, setActiveTool] = useState<ToolName>("select");
   const proseCursorRef = useRef<CursorPos | null>(null);
   const blinkRef = useRef(true);
+  const textEditRef = useRef<{ frameId: string; col: number } | null>(null);
+  const lastClickRef = useRef<{ time: number; px: number; py: number } | null>(null);
 
   function setTool(t: ToolName) { activeToolRef.current = t; setActiveTool(t); }
 
@@ -149,6 +151,17 @@ export default function DemoV2() {
         if (pl.text.length >= srcLineText.length) srcRow++;
       }
     }
+    // Text frame cursor (blinking)
+    const te = textEditRef.current;
+    if (te && blinkRef.current) {
+      const found = findFrameById(framesRef.current, te.frameId);
+      if (found && found.frame.content?.type === "text") {
+        const charWidth = getCharWidth();
+        const charHeight = chRef.current;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(found.absX + te.col * charWidth, found.absY, 2, charHeight);
+      }
+    }
   }
 
   function findFrameById(frames: Frame[], id: string, px = 0, py = 0): { frame: Frame; absX: number; absY: number } | null {
@@ -167,6 +180,13 @@ export default function DemoV2() {
       if (f.children.length > 0) return { ...f, children: replaceFrame(f.children, id, newFrame) };
       return f;
     });
+  }
+
+  function buildTextCells(text: string): Map<string, string> {
+    const cells = new Map<string, string>();
+    const codepoints = [...text];
+    for (let i = 0; i < codepoints.length; i++) cells.set(`0,${i}`, codepoints[i]);
+    return cells;
   }
 
   function proseCursorFromClick(px: number, py: number): CursorPos | null {
@@ -206,14 +226,34 @@ export default function DemoV2() {
       }
     }
     const hit = hitTestFrames(framesRef.current, px, py);
+    const now = Date.now();
+    const last = lastClickRef.current;
+    const isDblClick = last !== null && now - last.time < 300 && Math.abs(px - last.px) < 10 && Math.abs(py - last.py) < 10;
+    lastClickRef.current = { time: now, px, py };
     if (hit) {
+      if (isDblClick && hit.content?.type === "text") {
+        const found = findFrameById(framesRef.current, hit.id);
+        if (found) {
+          const charWidth = getCharWidth();
+          const relX = px - found.absX;
+          const text = hit.content.text ?? "";
+          const col = Math.max(0, Math.min(Math.round(relX / charWidth), [...text].length));
+          textEditRef.current = { frameId: hit.id, col };
+          selectedRef.current = hit.id;
+          proseCursorRef.current = null;
+          dragRef.current = null;
+          blinkRef.current = true; paint(); return;
+        }
+      }
       selectedRef.current = hit.id;
       proseCursorRef.current = null;
+      textEditRef.current = null;
       const found = findFrameById(framesRef.current, hit.id);
       if (found) dragRef.current = { frameId: hit.id, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false };
       paint();
     } else {
       selectedRef.current = null; dragRef.current = null;
+      textEditRef.current = null;
       proseCursorRef.current = proseCursorFromClick(px, py);
       blinkRef.current = true; paint();
     }
@@ -277,7 +317,7 @@ export default function DemoV2() {
 
   useEffect(() => {
     const id = setInterval(() => {
-      if (proseCursorRef.current) { blinkRef.current = !blinkRef.current; paint(); }
+      if (proseCursorRef.current || textEditRef.current) { blinkRef.current = !blinkRef.current; paint(); }
     }, 530);
     return () => clearInterval(id);
   }, []);
@@ -292,6 +332,54 @@ export default function DemoV2() {
           const file = await handle.getFile();
           loadDocument(await file.text()); doLayout(); paint();
         } catch { /* cancelled */ }
+      }
+      if (textEditRef.current) {
+        const te = textEditRef.current;
+        const found = findFrameById(framesRef.current, te.frameId);
+        if (!found || found.frame.content?.type !== "text") { textEditRef.current = null; paint(); return; }
+        const frame = found.frame;
+        const content = frame.content!;
+        const text = content.text ?? "";
+        const codepoints = [...text];
+        if (e.key === "Escape" || e.key === "Enter") {
+          e.preventDefault();
+          textEditRef.current = null; blinkRef.current = true; paint(); return;
+        }
+        if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          textEditRef.current = { ...te, col: Math.max(0, te.col - 1) };
+          blinkRef.current = true; paint(); return;
+        }
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          textEditRef.current = { ...te, col: Math.min(codepoints.length, te.col + 1) };
+          blinkRef.current = true; paint(); return;
+        }
+        if (e.key === "Backspace") {
+          e.preventDefault();
+          if (te.col > 0) {
+            const newCp = [...codepoints.slice(0, te.col - 1), ...codepoints.slice(te.col)];
+            const newText = newCp.join("");
+            const newCells = buildTextCells(newText);
+            const charWidth = getCharWidth();
+            const newFrame: Frame = { ...frame, w: Math.max(newCp.length, 1) * charWidth, content: { ...content, text: newText, cells: newCells } };
+            framesRef.current = replaceFrame(framesRef.current, te.frameId, newFrame);
+            textEditRef.current = { ...te, col: te.col - 1 };
+          }
+          blinkRef.current = true; paint(); return;
+        }
+        if (e.key.length === 1 && !mod) {
+          e.preventDefault();
+          const newCp = [...codepoints.slice(0, te.col), e.key, ...codepoints.slice(te.col)];
+          const newText = newCp.join("");
+          const newCells = buildTextCells(newText);
+          const charWidth = getCharWidth();
+          const newFrame: Frame = { ...frame, w: newCp.length * charWidth, content: { ...content, text: newText, cells: newCells } };
+          framesRef.current = replaceFrame(framesRef.current, te.frameId, newFrame);
+          textEditRef.current = { ...te, col: te.col + 1 };
+          blinkRef.current = true; paint(); return;
+        }
+        return;
       }
       if (proseCursorRef.current) {
         const cursor = proseCursorRef.current;
