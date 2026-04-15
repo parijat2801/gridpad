@@ -9,18 +9,6 @@ import {
 } from "./layers";
 import { scan, type RectStyle } from "./scanner";
 
-function makeLayer(id: string, extras: Partial<Layer> = {}): Layer {
-  return {
-    id,
-    type: "rect",
-    z: 0,
-    visible: true,
-    bbox: { row: 0, col: 0, w: 3, h: 3 },
-    cells: new Map(),
-    ...extras,
-  } as Layer;
-}
-
 describe("layers", () => {
   describe("buildLayersFromScan", () => {
     it("returns no layers for empty scan", () => {
