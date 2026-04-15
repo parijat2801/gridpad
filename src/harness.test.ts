@@ -23,6 +23,7 @@ import {
   LIGHT_RECT_STYLE,
   type Layer,
 } from "./layers";
+import { framesFromRegions } from "./frame";
 import { buildSparseRows } from "./sparseRows";
 import { insertChar, deleteChar } from "./proseCursor";
 // @ts-expect-error vitest runs in node where fs/path exist
@@ -874,6 +875,34 @@ describe("performance targets", () => {
     const ms = (performance.now() - start) / 60;
     console.log(`  Drag recomposite: ${ms.toFixed(2)}ms/frame (<16ms)`);
     expect(ms).toBeLessThan(16);
+  });
+
+  it("synthetic 50KB file: scanToFrames completes < 500ms", () => {
+    // Generate ~50KB file with 100 wireframes separated by prose
+    const sections: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      sections.push(`# Section ${i}\n`);
+      sections.push(`This is paragraph ${i} with some longer text content that fills up the line. `.repeat(5) + "\n");
+      sections.push("\n\n");
+      sections.push("┌──────────────────────┐\n");
+      sections.push(`│ Wireframe box ${String(i).padStart(3)} │\n`);
+      sections.push("│                      │\n");
+      sections.push("└──────────────────────┘\n");
+      sections.push("\n\n");
+    }
+    const text = sections.join("");
+    expect(text.length).toBeGreaterThan(40000);
+
+    const start = performance.now();
+    const scanResult = scan(text);
+    const regions = detectRegions(scanResult);
+    const { frames } = framesFromRegions(regions, 9.6, 18.4, scanResult);
+    const ms = performance.now() - start;
+
+    console.log(`  Synthetic 50KB: ${text.length} chars, ${regions.length} regions, ${frames.length} frames, ${ms.toFixed(0)}ms`);
+    expect(ms).toBeLessThan(500);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(regions.length).toBeGreaterThan(0);
   });
 
   it.skipIf(!hasColex)("largest file: all regions < 500 layers", () => {
