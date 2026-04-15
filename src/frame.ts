@@ -151,14 +151,23 @@ export function framesToObstacles(frames: Frame[]): Obstacle[] {
 function hitTestOne(frame: Frame, px: number, py: number): Frame | null {
   if (px < frame.x || px >= frame.x + frame.w) return null;
   if (py < frame.y || py >= frame.y + frame.h) return null;
-  // Try children first (relative coords)
+  // Try children in reverse order (last = highest z = topmost)
+  // Pick the smallest matching child (most specific hit)
   const relX = px - frame.x;
   const relY = py - frame.y;
-  for (const child of frame.children) {
-    const hit = hitTestOne(child, relX, relY);
-    if (hit) return hit;
+  let bestHit: Frame | null = null;
+  let bestArea = Infinity;
+  for (let i = frame.children.length - 1; i >= 0; i--) {
+    const hit = hitTestOne(frame.children[i], relX, relY);
+    if (hit) {
+      const area = hit.w * hit.h;
+      if (area < bestArea) {
+        bestHit = hit;
+        bestArea = area;
+      }
+    }
   }
-  return frame;
+  return bestHit ?? frame;
 }
 
 export function hitTestFrames(frames: Frame[], px: number, py: number): Frame | null {
