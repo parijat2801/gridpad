@@ -247,11 +247,13 @@ export default function DemoV2() {
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top + (canvas.parentElement?.scrollTop ?? 0);
     const tool = activeToolRef.current;
-    if (tool === "rect" || tool === "line") {
+    // Drawing tools only activate on empty space — clicking a frame always selects
+    const preHit = hitTestFrames(framesRef.current, px, py);
+    if (!preHit && (tool === "rect" || tool === "line")) {
       drawPreviewRef.current = { startX: px, startY: py, curX: px, curY: py };
       paint(); return;
     }
-    if (tool === "text") {
+    if (!preHit && tool === "text") {
       const cw = cwRef.current, ch = chRef.current;
       const snappedX = Math.floor(px / cw) * cw, snappedY = Math.floor(py / ch) * ch;
       textPlacementRef.current = { x: snappedX, y: snappedY, chars: "" };
