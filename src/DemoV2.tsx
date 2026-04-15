@@ -247,8 +247,11 @@ export default function DemoV2() {
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top + (canvas.parentElement?.scrollTop ?? 0);
     const tool = activeToolRef.current;
-    // Drawing tools only activate on empty space — clicking a frame always selects
+    // Drawing tools only activate on empty space — clicking anything selects it + reverts to Select
     const preHit = hitTestFrames(framesRef.current, px, py);
+    if (tool !== "select" && preHit) {
+      setTool("select"); // auto-revert to select on click
+    }
     if (!preHit && (tool === "rect" || tool === "line")) {
       drawPreviewRef.current = { startX: px, startY: py, curX: px, curY: py };
       paint(); return;
@@ -355,6 +358,7 @@ export default function DemoV2() {
       const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
       if (r1 !== r2 || c1 !== c2) { framesRef.current = [...framesRef.current, createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch })]; scheduleAutosave(); }
     }
+    setTool("select"); // one-shot: revert to Select after drawing
     doLayout(); paint();
   }
 
@@ -406,7 +410,7 @@ export default function DemoV2() {
             framesRef.current = [...framesRef.current, createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch })];
             scheduleAutosave(); doLayout();
           }
-          textPlacementRef.current = null; paint(); return;
+          setTool("select"); paint(); return; // one-shot: revert to Select
         }
         if (e.key === "Backspace") { e.preventDefault(); const cps = [...tp.chars]; cps.pop(); textPlacementRef.current = { ...tp, chars: cps.join("") }; paint(); return; }
         if (e.key.length === 1 && !mod) { e.preventDefault(); textPlacementRef.current = { ...tp, chars: tp.chars + e.key }; paint(); return; }
