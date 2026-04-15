@@ -1,7 +1,7 @@
 // Frame renderer: draws Frame trees onto a CanvasRenderingContext2D.
 
 import type { Frame } from "./frame";
-import { buildSparseRows } from "./KonvaCanvas";
+import { buildSparseRows } from "./sparseRows";
 import { compositeLayers } from "./layers";
 import type { Layer } from "./layers";
 import { FONT_SIZE, FONT_FAMILY, FG_COLOR } from "./grid";
