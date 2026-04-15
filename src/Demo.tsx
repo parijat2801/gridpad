@@ -31,8 +31,6 @@ import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pr
 import { reflowLayout, type PositionedLine, type Obstacle } from "./reflowLayout";
 import { DEMO_DEFAULT_TEXT } from "./demoDefaults";
 import { handleProseKeyPress } from "./spatialKeyHandler";
-import { detectResizeEdge } from "./spatialHitTest";
-import type { ResizeEdge } from "./spatialHitTest";
 
 export const SPATIAL_FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 export const SPATIAL_LH = Math.ceil(FONT_SIZE * 1.15);
@@ -93,6 +91,67 @@ interface TextPlacementState {
 
 const TOOLBAR_HEIGHT = 32;
 
+// ── Handle types ─────────────────────────────────────────
+/** The 8 resize handle positions on a selected rect layer */
+type ResizeHandle = "tl" | "tm" | "tr" | "ml" | "mr" | "bl" | "bm" | "br";
+
+const HANDLE_SIZE = 12; // px
+
+/** Compute 8 handle rects [x, y, w, h] in document pixel space for the given layer bbox. */
+function computeHandleRects(
+  layer: Layer,
+  wfX: number,
+  wfY: number,
+  cw: number,
+  ch: number,
+): Array<{ handle: ResizeHandle; x: number; y: number; w: number; h: number }> {
+  const lx = wfX + layer.bbox.col * cw;
+  const ly = wfY + layer.bbox.row * ch;
+  const lw = layer.bbox.w * cw;
+  const lh = layer.bbox.h * ch;
+  const hs = HANDLE_SIZE;
+  const h2 = hs / 2;
+  return [
+    { handle: "tl", x: lx - h2,          y: ly - h2,          w: hs, h: hs },
+    { handle: "tm", x: lx + lw / 2 - h2, y: ly - h2,          w: hs, h: hs },
+    { handle: "tr", x: lx + lw - h2,     y: ly - h2,          w: hs, h: hs },
+    { handle: "ml", x: lx - h2,          y: ly + lh / 2 - h2, w: hs, h: hs },
+    { handle: "mr", x: lx + lw - h2,     y: ly + lh / 2 - h2, w: hs, h: hs },
+    { handle: "bl", x: lx - h2,          y: ly + lh - h2,     w: hs, h: hs },
+    { handle: "bm", x: lx + lw / 2 - h2, y: ly + lh - h2,     w: hs, h: hs },
+    { handle: "br", x: lx + lw - h2,     y: ly + lh - h2,     w: hs, h: hs },
+  ];
+}
+
+/** Return which handle (if any) contains pixel point (px, docY). */
+function hitTestHandle(
+  layer: Layer,
+  wfX: number,
+  wfY: number,
+  cw: number,
+  ch: number,
+  px: number,
+  docY: number,
+): ResizeHandle | null {
+  const rects = computeHandleRects(layer, wfX, wfY, cw, ch);
+  for (const r of rects) {
+    if (px >= r.x && px <= r.x + r.w && docY >= r.y && docY <= r.y + r.h) {
+      return r.handle;
+    }
+  }
+  return null;
+}
+
+/** CSS cursor for a given resize handle */
+function handleToCursor(handle: ResizeHandle): string {
+  switch (handle) {
+    case "tl": case "br": return "nwse-resize";
+    case "tr": case "bl": return "nesw-resize";
+    case "tm": case "bm": return "ns-resize";
+    case "ml": case "mr": return "ew-resize";
+  }
+}
+
 // ── Drag state ───────────────────────────────────────────
 interface DragState {
   wireframeId: string;
@@ -100,14 +159,17 @@ interface DragState {
   layerId?: string;
   /** Layer's bbox at drag start, in wireframe-local grid coords */
   startBbox?: { row: number; col: number; w: number; h: number };
-  startY: number;   // pixel docY at drag start
+  startY: number;   // pixel docY at drag start (wireframe y at start for whole-wf drag)
   startWfY: number; // wireframe.y at drag start
-  startX: number;   // pixel mouseX at drag start (for whole-wireframe horizontal drag)
+  startX: number;   // pixel mouseX at drag start
   startWfX: number; // wireframe.x at drag start
-  /** pixel mouseX at drag start (for layer column delta) */
-  startMX?: number;
   /** If set, this is a resize gesture (not a move) */
-  resizeEdge?: ResizeEdge;
+  resizeHandle?: ResizeHandle;
+  /** Pointer position at gesture start — used for drag threshold */
+  pointerStartX: number;
+  pointerStartY: number;
+  /** Has the pointer moved > 3px since mouseDown? */
+  dragHasOccurred: boolean;
 }
 
 export default function Demo() {
@@ -1043,7 +1105,8 @@ export default function Demo() {
     canvas.focus();
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
-    const docY = e.clientY - rect.top + (canvasRef.current?.parentElement?.scrollTop ?? 0);
+    const scrollTop = canvas.parentElement?.scrollTop ?? 0;
+    const docY = e.clientY - rect.top + scrollTop;
 
     // ── Drawing tools: rect, line, text ──────────────────
     const tool = activeToolRef.current;
@@ -1086,19 +1149,21 @@ export default function Demo() {
       return;
     }
 
-    const wf = hitTestWireframe(px, docY);
-    if (wf) {
-      const cw = cwRef.current;
-      const ch = chRef.current;
-      const gridRow = Math.floor((docY - wf.y) / ch);
-      const gridCol = Math.floor((px - wf.x) / cw);
+    // ── Select tool ───────────────────────────────────────
 
-      // If a layer is already selected, check if click is on its resize handle
-      if (selectedLayerIdRef.current) {
-        const selLayer = wf.layers.find(l => l.id === selectedLayerIdRef.current);
-        if (selLayer && selLayer.type === "rect" && selLayer.style) {
-          const edge = detectResizeEdge(selLayer, gridRow, gridCol, 2);
-          if (edge) {
+    // Step 1: If a rect layer is selected, check pixel-based handle hit-test FIRST
+    const cw = cwRef.current;
+    const ch = chRef.current;
+    const prevSelectedLayerId = selectedLayerIdRef.current;
+    if (prevSelectedLayerId) {
+      // Find the wireframe containing the selected layer
+      for (const wf of wireframesRef.current) {
+        const selLayer = wf.layers.find(l => l.id === prevSelectedLayerId);
+        if (!selLayer) continue;
+        if (selLayer.type === "rect" && selLayer.style) {
+          const handle = hitTestHandle(selLayer, wf.x, wf.y, cw, ch, px, docY);
+          if (handle) {
+            // Start resize gesture
             proseCursorRef.current = null;
             wireframeTextEditRef.current = null;
             stopBlink();
@@ -1110,16 +1175,26 @@ export default function Demo() {
               startWfY: wf.y,
               startX: px,
               startWfX: wf.x,
-              startMX: px,
-              resizeEdge: edge,
+              resizeHandle: handle,
+              pointerStartX: px,
+              pointerStartY: docY,
+              dragHasOccurred: false,
             };
             paint();
             return;
           }
         }
+        break; // found the wireframe, no handle hit
       }
+    }
 
-      // Find the topmost layer whose bbox contains this grid cell
+    // Step 2: Hit-test wireframes and layers → immediate selection switch
+    const wf = hitTestWireframe(px, docY);
+    if (wf) {
+      const gridRow = Math.floor((docY - wf.y) / ch);
+      const gridCol = Math.floor((px - wf.x) / cw);
+
+      // Find topmost layer at this grid cell
       const sortedLayers = [...wf.layers]
         .filter(l => l.visible && l.type !== "group")
         .sort((a, b) => b.z - a.z);
@@ -1155,6 +1230,7 @@ export default function Demo() {
           col: colInContent,
         };
         proseCursorRef.current = null;
+        // Immediate selection: select this layer
         selectedIdRef.current = null;
         selectedLayerIdRef.current = hitLayer.id;
         dragRef.current = null;
@@ -1164,24 +1240,17 @@ export default function Demo() {
         return;
       }
 
-      // Clear prose cursor when clicking into a wireframe
+      // Clear prose cursor and text edit when clicking into a wireframe
       proseCursorRef.current = null;
-      // Clear wireframe text edit if clicking elsewhere
       wireframeTextEditRef.current = null;
       stopBlink();
 
       if (hitLayer && !e.altKey) {
-        // Individual layer selected (Alt+click bypasses to whole-wireframe drag)
+        // Immediate selection switch: select this layer regardless of previous selection
         selectedIdRef.current = null;
         selectedLayerIdRef.current = hitLayer.id;
 
-        // Check if this is a resize gesture (rect layer with style, near edge)
-        let resizeEdge: ResizeEdge | undefined;
-        if (hitLayer.type === "rect" && hitLayer.style) {
-          const edge = detectResizeEdge(hitLayer, gridRow, gridCol, 2);
-          if (edge) resizeEdge = edge;
-        }
-
+        // Record gesture start — drag threshold will be checked on mousemove
         dragRef.current = {
           wireframeId: wf.id,
           layerId: hitLayer.id,
@@ -1190,11 +1259,12 @@ export default function Demo() {
           startWfY: wf.y,
           startX: px,
           startWfX: wf.x,
-          startMX: px,
-          resizeEdge,
+          pointerStartX: px,
+          pointerStartY: docY,
+          dragHasOccurred: false,
         };
       } else {
-        // Whole wireframe block drag
+        // Alt+click or empty space within wireframe → whole wireframe drag
         selectedIdRef.current = wf.id;
         selectedLayerIdRef.current = null;
         dragRef.current = {
@@ -1203,14 +1273,18 @@ export default function Demo() {
           startWfY: wf.y,
           startX: px,
           startWfX: wf.x,
+          pointerStartX: px,
+          pointerStartY: docY,
+          dragHasOccurred: false,
         };
       }
       paint();
     } else {
+      // Click in empty area: clear selection, place prose cursor
       selectedIdRef.current = null;
       selectedLayerIdRef.current = null;
       dragRef.current = null;
-      // Try to place prose cursor in prose area
+      wireframeTextEditRef.current = null;
       const cursor = findProseCursorAt(px, docY);
       if (cursor) {
         proseCursorRef.current = cursor;
@@ -1228,7 +1302,8 @@ export default function Demo() {
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
-    const docY = e.clientY - rect.top + (canvasRef.current?.parentElement?.scrollTop ?? 0);
+    const scrollTop = canvas.parentElement?.scrollTop ?? 0;
+    const docY = e.clientY - rect.top + scrollTop;
 
     // Update draw gesture preview
     const dg = drawGestureRef.current;
@@ -1245,53 +1320,70 @@ export default function Demo() {
     const drag = dragRef.current;
     if (!drag) return;
 
+    // Check drag threshold — only start actual movement after 3px
+    if (!drag.dragHasOccurred) {
+      const dx = px - drag.pointerStartX;
+      const dy = docY - drag.pointerStartY;
+      if (Math.sqrt(dx * dx + dy * dy) < 3) return;
+      // Threshold crossed — mark drag as occurred
+      drag.dragHasOccurred = true;
+    }
+
     const wf = wireframesRef.current.find(w => w.id === drag.wireframeId);
     if (!wf) return;
 
-    if (drag.layerId && drag.startBbox && drag.startMX !== undefined) {
-      // Individual layer drag or resize — no reflow, just recomposite within wireframe
-      const cw = cwRef.current;
-      const ch = chRef.current;
-      const deltaRow = Math.round((docY - drag.startY) / ch);
-      const deltaCol = Math.round((px - drag.startMX) / cw);
+    const cw = cwRef.current;
+    const ch = chRef.current;
 
+    if (drag.layerId && drag.startBbox) {
+      // Individual layer drag or resize — no reflow, just recomposite within wireframe
       const layerIdx = wf.layers.findIndex(l => l.id === drag.layerId);
       if (layerIdx !== -1) {
         const layer = wf.layers[layerIdx];
 
-        if (drag.resizeEdge && layer.style) {
-          // Resize gesture — compute new bbox from startBbox + delta + edges
+        if (drag.resizeHandle && layer.style) {
+          // Resize gesture — compute new bbox absolutely from startBbox + pointer delta
           const sb = drag.startBbox;
-          const edge = drag.resizeEdge;
+          const handle = drag.resizeHandle;
+          // Pointer delta in grid cells
+          const deltaCol = Math.round((px - drag.startX) / cw);
+          const deltaRow = Math.round((docY - drag.startY) / ch);
+
           let newRow = sb.row;
           let newCol = sb.col;
           let newW = sb.w;
           let newH = sb.h;
 
-          if (edge.top) {
-            newRow = sb.row + deltaRow;
-            newH = sb.h - deltaRow;
-          }
-          if (edge.bottom) {
-            newH = sb.h + deltaRow;
-          }
-          if (edge.left) {
+          // Apply handle-specific edge adjustments
+          if (handle === "tl" || handle === "ml" || handle === "bl") {
             newCol = sb.col + deltaCol;
             newW = sb.w - deltaCol;
           }
-          if (edge.right) {
+          if (handle === "tr" || handle === "mr" || handle === "br") {
             newW = sb.w + deltaCol;
+          }
+          if (handle === "tl" || handle === "tm" || handle === "tr") {
+            newRow = sb.row + deltaRow;
+            newH = sb.h - deltaRow;
+          }
+          if (handle === "bl" || handle === "bm" || handle === "br") {
+            newH = sb.h + deltaRow;
           }
 
           // Clamp minimum size to 2x2
           if (newW < 2) {
-            if (edge.left) newCol = sb.col + sb.w - 2;
+            if (handle === "tl" || handle === "ml" || handle === "bl") newCol = sb.col + sb.w - 2;
             newW = 2;
           }
           if (newH < 2) {
-            if (edge.top) newRow = sb.row + sb.h - 2;
+            if (handle === "tl" || handle === "tm" || handle === "tr") newRow = sb.row + sb.h - 2;
             newH = 2;
           }
+          // Clamp top-left to non-negative
+          if (newRow < 0) { newH += newRow; newRow = 0; }
+          if (newCol < 0) { newW += newCol; newCol = 0; }
+          if (newW < 2) newW = 2;
+          if (newH < 2) newH = 2;
 
           const newBbox = { row: newRow, col: newCol, w: newW, h: newH };
           const newCells = regenerateCells(newBbox, layer.style);
@@ -1305,9 +1397,11 @@ export default function Demo() {
           doLayout(); // reflow prose around resized frame
           paint();
         } else {
-          // Move gesture
-          const newRow = drag.startBbox.row + deltaRow;
-          const newCol = drag.startBbox.col + deltaCol;
+          // Move gesture — compute position absolutely from startBbox + pointer delta
+          const deltaRow = Math.round((docY - drag.startY) / ch);
+          const deltaCol = Math.round((px - drag.startX) / cw);
+          const newRow = Math.max(0, drag.startBbox.row + deltaRow);
+          const newCol = Math.max(0, drag.startBbox.col + deltaCol);
           const actualDeltaRow = newRow - layer.bbox.row;
           const actualDeltaCol = newCol - layer.bbox.col;
           if (actualDeltaRow !== 0 || actualDeltaCol !== 0) {
@@ -1317,19 +1411,15 @@ export default function Demo() {
               movedLayer,
               ...wf.layers.slice(layerIdx + 1),
             ];
-            // Recomposite wireframe (wireframe position unchanged — no reflow)
             recalcFrameBounds(wf);
-            // Keep selectedLayerIdRef in sync (id is unchanged)
             paint();
           }
         }
       }
     } else {
-      // Whole wireframe block drag — reflow text around updated position
-      const dy = docY - drag.startY;
-      const dx = px - drag.startX;
-      const newY = Math.max(0, drag.startWfY + dy);
-      const newX = Math.max(0, drag.startWfX + dx);
+      // Whole wireframe block drag — compute position absolutely, reflow text
+      const newY = Math.max(0, drag.startWfY + (docY - drag.startY));
+      const newX = Math.max(0, drag.startWfX + (px - drag.startX));
       wf.y = newY;
       wf.x = newX;
       doLayout();
@@ -1387,9 +1477,20 @@ export default function Demo() {
       return;
     }
 
-    if (dragRef.current) {
+    const drag = dragRef.current;
+    if (drag) {
       dragRef.current = null;
-      scheduleAutosave();
+      if (drag.dragHasOccurred) {
+        // A real drag happened: commit final position (already applied incrementally)
+        // For resize: recalculate frame bounds to finalize
+        if (drag.resizeHandle) {
+          const wf = wireframesRef.current.find(w => w.id === drag.wireframeId);
+          if (wf) recalcFrameBounds(wf);
+        }
+        scheduleAutosave();
+      }
+      // If !dragHasOccurred: it was just a click — selection was already handled in mouseDown
+      paint();
     }
   }
 
@@ -1397,13 +1498,17 @@ export default function Demo() {
 
   if (!ready) return <div style={{ background: BG_COLOR, width: "100vw", height: "100vh" }} />;
 
-  const isDragging = dragRef.current !== null;
   const isDrawing = drawGestureRef.current !== null;
+  const drag = dragRef.current;
   const toolCursor = activeTool === "rect" || activeTool === "line"
     ? "crosshair"
     : activeTool === "text"
     ? "text"
-    : isDragging ? "grabbing" : "default";
+    : drag?.resizeHandle
+    ? handleToCursor(drag.resizeHandle)
+    : drag?.dragHasOccurred
+    ? "grabbing"
+    : "default";
 
   const toolButtons: Array<{ id: ActiveTool; label: string; shortcut: string }> = [
     { id: "select", label: "Select", shortcut: "V" },
