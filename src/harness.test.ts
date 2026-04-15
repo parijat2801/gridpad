@@ -14,12 +14,14 @@
  * 10. Performance targets
  */
 import { describe, it, expect, vi, beforeAll } from "vitest";
-import { scan } from "./scanner";
+import { scan, type ScanResult } from "./scanner";
 import { detectRegions, type Region } from "./regions";
 import {
+  buildLayersFromScan,
   compositeLayers,
   regenerateCells,
   LIGHT_RECT_STYLE,
+  type Layer,
 } from "./layers";
 import { buildSparseRows } from "./sparseRows";
 import { insertChar, deleteChar } from "./proseCursor";
@@ -27,6 +29,17 @@ import { insertChar, deleteChar } from "./proseCursor";
 import * as fs from "fs";
 // @ts-expect-error vitest runs in node where fs/path exist
 import * as path from "path";
+
+/** Get layers for a wireframe region by calling buildLayersFromScan directly
+ * and filtering to layers within the region's row range.
+ * Replaces region.layers after Region.layers field is removed. */
+function getLayersForRegion(scanResult: ScanResult, region: Region): Layer[] {
+  const allLayers = buildLayersFromScan(scanResult);
+  return allLayers.filter(l => {
+    const layerEndRow = l.bbox.row + l.bbox.h - 1;
+    return l.bbox.row >= region.startRow && layerEndRow <= region.endRow;
+  });
+}
 
 // ── Canvas mock for Pretext ──────────────────────────────
 beforeAll(() => {
@@ -131,10 +144,11 @@ describe("region detection", () => {
   });
 
   it("pure wireframe → single wireframe region", () => {
-    const regions = detectRegions(scan(PURE_WIREFRAME));
+    const scanResult = scan(PURE_WIREFRAME);
+    const regions = detectRegions(scanResult);
     expect(regions.length).toBe(1);
     expect(regions[0].type).toBe("wireframe");
-    expect(regions[0].layers!.length).toBeGreaterThan(0);
+    expect(getLayersForRegion(scanResult, regions[0]).length).toBeGreaterThan(0);
   });
 
   it("dashboard layout → prose / wireframe / prose", () => {
@@ -157,9 +171,10 @@ describe("region detection", () => {
   });
 
   it("wireframe region layers have row-rebased coordinates", () => {
-    const regions = detectRegions(scan(DASHBOARD));
+    const scanResult = scan(DASHBOARD);
+    const regions = detectRegions(scanResult);
     const wf = regions.find(r => r.type === "wireframe")!;
-    for (const l of wf.layers!) {
+    for (const l of getLayersForRegion(scanResult, wf)) {
       expect(l.bbox.row).toBeGreaterThanOrEqual(0);
       for (const key of l.cells.keys()) {
         expect(Number(key.split(",")[0])).toBeGreaterThanOrEqual(0);
@@ -169,8 +184,12 @@ describe("region detection", () => {
 
   it("no region exceeds 500 layers", () => {
     for (const fixture of [DASHBOARD, MULTI_WIREFRAME, PURE_WIREFRAME]) {
-      for (const r of detectRegions(scan(fixture))) {
-        if (r.layers) expect(r.layers.length).toBeLessThan(500);
+      const scanResult = scan(fixture);
+      for (const r of detectRegions(scanResult)) {
+        if (r.type === "wireframe") {
+          const layers = getLayersForRegion(scanResult, r);
+          expect(layers.length).toBeLessThan(500);
+        }
       }
     }
   });
@@ -180,16 +199,18 @@ describe("region detection", () => {
 
 describe("wireframe compositing", () => {
   it("composite produces correct characters for a simple box", () => {
-    const regions = detectRegions(scan(PURE_WIREFRAME));
-    const composite = compositeLayers(regions[0].layers!);
+    const scanResult = scan(PURE_WIREFRAME);
+    const regions = detectRegions(scanResult);
+    const composite = compositeLayers(getLayersForRegion(scanResult, regions[0]));
     expect(composite.get("0,0")).toBe("┌");
     expect(composite.get("0,10")).toBe("┐");
     expect(composite.get("4,0")).toBe("└");
   });
 
   it("buildSparseRows groups cells correctly", () => {
-    const regions = detectRegions(scan(PURE_WIREFRAME));
-    const composite = compositeLayers(regions[0].layers!);
+    const scanResult = scan(PURE_WIREFRAME);
+    const regions = detectRegions(scanResult);
+    const composite = compositeLayers(getLayersForRegion(scanResult, regions[0]));
     const sparse = buildSparseRows(composite);
     expect(sparse.length).toBe(5);
     expect(sparse[0].startCol).toBe(0);
@@ -197,9 +218,11 @@ describe("wireframe compositing", () => {
   });
 
   it("composite is deterministic", () => {
-    const wf = detectRegions(scan(DASHBOARD)).find(r => r.type === "wireframe")!;
-    const c1 = compositeLayers(wf.layers!);
-    const c2 = compositeLayers(wf.layers!);
+    const scanResult = scan(DASHBOARD);
+    const wf = detectRegions(scanResult).find(r => r.type === "wireframe")!;
+    const layers = getLayersForRegion(scanResult, wf);
+    const c1 = compositeLayers(layers);
+    const c2 = compositeLayers(layers);
     expect([...c1.entries()]).toEqual([...c2.entries()]);
   });
 });
@@ -209,8 +232,10 @@ describe("wireframe compositing", () => {
 describe("drag math", () => {
   it("moving a layer shifts bbox and cell keys", () => {
     const singleBox = "┌──┐\n│  │\n└──┘";
-    const wf = detectRegions(scan(singleBox))[0];
-    const layer = wf.layers!.find(l => l.type === "rect")!;
+    const scanResult = scan(singleBox);
+    const wf = detectRegions(scanResult)[0];
+    const layers = getLayersForRegion(scanResult, wf);
+    const layer = layers.find(l => l.type === "rect")!;
     const origRow = layer.bbox.row;
     const origCol = layer.bbox.col;
 
@@ -224,13 +249,14 @@ describe("drag math", () => {
     layer.bbox.col = origCol + 3;
 
     expect(layer.bbox.row).toBe(origRow + 2);
-    const composite = compositeLayers(wf.layers!);
+    const composite = compositeLayers(layers);
     expect(composite.get(`${origRow + 2},${origCol + 3}`)).toBe("┌");
   });
 
   it("drag preserves all cell characters", () => {
-    const wf = detectRegions(scan(PURE_WIREFRAME))[0];
-    const layer = wf.layers!.find(l => l.type === "rect")!;
+    const scanResult = scan(PURE_WIREFRAME);
+    const wf = detectRegions(scanResult)[0];
+    const layer = getLayersForRegion(scanResult, wf).find(l => l.type === "rect")!;
     const origChars = [...layer.cells.values()].sort();
 
     const newCells = new Map<string, string>();
@@ -266,11 +292,13 @@ describe("resize + regenerate", () => {
   });
 
   it("resize updates composite correctly", () => {
-    const wf = detectRegions(scan(PURE_WIREFRAME))[0];
-    const rect = wf.layers!.find(l => l.type === "rect" && l.style)!;
+    const scanResult = scan(PURE_WIREFRAME);
+    const wf = detectRegions(scanResult)[0];
+    const layers = getLayersForRegion(scanResult, wf);
+    const rect = layers.find(l => l.type === "rect" && l.style)!;
     rect.bbox.w += 5;
     rect.cells = regenerateCells(rect.bbox, rect.style!);
-    const composite = compositeLayers(wf.layers!);
+    const composite = compositeLayers(layers);
     expect(composite.get(`${rect.bbox.row},${rect.bbox.col + rect.bbox.w - 1}`)).toBe("┐");
   });
 });
@@ -333,14 +361,14 @@ describe("real file stress tests", () => {
     const files = findMdFiles(planDir);
     let count = 0;
     for (const f of files) {
-      const result = scan(fs.readFileSync(f, "utf8"));
-      if (result.rects.length === 0) continue;
+      const scanResult = scan(fs.readFileSync(f, "utf8"));
+      if (scanResult.rects.length === 0) continue;
       count++;
-      const regions = detectRegions(result);
+      const regions = detectRegions(scanResult);
       expect(regions.length).toBeGreaterThan(0);
       expect(regions.some(r => r.type === "wireframe")).toBe(true);
       for (const r of regions) {
-        if (r.layers) expect(r.layers.length).toBeLessThan(500);
+        if (r.type === "wireframe") expect(getLayersForRegion(scanResult, r).length).toBeLessThan(500);
         expect(r.startRow).toBeLessThanOrEqual(r.endRow);
       }
     }
@@ -349,11 +377,14 @@ describe("real file stress tests", () => {
 
   it.skipIf(!hasColex)("no wireframe region produces empty composite", () => {
     for (const f of findMdFiles(planDir)) {
-      const result = scan(fs.readFileSync(f, "utf8"));
-      if (result.rects.length === 0) continue;
-      for (const r of detectRegions(result)) {
-        if (r.type === "wireframe" && r.layers && r.layers.length > 0) {
-          expect(compositeLayers(r.layers).size).toBeGreaterThan(0);
+      const scanResult = scan(fs.readFileSync(f, "utf8"));
+      if (scanResult.rects.length === 0) continue;
+      for (const r of detectRegions(scanResult)) {
+        if (r.type === "wireframe") {
+          const layers = getLayersForRegion(scanResult, r);
+          if (layers.length > 0) {
+            expect(compositeLayers(layers).size).toBeGreaterThan(0);
+          }
         }
       }
     }
@@ -378,19 +409,23 @@ describe("real file stress tests", () => {
 
 describe("demo simulation", () => {
   it("full pipeline produces renderable data", () => {
-    const regions = detectRegions(scan(DASHBOARD));
+    const scanResult = scan(DASHBOARD);
+    const regions = detectRegions(scanResult);
     expect(regions.length).toBe(3);
     const wf = regions.find(r => r.type === "wireframe")!;
-    expect(compositeLayers(wf.layers!).size).toBeGreaterThan(0);
-    expect(buildSparseRows(compositeLayers(wf.layers!)).length).toBeGreaterThan(0);
+    const layers = getLayersForRegion(scanResult, wf);
+    expect(compositeLayers(layers).size).toBeGreaterThan(0);
+    expect(buildSparseRows(compositeLayers(layers)).length).toBeGreaterThan(0);
   });
 
   it("click hit-test finds correct layer", () => {
-    const wf = detectRegions(scan(DASHBOARD)).find(r => r.type === "wireframe")!;
-    const rect = wf.layers!.find(l => l.type === "rect" && l.bbox.w > 3)!;
+    const scanResult = scan(DASHBOARD);
+    const wf = detectRegions(scanResult).find(r => r.type === "wireframe")!;
+    const layers = getLayersForRegion(scanResult, wf);
+    const rect = layers.find(l => l.type === "rect" && l.bbox.w > 3)!;
     let bestId: string | null = null;
     let bestZ = -Infinity;
-    for (const l of wf.layers!) {
+    for (const l of layers) {
       if (l.type === "base" || l.type === "group" || !l.visible) continue;
       const { row, col, w, h } = l.bbox;
       if (rect.bbox.row + 1 >= row && rect.bbox.row + 1 < row + h &&
@@ -402,11 +437,13 @@ describe("demo simulation", () => {
   });
 
   it("drag does NOT survive re-layout from same text (known limitation)", () => {
-    const r1 = detectRegions(scan(DASHBOARD));
-    const rect1 = r1.find(r => r.type === "wireframe")!.layers!.find(l => l.type === "rect")!;
+    const scanResult1 = scan(DASHBOARD);
+    const r1 = detectRegions(scanResult1);
+    const rect1 = getLayersForRegion(scanResult1, r1.find(r => r.type === "wireframe")!).find(l => l.type === "rect")!;
     rect1.bbox.row += 3;
-    const r2 = detectRegions(scan(DASHBOARD));
-    const rect2 = r2.find(r => r.type === "wireframe")!.layers!.find(l => l.id === rect1.id)!;
+    const scanResult2 = scan(DASHBOARD);
+    const r2 = detectRegions(scanResult2);
+    const rect2 = getLayersForRegion(scanResult2, r2.find(r => r.type === "wireframe")!).find(l => l.id === rect1.id)!;
     expect(rect2.bbox.row).not.toBe(rect1.bbox.row);
   });
 });
@@ -431,9 +468,10 @@ describe("stitch-back fidelity", () => {
   });
 
   it("composite LOSES junction characters (known limitation of layer model)", () => {
-    const regions = detectRegions(scan(DASHBOARD));
+    const scanResult = scan(DASHBOARD);
+    const regions = detectRegions(scanResult);
     const wf = regions.find(r => r.type === "wireframe")!;
-    const composite = compositeLayers(wf.layers!);
+    const composite = compositeLayers(getLayersForRegion(scanResult, wf));
     // Composite uses canonical corners, not original junction chars
     const compositeText = Array.from(composite.values()).join("");
     // ├ and ┬ from the original are replaced by ┌ and ┐
@@ -533,7 +571,7 @@ describe("drag persistence text-grid edit", () => {
    * chars rather than creating a gap in the border.
    */
 
-  type LayerList = NonNullable<ReturnType<typeof detectRegions>[0]["layers"]>;
+  type LayerList = Layer[];
 
   /** Replicates the (buggy) onMouseUp erase-old/write-new logic from Demo.tsx.
    *  Only processes cells with non-negative row coordinates (guards against
@@ -675,10 +713,11 @@ describe("drag persistence text-grid edit", () => {
     // Junction chars (├┤┬┴┼) only exist in region.text, never in layer.cells.
     // So erasing a layer's old cells from the text grid unconditionally writes
     // spaces where junction chars live — destroying chars from other layers.
-    const regions = detectRegions(scan(OUTER_WITH_DIVIDER));
+    const scanResult = scan(OUTER_WITH_DIVIDER);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
     const junctionChars = new Set("├┤┬┴┼");
-    for (const layer of wf.layers!) {
+    for (const layer of getLayersForRegion(scanResult, wf)) {
       for (const ch of layer.cells.values()) {
         expect(junctionChars.has(ch)).toBe(false);
       }
@@ -689,7 +728,8 @@ describe("drag persistence text-grid edit", () => {
   });
 
   it("buggy erase: outer rect moved right 2 cols — vacated junction positions get spaces, breaking bottom-sub rect", () => {
-    const regions = detectRegions(scan(OUTER_WITH_DIVIDER));
+    const scanResult = scan(OUTER_WITH_DIVIDER);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
     const origRectCount = scan(OUTER_WITH_DIVIDER).rects.length; // 2
 
@@ -697,11 +737,11 @@ describe("drag persistence text-grid edit", () => {
     // Old left edge cells (rows 1-3, col 0) are vacated (new left edge at col 2).
     // At (2,0): outer rect had │ in its cells, text has ├ (junction char).
     // Buggy erase writes " " at (2,0) → bottom-sub rect's ┌ corner vanishes from text.
-    const outerRect = wf.layers!
+    const outerRect = getLayersForRegion(scanResult, wf)
       .filter(l => l.type === "rect")
       .sort((a, b) => b.bbox.w * b.bbox.h - a.bbox.w * a.bbox.h)[0]!;
 
-    const cloned = wf.layers!.map(l => ({ ...l, bbox: { ...l.bbox }, cells: new Map(l.cells) }));
+    const cloned = getLayersForRegion(scanResult, wf).map(l => ({ ...l, bbox: { ...l.bbox }, cells: new Map(l.cells) }));
     const buggyResult = applyDragBuggy(wf.text, cloned, outerRect.id, 0, 2);
 
     // Bottom-sub rect's top-left corner at (2,0) is now " " → scanner can't detect it
@@ -714,20 +754,21 @@ describe("drag persistence text-grid edit", () => {
     // the bottom-sub rect's cells — so the bottom-sub rect may still be lost.
     // The fixed erase is strictly BETTER than buggy (fewer chars destroyed), but
     // moving a large rect over adjacent rects still has issues.
-    const regions = detectRegions(scan(OUTER_WITH_DIVIDER));
+    const scanResult = scan(OUTER_WITH_DIVIDER);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
 
-    const outerRect = wf.layers!
+    const outerRect = getLayersForRegion(scanResult, wf)
       .filter(l => l.type === "rect")
       .sort((a, b) => b.bbox.w * b.bbox.h - a.bbox.w * a.bbox.h)[0]!;
 
     // Verify otherComposite has the bottom-sub rect's TL corner at (2,0)
-    const otherComposite = compositeLayers(wf.layers!.filter(l => l.id !== outerRect.id));
+    const otherComposite = compositeLayers(getLayersForRegion(scanResult, wf).filter(l => l.id !== outerRect.id));
     const charAt2_0 = otherComposite.get("2,0");
     expect(charAt2_0).toBeDefined();
     expect(charAt2_0).not.toBe(" ");
 
-    const cloned = wf.layers!.map(l => ({ ...l, bbox: { ...l.bbox }, cells: new Map(l.cells) }));
+    const cloned = getLayersForRegion(scanResult, wf).map(l => ({ ...l, bbox: { ...l.bbox }, cells: new Map(l.cells) }));
     const fixedResult = applyDragFixed(wf.text, cloned, outerRect.id, 0, 2);
 
     // Fixed erase correctly restores charAt2_0 at old position (2,0)
@@ -739,7 +780,7 @@ describe("drag persistence text-grid edit", () => {
     // Document actual behavior:
     const newRectCount = scan(fixedResult).rects.length;
     // Fixed is at least as good as buggy (may recover some rects):
-    const cloned2 = wf.layers!.map(l => ({ ...l, bbox: { ...l.bbox }, cells: new Map(l.cells) }));
+    const cloned2 = getLayersForRegion(scanResult, wf).map(l => ({ ...l, bbox: { ...l.bbox }, cells: new Map(l.cells) }));
     const buggyResult = applyDragBuggy(wf.text, cloned2, outerRect.id, 0, 2);
     const buggyRectCount = scan(buggyResult).rects.length;
     expect(newRectCount).toBeGreaterThanOrEqual(buggyRectCount);
@@ -751,17 +792,18 @@ describe("drag persistence text-grid edit", () => {
     // The fixed approach writes otherComposite chars — preserving more structure.
     // However, even the fixed approach may not perfectly preserve ALL rects when
     // the dragged rect's new position overlaps other rects.
-    const regions = detectRegions(scan(DASHBOARD));
+    const scanResult = scan(DASHBOARD);
+    const regions = detectRegions(scanResult);
     const wf = regions.find(r => r.type === "wireframe")!;
     const origRectCount = scan(DASHBOARD).rects.length;
 
     // Outer rect (largest). Move right 2 cols — vacates col 0 (left border with ├/┤).
-    const outerRect = wf.layers!
+    const outerRect = getLayersForRegion(scanResult, wf)
       .filter(l => l.type === "rect")
       .sort((a, b) => b.bbox.w * b.bbox.h - a.bbox.w * a.bbox.h)[0]!;
 
-    const clonedBuggy = wf.layers!.map(l => ({ ...l, bbox: { ...l.bbox }, cells: new Map(l.cells) }));
-    const clonedFixed = wf.layers!.map(l => ({ ...l, bbox: { ...l.bbox }, cells: new Map(l.cells) }));
+    const clonedBuggy = getLayersForRegion(scanResult, wf).map(l => ({ ...l, bbox: { ...l.bbox }, cells: new Map(l.cells) }));
+    const clonedFixed = getLayersForRegion(scanResult, wf).map(l => ({ ...l, bbox: { ...l.bbox }, cells: new Map(l.cells) }));
 
     const buggyResult = applyDragBuggy(wf.text, clonedBuggy, outerRect.id, 0, 2);
     const fixedResult = applyDragFixed(wf.text, clonedFixed, outerRect.id, 0, 2);
@@ -784,9 +826,10 @@ describe("performance targets", () => {
     if (!fs.existsSync(f)) return;
     const text = fs.readFileSync(f, "utf8");
     const start = performance.now();
-    const regions = detectRegions(scan(text));
+    const scanResult = scan(text);
+    const regions = detectRegions(scanResult);
     for (const r of regions) {
-      if (r.type === "wireframe" && r.layers) compositeLayers(r.layers);
+      if (r.type === "wireframe") compositeLayers(getLayersForRegion(scanResult, r));
     }
     const ms = performance.now() - start;
     console.log(`  File open: ${ms.toFixed(1)}ms (<500ms)`);
@@ -812,8 +855,9 @@ describe("performance targets", () => {
   });
 
   it("drag recomposite < 16ms (60fps)", () => {
-    const wf = detectRegions(scan(DASHBOARD)).find(r => r.type === "wireframe")!;
-    const layers = wf.layers!;
+    const scanResult = scan(DASHBOARD);
+    const wf = detectRegions(scanResult).find(r => r.type === "wireframe")!;
+    const layers = getLayersForRegion(scanResult, wf);
     const start = performance.now();
     for (let i = 0; i < 60; i++) {
       const rect = layers.find(l => l.type === "rect")!;
@@ -835,8 +879,10 @@ describe("performance targets", () => {
   it.skipIf(!hasColex)("largest file: all regions < 500 layers", () => {
     const f = path.join(planDir, "workspace-redesign.md");
     if (!fs.existsSync(f)) return;
-    const max = Math.max(...detectRegions(scan(fs.readFileSync(f, "utf8")))
-      .map(r => r.layers?.length ?? 0));
+    const fileText = fs.readFileSync(f, "utf8");
+    const scanResult = scan(fileText);
+    const max = Math.max(...detectRegions(scanResult)
+      .map(r => r.type === "wireframe" ? getLayersForRegion(scanResult, r).length : 0));
     console.log(`  Max layers/region: ${max} (<500)`);
     expect(max).toBeLessThan(500);
   });
@@ -973,7 +1019,7 @@ describe("real file drag simulation", () => {
    */
   function applyDragOnMouseUp(
     regionText: string,
-    layers: NonNullable<Region["layers"]>,
+    layers: Layer[],
     layerId: string,
     dRow: number,
     dCol: number,
@@ -1041,10 +1087,12 @@ describe("real file drag simulation", () => {
         if (initialScan.rects.length === 0) continue;
 
         const regions = detectRegions(initialScan);
-        const wfRegions = regions.filter(r => r.type === "wireframe" && r.layers && r.layers.length > 0);
+        const wfRegions = regions.filter(r => r.type === "wireframe");
 
         for (const wf of wfRegions) {
-          const rectLayers = wf.layers!.filter(l => l.type === "rect" && l.style);
+          const wfLayers = getLayersForRegion(initialScan, wf);
+          if (wfLayers.length === 0) continue;
+          const rectLayers = wfLayers.filter(l => l.type === "rect" && l.style);
           if (rectLayers.length === 0) continue;
 
           const boxCount = (t: string) =>
@@ -1055,7 +1103,7 @@ describe("real file drag simulation", () => {
           for (const rectLayer of rectLayers) {
             totalRects++;
             // Deep-clone all layers for this simulation
-            const cloned = wf.layers!.map(l => ({
+            const cloned = wfLayers.map(l => ({
               ...l,
               bbox: { ...l.bbox },
               cells: new Map(l.cells),
@@ -1103,7 +1151,7 @@ describe("shared wall drag", () => {
     "└──────┴──────┘",
   ].join("\n");
 
-  type LayerList = NonNullable<Region["layers"]>;
+  type LayerList = Layer[];
 
   function applyDragFixed2(
     regionText: string,
@@ -1174,9 +1222,10 @@ describe("shared wall drag", () => {
     // The left rect's new cells start at row 1, so row 0 is not overwritten.
     // This tests the key junction-char preservation: old erase positions get
     // otherComposite chars (not spaces) written back.
-    const regions = detectRegions(scan(TWO_ADJACENT));
+    const scanResult = scan(TWO_ADJACENT);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
-    const rectLayers = wf.layers!.filter(l => l.type === "rect");
+    const rectLayers = getLayersForRegion(scanResult, wf).filter(l => l.type === "rect");
     expect(rectLayers.length).toBe(2);
 
     const leftRect = rectLayers.reduce((a, b) => (a.bbox.col < b.bbox.col ? a : b));
@@ -1188,7 +1237,7 @@ describe("shared wall drag", () => {
     expect(rightRectTL).toBeDefined();
     expect(rightRectTL).not.toBe(" ");
 
-    const cloned = wf.layers!.map(l => ({
+    const cloned = getLayersForRegion(scanResult, wf).map(l => ({
       ...l,
       bbox: { ...l.bbox },
       cells: new Map(l.cells),
@@ -1208,13 +1257,14 @@ describe("shared wall drag", () => {
     // rect to fail re-scanning. This is distinct from the junction char erasure bug
     // and represents a second class of drag problem: new cell positions colliding with
     // adjacent rects.
-    const regions = detectRegions(scan(TWO_ADJACENT));
+    const scanResult = scan(TWO_ADJACENT);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
-    const rectLayers = wf.layers!.filter(l => l.type === "rect");
+    const rectLayers = getLayersForRegion(scanResult, wf).filter(l => l.type === "rect");
     const leftRect = rectLayers.reduce((a, b) => (a.bbox.col < b.bbox.col ? a : b));
     const rightRect = rectLayers.find(l => l.id !== leftRect.id)!;
 
-    const cloned = wf.layers!.map(l => ({
+    const cloned = getLayersForRegion(scanResult, wf).map(l => ({
       ...l,
       bbox: { ...l.bbox },
       cells: new Map(l.cells),
@@ -1230,12 +1280,13 @@ describe("shared wall drag", () => {
   });
 
   it("drag left rect right by 1: right rect boundary chars preserved", () => {
-    const regions = detectRegions(scan(TWO_ADJACENT));
+    const scanResult = scan(TWO_ADJACENT);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
-    const rectLayers = wf.layers!.filter(l => l.type === "rect");
+    const rectLayers = getLayersForRegion(scanResult, wf).filter(l => l.type === "rect");
     const leftRect = rectLayers.reduce((a, b) => (a.bbox.col < b.bbox.col ? a : b));
 
-    const cloned = wf.layers!.map(l => ({
+    const cloned = getLayersForRegion(scanResult, wf).map(l => ({
       ...l,
       bbox: { ...l.bbox },
       cells: new Map(l.cells),
@@ -1303,15 +1354,16 @@ describe("shared wall drag", () => {
       return grid.map(row => row.join("").trimEnd()).join("\n");
     }
 
-    const regions = detectRegions(scan(TWO_ADJACENT));
+    const scanResult = scan(TWO_ADJACENT);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
-    const rectLayers = wf.layers!.filter(l => l.type === "rect");
+    const rectLayers = getLayersForRegion(scanResult, wf).filter(l => l.type === "rect");
     const leftRect = rectLayers.reduce((a, b) => (a.bbox.col < b.bbox.col ? a : b));
 
     const origJunctions = [...TWO_ADJACENT].filter(c => "┬┴".includes(c)).length;
     expect(origJunctions).toBe(2); // one ┬ and one ┴
 
-    const cloned = wf.layers!.map(l => ({
+    const cloned = getLayersForRegion(scanResult, wf).map(l => ({
       ...l,
       bbox: { ...l.bbox },
       cells: new Map(l.cells),
@@ -1323,7 +1375,7 @@ describe("shared wall drag", () => {
     // The left rect's cells at the shared wall column get erased (overwritten with space).
     // Whether those cells ARE the ┬/┴ depends on what the scanner assigned to left vs right.
     // Either way, the fixed version must produce >= the buggy version's junction count.
-    const cloned2 = (regions[0].layers ?? []).map(l => ({
+    const cloned2 = getLayersForRegion(scanResult, wf).map(l => ({
       ...l,
       bbox: { ...l.bbox },
       cells: new Map(l.cells),
@@ -1348,7 +1400,7 @@ describe("text label preservation during drag", () => {
     "└──────────────┘",
   ].join("\n");
 
-  type LayerList = NonNullable<Region["layers"]>;
+  type LayerList = Layer[];
 
   function applyDragWithLabels(
     regionText: string,
@@ -1414,10 +1466,12 @@ describe("text label preservation during drag", () => {
     // This is the architectural property that creates the text-label drag bug.
     // Text layers have their own cells at fixed positions. They are NOT
     // automatically moved when the rect layer moves.
-    const regions = detectRegions(scan(LOGIN_FORM));
+    const scanResult = scan(LOGIN_FORM);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
-    const textLayers = wf.layers!.filter(l => l.type === "text");
-    const rectLayer = wf.layers!.find(l => l.type === "rect")!;
+    const wfLayers = getLayersForRegion(scanResult, wf);
+    const textLayers = wfLayers.filter(l => l.type === "text");
+    const rectLayer = wfLayers.find(l => l.type === "rect")!;
 
     // Text layers exist independently of the rect
     expect(textLayers.length).toBeGreaterThan(0);
@@ -1435,10 +1489,12 @@ describe("text label preservation during drag", () => {
     //
     // Root cause: Demo.tsx onMouseUp only moves the selected layer. To fix this,
     // all layers within the rect's bbox should move together when dragging.
-    const regions = detectRegions(scan(LOGIN_FORM));
+    const scanResult = scan(LOGIN_FORM);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
-    const rectLayer = wf.layers!.find(l => l.type === "rect")!;
-    const cloned = wf.layers!.map(l => ({
+    const wfLayers = getLayersForRegion(scanResult, wf);
+    const rectLayer = wfLayers.find(l => l.type === "rect")!;
+    const cloned = wfLayers.map(l => ({
       ...l,
       bbox: { ...l.bbox },
       cells: new Map(l.cells),
@@ -1467,10 +1523,12 @@ describe("text label preservation during drag", () => {
     // The old top border at row 0 is erased (restored to spaces from otherComposite).
     // The new top border at row 0 (shifted right by 2) doesn't overlap text at rows 1-5.
     // So text labels at rows 1-5 in the original positions survive.
-    const regions = detectRegions(scan(LOGIN_FORM));
+    const scanResult = scan(LOGIN_FORM);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
-    const rectLayer = wf.layers!.find(l => l.type === "rect")!;
-    const cloned = wf.layers!.map(l => ({
+    const wfLayers = getLayersForRegion(scanResult, wf);
+    const rectLayer = wfLayers.find(l => l.type === "rect")!;
+    const cloned = wfLayers.map(l => ({
       ...l,
       bbox: { ...l.bbox },
       cells: new Map(l.cells),
@@ -1490,16 +1548,18 @@ describe("text label preservation during drag", () => {
   it("text layers do NOT move when only the rect layer is dragged", () => {
     // Verify architectural property: applyDragWithLabels moves only the target layer.
     // The text layer's bbox.row is unchanged after dragging the rect.
-    const regions = detectRegions(scan(LOGIN_FORM));
+    const scanResult = scan(LOGIN_FORM);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
-    const textLayers = wf.layers!.filter(l => l.type === "text");
+    const wfLayers = getLayersForRegion(scanResult, wf);
+    const textLayers = wfLayers.filter(l => l.type === "text");
     expect(textLayers.length).toBeGreaterThan(0);
 
     // Record original rows of all text layers
     const origTextRows = textLayers.map(l => ({ id: l.id, row: l.bbox.row }));
 
-    const rectLayer = wf.layers!.find(l => l.type === "rect")!;
-    const cloned = wf.layers!.map(l => ({
+    const rectLayer = wfLayers.find(l => l.type === "rect")!;
+    const cloned = wfLayers.map(l => ({
       ...l,
       bbox: { ...l.bbox },
       cells: new Map(l.cells),
@@ -1517,14 +1577,16 @@ describe("text label preservation during drag", () => {
     // The inner card (small rect) is dragged. The outer layout's labels are in
     // separate text layers. Since the inner card's new border doesn't overwrite
     // the outer layout's text positions, those labels survive.
-    const regions = detectRegions(scan(DASHBOARD));
+    const scanResult = scan(DASHBOARD);
+    const regions = detectRegions(scanResult);
     const wf = regions.find(r => r.type === "wireframe")!;
+    const wfLayers = getLayersForRegion(scanResult, wf);
 
-    const innerCard = wf.layers!
+    const innerCard = wfLayers
       .filter(l => l.type === "rect")
       .sort((a, b) => a.bbox.w * a.bbox.h - b.bbox.w * b.bbox.h)[0];
 
-    const cloned = wf.layers!.map(l => ({
+    const cloned = wfLayers.map(l => ({
       ...l,
       bbox: { ...l.bbox },
       cells: new Map(l.cells),
@@ -1585,9 +1647,10 @@ describe("resize boundary conditions", () => {
 
   it("resize extending beyond original grid: grid is expanded, not truncated", () => {
     const small = "┌──┐\n│  │\n└──┘";
-    const regions = detectRegions(scan(small));
+    const scanResult = scan(small);
+    const regions = detectRegions(scanResult);
     const wf = regions[0];
-    const rect = wf.layers!.find(l => l.type === "rect")!;
+    const rect = getLayersForRegion(scanResult, wf).find(l => l.type === "rect")!;
 
     // Resize from w=4,h=3 to w=8,h=6 — extends well beyond original text
     const newBbox = { row: rect.bbox.row, col: rect.bbox.col, w: 8, h: 6 };
@@ -1641,11 +1704,12 @@ describe("resize boundary conditions", () => {
   });
 
   it("resize from DASHBOARD's outer rect preserves inner layout chars", () => {
-    const regions = detectRegions(scan(DASHBOARD));
+    const scanResult = scan(DASHBOARD);
+    const regions = detectRegions(scanResult);
     const wf = regions.find(r => r.type === "wireframe")!;
 
     // The outer (largest) rect
-    const outerRect = wf.layers!
+    const outerRect = getLayersForRegion(scanResult, wf)
       .filter(l => l.type === "rect")
       .sort((a, b) => b.bbox.w * b.bbox.h - a.bbox.w * a.bbox.h)[0];
 
