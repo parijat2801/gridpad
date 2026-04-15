@@ -10,7 +10,7 @@ import {
   Transaction,
   type Extension,
 } from "@codemirror/state";
-import { history, undo, redo, undoDepth, redoDepth } from "@codemirror/commands";
+import { history, undo, redo, undoDepth, redoDepth, invertedEffects } from "@codemirror/commands";
 import type { Frame } from "./frame";
 import { moveFrame, resizeFrame } from "./frame";
 import type { Region } from "./regions";
@@ -58,6 +58,9 @@ export const setRegionsEffect = StateEffect.define<Region[]>();
 
 export const setProsePartsEffect = StateEffect.define<ProsePart[]>();
 
+// Restore effect — used by invertedEffects for undo of frame mutations.
+const restoreFramesEffect = StateEffect.define<Frame[]>();
+
 // ── StateFields ────────────────────────────────────────────────────────────
 
 export const framesField = StateField.define<Frame[]>({
@@ -65,7 +68,9 @@ export const framesField = StateField.define<Frame[]>({
   update(frames, tr: Transaction) {
     let result = frames;
     for (const e of tr.effects) {
-      if (e.is(moveFrameEffect)) {
+      if (e.is(restoreFramesEffect)) {
+        return e.value;
+      } else if (e.is(moveFrameEffect)) {
         result = result.map((f) =>
           f.id === e.value.id
             ? moveFrame(f, { dx: e.value.dx, dy: e.value.dy })
@@ -133,8 +138,25 @@ export interface EditorStateInit {
 
 export function createEditorState(init: EditorStateInit): EditorState {
   const { prose, frames, regions, proseParts } = init;
+  // invertedEffects tells CM history how to undo frame mutations:
+  // snapshot the frames array before the transaction and emit a
+  // restoreFramesEffect that replays it on undo.
+  const frameInversion = invertedEffects.of((tr) => {
+    const hasFrameEffect = tr.effects.some(
+      (e) =>
+        e.is(moveFrameEffect) ||
+        e.is(resizeFrameEffect) ||
+        e.is(addFrameEffect) ||
+        e.is(deleteFrameEffect),
+    );
+    if (!hasFrameEffect) return [];
+    // Capture the frames BEFORE this transaction was applied
+    return [restoreFramesEffect.of(tr.startState.field(framesField))];
+  });
+
   const extensions: Extension[] = [
     history(),
+    frameInversion,
     framesField.init(() => frames),
     toolField,
     regionsField.init(() => regions),
