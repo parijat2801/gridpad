@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pretext";
 import { scan } from "./scanner";
 import { detectRegions } from "./regions";
-import { type Frame, framesFromRegions, framesToObstacles, hitTestFrames, moveFrame } from "./frame";
+import { type Frame, framesFromRegions, framesToObstacles, hitTestFrames, moveFrame, resizeFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT_FAMILY } from "./grid";
@@ -14,6 +14,37 @@ import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 const LH = Math.ceil(FONT_SIZE * 1.15);
 const BG = "#1e1e2e";
+
+// ── Resize handle types ────────────────────────────────────
+type ResizeHandle = "tl" | "tm" | "tr" | "ml" | "mr" | "bl" | "bm" | "br";
+
+interface HandleRect { handle: ResizeHandle; x: number; y: number; w: number; h: number; }
+
+const HANDLE_HIT = 12;
+const HANDLE_HALF_HIT = HANDLE_HIT / 2;
+
+function computeHandleRects(absX: number, absY: number, fw: number, fh: number): HandleRect[] {
+  const pts: [ResizeHandle, number, number][] = [
+    ["tl", absX,           absY          ],
+    ["tm", absX + fw / 2,  absY          ],
+    ["tr", absX + fw,      absY          ],
+    ["ml", absX,           absY + fh / 2 ],
+    ["mr", absX + fw,      absY + fh / 2 ],
+    ["bl", absX,           absY + fh     ],
+    ["bm", absX + fw / 2,  absY + fh     ],
+    ["br", absX + fw,      absY + fh     ],
+  ];
+  return pts.map(([handle, cx, cy]) => ({
+    handle, x: cx - HANDLE_HALF_HIT, y: cy - HANDLE_HALF_HIT, w: HANDLE_HIT, h: HANDLE_HIT,
+  }));
+}
+
+function hitTestHandle(rects: HandleRect[], px: number, py: number): ResizeHandle | null {
+  for (const r of rects) {
+    if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) return r.handle;
+  }
+  return null;
+}
 
 const DEFAULT_TEXT = `# Welcome to Gridpad
 
@@ -41,7 +72,10 @@ interface DragState {
   startY: number;
   startFrameX: number;
   startFrameY: number;
+  startFrameW: number;
+  startFrameH: number;
   hasMoved: boolean;
+  resizeHandle?: ResizeHandle;
 }
 
 export default function DemoV2() {
@@ -181,6 +215,30 @@ export default function DemoV2() {
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top + (canvas.parentElement?.scrollTop ?? 0);
 
+    // Check if click hits a resize handle on the selected frame first
+    if (selectedRef.current) {
+      const sel = findFrameById(framesRef.current, selectedRef.current);
+      if (sel) {
+        const rects = computeHandleRects(sel.absX, sel.absY, sel.frame.w, sel.frame.h);
+        const handleHit = hitTestHandle(rects, px, py);
+        if (handleHit) {
+          dragRef.current = {
+            frameId: sel.frame.id,
+            startX: px,
+            startY: py,
+            startFrameX: sel.absX,
+            startFrameY: sel.absY,
+            startFrameW: sel.frame.w,
+            startFrameH: sel.frame.h,
+            hasMoved: false,
+            resizeHandle: handleHit,
+          };
+          paint();
+          return;
+        }
+      }
+    }
+
     const hit = hitTestFrames(framesRef.current, px, py);
     if (hit) {
       selectedRef.current = hit.id;
@@ -192,6 +250,8 @@ export default function DemoV2() {
           startY: py,
           startFrameX: found.absX,
           startFrameY: found.absY,
+          startFrameW: found.frame.w,
+          startFrameH: found.frame.h,
           hasMoved: false,
         };
       }
@@ -220,11 +280,49 @@ export default function DemoV2() {
     const found = findFrameById(framesRef.current, drag.frameId);
     if (!found) return;
 
-    // Compute new position relative to parent
-    const newX = Math.max(0, drag.startFrameX + dx - (found.absX - found.frame.x));
-    const newY = Math.max(0, drag.startFrameY + dy - (found.absY - found.frame.y));
-    const moved = moveFrame(found.frame, { dx: newX - found.frame.x, dy: newY - found.frame.y });
-    framesRef.current = replaceFrame(framesRef.current, drag.frameId, moved);
+    if (drag.resizeHandle) {
+      const cw = cwRef.current;
+      const ch = chRef.current;
+      const h = drag.resizeHandle;
+      const sw = drag.startFrameW;
+      const sh = drag.startFrameH;
+
+      // Compute new size (and position shift for top/left handles)
+      let newW = sw;
+      let newH = sh;
+      let newDx = 0;
+      let newDy = 0;
+
+      if (h === "br") { newW = sw + dx; newH = sh + dy; }
+      else if (h === "bl") { newW = sw - dx; newH = sh + dy; newDx = dx; }
+      else if (h === "tr") { newW = sw + dx; newH = sh - dy; newDy = dy; }
+      else if (h === "tl") { newW = sw - dx; newH = sh - dy; newDx = dx; newDy = dy; }
+      else if (h === "bm") { newH = sh + dy; }
+      else if (h === "tm") { newH = sh - dy; newDy = dy; }
+      else if (h === "mr") { newW = sw + dx; }
+      else if (h === "ml") { newW = sw - dx; newDx = dx; }
+
+      const resized = resizeFrame(found.frame, { w: newW, h: newH }, cw, ch);
+      // Anchor the fixed corner: compute absolute position after clamp
+      const anchorX = drag.startFrameX + (newDx !== 0 ? drag.startFrameW : 0);
+      const anchorY = drag.startFrameY + (newDy !== 0 ? drag.startFrameH : 0);
+      const newAbsX = newDx !== 0 ? anchorX - resized.w : drag.startFrameX;
+      const newAbsY = newDy !== 0 ? anchorY - resized.h : drag.startFrameY;
+      // Convert abs position to frame-local (subtract parent offset)
+      const parentOffX = found.absX - found.frame.x;
+      const parentOffY = found.absY - found.frame.y;
+      const finalFrame = moveFrame(resized, {
+        dx: newAbsX - parentOffX - resized.x,
+        dy: newAbsY - parentOffY - resized.y,
+      });
+      framesRef.current = replaceFrame(framesRef.current, drag.frameId, finalFrame);
+    } else {
+      // Compute new position relative to parent
+      const newX = Math.max(0, drag.startFrameX + dx - (found.absX - found.frame.x));
+      const newY = Math.max(0, drag.startFrameY + dy - (found.absY - found.frame.y));
+      const moved = moveFrame(found.frame, { dx: newX - found.frame.x, dy: newY - found.frame.y });
+      framesRef.current = replaceFrame(framesRef.current, drag.frameId, moved);
+    }
 
     doLayout();
     paint();
