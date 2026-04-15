@@ -3,9 +3,8 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pretext";
-import { scan } from "./scanner";
-import { detectRegions } from "./regions";
-import { type Frame, framesFromRegions, framesToObstacles, hitTestFrames, moveFrame, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
+import { scanToFrames } from "./scanToFrames";
+import { type Frame, framesToObstacles, hitTestFrames, moveFrame, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT_FAMILY } from "./grid";
@@ -104,8 +103,7 @@ export default function DemoV2() {
 
   function loadDocument(text: string) {
     const cw = cwRef.current, ch = chRef.current;
-    const regions = detectRegions(scan(text));
-    const { frames, prose } = framesFromRegions(regions, cw, ch);
+    const { frames, prose, regions } = scanToFrames(text, cw, ch);
     const proseText = prose.map(p => p.text).join("\n\n");
     preparedRef.current = proseText.length > 0 ? prepareWithSegments(proseText, FONT, { whiteSpace: "pre-wrap" }) : null;
     let curY = 0, frameIdx = 0;
