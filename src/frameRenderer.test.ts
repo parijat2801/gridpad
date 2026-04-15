@@ -79,7 +79,7 @@ describe("renderFrame", () => {
     const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
     // At least one call should have x > 50 (parent offset)
-    const hasOffset = calls.some((c: [string, number, number]) => c[1] >= 50);
+    const hasOffset = calls.some((c: unknown[]) => (c as [string, number, number])[1] >= 50);
     expect(hasOffset).toBe(true);
   });
 });
