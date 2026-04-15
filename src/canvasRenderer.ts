@@ -200,6 +200,52 @@ export function paintCanvas(
   }
 }
 
+/**
+ * Map a click position (px, py) in content-space coordinates to a source-text
+ * cursor {row, col}. Uses the reflowed lines in RenderState to find the
+ * closest visual line, then maps back to the source text row.
+ */
+export function clickToCursor(
+  rs: RenderState,
+  px: number,
+  py: number,
+): { row: number; col: number } | null {
+  if (rs.lines.length === 0) return null;
+
+  // Find the closest visual line by vertical distance
+  let best = rs.lines[0];
+  let bestDist = Math.abs(best.y + LH / 2 - py);
+  for (let i = 1; i < rs.lines.length; i++) {
+    const dist = Math.abs(rs.lines[i].y + LH / 2 - py);
+    if (dist < bestDist) { bestDist = dist; best = rs.lines[i]; }
+  }
+
+  // Map visual line back to source text row.
+  // Walk visual lines, tracking which source line we're in.
+  // A source line may span multiple visual lines (wrapping).
+  const srcLines = rs.proseText.split("\n");
+  let srcRow = 0;
+  let srcColConsumed = 0;
+
+  for (const pl of rs.lines) {
+    if (pl === best) break;
+    srcColConsumed += pl.text.length;
+    // Check if we've consumed the entire source line
+    while (srcRow < srcLines.length && srcColConsumed >= srcLines[srcRow].length) {
+      srcColConsumed -= srcLines[srcRow].length;
+      srcRow++;
+    }
+  }
+
+  // Column from horizontal offset, clamped to source line length
+  const col = Math.max(0, Math.min(
+    Math.round((px - best.x) / rs.charWidth),
+    (srcLines[srcRow] ?? "").length,
+  ));
+
+  return { row: srcRow, col };
+}
+
 function findFrameById(
   frames: Frame[],
   id: string,

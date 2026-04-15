@@ -2,7 +2,7 @@
 // Tests for canvasRenderer.ts — buildRenderState and paintCanvas.
 
 import { describe, it, expect, vi, beforeAll } from "vitest";
-import { buildRenderState, paintCanvas, type Viewport } from "./canvasRenderer";
+import { buildRenderState, paintCanvas, clickToCursor, type Viewport } from "./canvasRenderer";
 import { createEditorState, getFrames } from "./editorState";
 import { createRectFrame } from "./frame";
 import { LIGHT_RECT_STYLE } from "./layers";
@@ -168,5 +168,35 @@ describe("paintCanvas", () => {
       (c) => c.method === "fillText" || c.method === "fillRect",
     );
     expect(drawCalls.length).toBeGreaterThan(0);
+  });
+});
+
+// ── clickToCursor tests ───────────────────────────────────────────────────────
+
+describe("clickToCursor", () => {
+  it("returns null when no lines exist", () => {
+    const state = createEditorState({ prose: "", frames: [], regions: [], proseParts: [] });
+    const rs = buildRenderState(state, { w: 800, h: 600 }, 1, CW, CH);
+    expect(clickToCursor(rs, 100, 100)).toBeNull();
+  });
+
+  it("maps click at first line start to row 0 col 0", () => {
+    const state = createEditorState({ prose: "hello world", frames: [], regions: [], proseParts: [] });
+    const rs = buildRenderState(state, { w: 800, h: 600 }, 1, CW, CH);
+    if (rs.lines.length === 0) return; // skip if reflow produces no lines (no canvas mock)
+    const firstLine = rs.lines[0];
+    const result = clickToCursor(rs, firstLine.x, firstLine.y);
+    expect(result).toEqual({ row: 0, col: 0 });
+  });
+
+  it("maps click mid-line to correct column", () => {
+    const state = createEditorState({ prose: "hello world", frames: [], regions: [], proseParts: [] });
+    const rs = buildRenderState(state, { w: 800, h: 600 }, 1, CW, CH);
+    if (rs.lines.length === 0) return;
+    const firstLine = rs.lines[0];
+    // Click 5 chars in
+    const result = clickToCursor(rs, firstLine.x + CW * 5, firstLine.y);
+    expect(result).not.toBeNull();
+    expect(result!.col).toBe(5);
   });
 });

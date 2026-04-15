@@ -60,6 +60,12 @@ export const setRegionsEffect = StateEffect.define<Region[]>();
 
 export const setProsePartsEffect = StateEffect.define<ProsePart[]>();
 
+export const selectFrameEffect = StateEffect.define<string | null>();
+
+export const setTextEditEffect = StateEffect.define<{ frameId: string; col: number } | null>();
+
+export const editTextFrameEffect = StateEffect.define<{ id: string; text: string; charWidth: number }>();
+
 // Restore effect — used by invertedEffects for undo of frame mutations.
 const restoreFramesEffect = StateEffect.define<Frame[]>();
 
@@ -95,6 +101,18 @@ export const framesField = StateField.define<Frame[]>({
         result = result.filter((f) => f.id !== e.value.id);
       } else if (e.is(setZEffect)) {
         result = result.map(f => f.id === e.value.id ? { ...f, z: e.value.z } : f);
+      } else if (e.is(editTextFrameEffect)) {
+        result = result.map(f => {
+          if (f.id !== e.value.id) return f;
+          const cps = [...e.value.text];
+          const cells = new Map<string, string>();
+          cps.forEach((ch, i) => cells.set(`0,${i}`, ch));
+          return {
+            ...f,
+            w: Math.max(cps.length, 1) * e.value.charWidth,
+            content: f.content ? { ...f.content, text: e.value.text, cells } : { type: "text" as const, cells, text: e.value.text },
+          };
+        });
       }
     }
     return result;
@@ -131,6 +149,34 @@ export const prosePartsField = StateField.define<ProsePart[]>({
   },
 });
 
+const selectedIdField = StateField.define<string | null>({
+  create: () => null,
+  update(val, tr) {
+    for (const e of tr.effects) {
+      if (e.is(selectFrameEffect)) return e.value;
+    }
+    return val;
+  },
+});
+
+export function getSelectedId(state: EditorState): string | null {
+  return state.field(selectedIdField);
+}
+
+const textEditField = StateField.define<{ frameId: string; col: number } | null>({
+  create: () => null,
+  update(val, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setTextEditEffect)) return e.value;
+    }
+    return val;
+  },
+});
+
+export function getTextEdit(state: EditorState): { frameId: string; col: number } | null {
+  return state.field(textEditField);
+}
+
 // ── Factory ────────────────────────────────────────────────────────────────
 
 export interface EditorStateInit {
@@ -152,7 +198,8 @@ export function createEditorState(init: EditorStateInit): EditorState {
         e.is(resizeFrameEffect) ||
         e.is(addFrameEffect) ||
         e.is(deleteFrameEffect) ||
-        e.is(setZEffect),
+        e.is(setZEffect) ||
+        e.is(editTextFrameEffect),
     );
     if (!hasFrameEffect) return [];
     // Capture the frames BEFORE this transaction was applied
@@ -164,6 +211,8 @@ export function createEditorState(init: EditorStateInit): EditorState {
     frameInversion,
     framesField.init(() => frames),
     toolField,
+    selectedIdField,
+    textEditField,
     regionsField.init(() => regions),
     prosePartsField.init(() => proseParts),
   ];
@@ -209,6 +258,24 @@ export function getCursor(state: EditorState): CursorPos | null {
   const sel = state.selection.main;
   if (!sel.empty) return null;
   return posToRowCol(state, sel.from);
+}
+
+export function rebuildProseParts(state: EditorState): { startRow: number; text: string }[] {
+  const regions = getRegions(state);
+  const doc = getDoc(state);
+  const lines = doc.split("\n");
+  const parts: { startRow: number; text: string }[] = [];
+  let lineOffset = 0;
+
+  for (const region of regions) {
+    if (region.type === "prose") {
+      const regionLines = region.text.split("\n").length;
+      const slice = lines.slice(lineOffset, lineOffset + regionLines).join("\n");
+      parts.push({ startRow: region.startRow, text: slice });
+      lineOffset += regionLines;
+    }
+  }
+  return parts;
 }
 
 // ── Position converters ────────────────────────────────────────────────────
@@ -308,6 +375,46 @@ export function moveCursorTo(
 ): EditorState {
   const pos = rowColToPos(state, cursor.row, cursor.col);
   return state.update({ selection: { anchor: pos } }).state;
+}
+
+export function proseMoveLeft(state: EditorState): EditorState {
+  const cursor = getCursor(state);
+  if (!cursor) return state;
+  if (cursor.col > 0) return moveCursorTo(state, { row: cursor.row, col: cursor.col - 1 });
+  if (cursor.row > 0) {
+    const prevLine = state.doc.line(cursor.row); // 1-indexed; cursor.row is 0-indexed, so this gets the line above
+    const graphemeCount = [...segmenter.segment(prevLine.text)].length;
+    return moveCursorTo(state, { row: cursor.row - 1, col: graphemeCount });
+  }
+  return state;
+}
+
+export function proseMoveRight(state: EditorState): EditorState {
+  const cursor = getCursor(state);
+  if (!cursor) return state;
+  const line = state.doc.line(cursor.row + 1); // current line (1-indexed)
+  const graphemeCount = [...segmenter.segment(line.text)].length;
+  if (cursor.col < graphemeCount) return moveCursorTo(state, { row: cursor.row, col: cursor.col + 1 });
+  if (cursor.row < state.doc.lines - 1) return moveCursorTo(state, { row: cursor.row + 1, col: 0 });
+  return state;
+}
+
+export function proseMoveUp(state: EditorState): EditorState {
+  const cursor = getCursor(state);
+  if (!cursor) return state;
+  if (cursor.row === 0) return state;
+  const prevLine = state.doc.line(cursor.row); // line above (1-indexed = cursor.row)
+  const prevGraphemes = [...segmenter.segment(prevLine.text)].length;
+  return moveCursorTo(state, { row: cursor.row - 1, col: Math.min(cursor.col, prevGraphemes) });
+}
+
+export function proseMoveDown(state: EditorState): EditorState {
+  const cursor = getCursor(state);
+  if (!cursor) return state;
+  if (cursor.row >= state.doc.lines - 1) return state;
+  const nextLine = state.doc.line(cursor.row + 2); // line below (1-indexed = cursor.row + 2)
+  const nextGraphemes = [...segmenter.segment(nextLine.text)].length;
+  return moveCursorTo(state, { row: cursor.row + 1, col: Math.min(cursor.col, nextGraphemes) });
 }
 
 // ── Frame operations ───────────────────────────────────────────────────────
