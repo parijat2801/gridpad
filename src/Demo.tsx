@@ -89,7 +89,6 @@ interface TextPlacementState {
   buffer: string;
 }
 
-const TOOLBAR_HEIGHT = 32;
 
 // ── Handle types ─────────────────────────────────────────
 /** The 8 resize handle positions on a selected rect layer */
@@ -536,7 +535,7 @@ export default function Demo() {
     for (const wf of wireframesRef.current) {
       contentH = Math.max(contentH, wf.y + wf.h);
     }
-    contentH = Math.max(contentH + 40, sizeRef.current.h - TOOLBAR_HEIGHT); // pad + min viewport
+    contentH = Math.max(contentH + 40, sizeRef.current.h); // pad + min viewport
 
     // Retina / HiDPI
     const dpr = window.devicePixelRatio || 1;
@@ -1510,34 +1509,53 @@ export default function Demo() {
     ? "grabbing"
     : "default";
 
-  const toolButtons: Array<{ id: ActiveTool; label: string; shortcut: string }> = [
-    { id: "select", label: "Select", shortcut: "V" },
-    { id: "rect",   label: "Rect",   shortcut: "R" },
-    { id: "line",   label: "Line",   shortcut: "L" },
-    { id: "text",   label: "Text",   shortcut: "T" },
+  type ToolDef = { id: ActiveTool; icon: string; label: string; shortcut: string };
+  const toolButtons: ToolDef[] = [
+    { id: "select", icon: "↖", label: "Select", shortcut: "V" },
+    { id: "rect",   icon: "□",  label: "Rect",   shortcut: "R" },
+    { id: "line",   icon: "╱",  label: "Line",   shortcut: "L" },
+    { id: "text",   icon: "T",  label: "Text",   shortcut: "T" },
   ];
+
+  const toolbarItemStyle = (isActive: boolean): React.CSSProperties => ({
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    border: "none",
+    background: isActive ? "#4a90e2" : "transparent",
+    color: isActive ? "#fff" : "#c9c9d4",
+    cursor: "pointer",
+    gap: 2,
+    padding: 0,
+    transition: "background 0.12s ease",
+    flexShrink: 0,
+  });
 
   return (
     <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh" }}>
-      {/* Toolbar */}
+      {/* Floating centered toolbar */}
       <div
         style={{
           position: "fixed",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: TOOLBAR_HEIGHT,
-          background: "#1e1e1e",
-          borderBottom: "1px solid #333",
+          top: 12,
+          left: "50%",
+          transform: "translateX(-50%)",
           display: "flex",
           alignItems: "center",
-          gap: 4,
-          padding: "0 8px",
-          zIndex: 10,
-          boxSizing: "border-box",
+          gap: 2,
+          padding: "4px 6px",
+          background: "#2b2b33",
+          borderRadius: 10,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.5), 0 1px 4px rgba(0,0,0,0.3)",
+          zIndex: 100,
+          userSelect: "none",
         }}
       >
-        {toolButtons.map(({ id, label, shortcut }) => (
+        {toolButtons.map(({ id, icon, label, shortcut }) => (
           <button
             key={id}
             title={`${label} (${shortcut})`}
@@ -1546,26 +1564,46 @@ export default function Demo() {
               setActiveTool(id);
               canvasRef.current?.focus();
             }}
-            style={{
-              background: activeTool === id ? "#4a90e2" : "#2d2d2d",
-              color: activeTool === id ? "#fff" : "#ccc",
-              border: `1px solid ${activeTool === id ? "#4a90e2" : "#444"}`,
-              borderRadius: 4,
-              padding: "2px 10px",
-              fontSize: 12,
-              cursor: "pointer",
-              height: 24,
-              lineHeight: "20px",
-            }}
+            style={toolbarItemStyle(activeTool === id)}
           >
-            {label} <span style={{ opacity: 0.6, fontSize: 10 }}>{shortcut}</span>
+            <span style={{ fontSize: 16, lineHeight: 1 }}>{icon}</span>
+            <span style={{ fontSize: 9, opacity: activeTool === id ? 0.9 : 0.5, lineHeight: 1 }}>{shortcut}</span>
           </button>
         ))}
+
+        {/* Divider */}
+        <div style={{ width: 1, height: 28, background: "#444455", margin: "0 4px", flexShrink: 0 }} />
+
+        {/* Open file */}
+        <button
+          title="Open file (⌘O)"
+          onClick={() => {
+            const ev = new KeyboardEvent("keydown", { key: "o", metaKey: true, bubbles: true });
+            window.dispatchEvent(ev);
+          }}
+          style={toolbarItemStyle(false)}
+        >
+          <span style={{ fontSize: 16, lineHeight: 1 }}>📂</span>
+          <span style={{ fontSize: 9, opacity: 0.5, lineHeight: 1 }}>⌘O</span>
+        </button>
+
+        {/* Save */}
+        <button
+          title="Save (⌘S)"
+          onClick={() => {
+            const ev = new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true });
+            window.dispatchEvent(ev);
+          }}
+          style={toolbarItemStyle(false)}
+        >
+          <span style={{ fontSize: 16, lineHeight: 1 }}>💾</span>
+          <span style={{ fontSize: 9, opacity: 0.5, lineHeight: 1 }}>⌘S</span>
+        </button>
       </div>
 
-      {/* Canvas — scrolls naturally via browser scroll */}
+      {/* Canvas — scrolls naturally via browser scroll, toolbar floats above */}
       <div style={{
-        position: "fixed", top: TOOLBAR_HEIGHT, left: 0, right: 0, bottom: 0,
+        position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
         overflow: "auto", background: "#141420",
       }}>
         <canvas
@@ -1574,7 +1612,7 @@ export default function Demo() {
           style={{
             display: "block",
             width: sizeRef.current.w,
-            minHeight: sizeRef.current.h - TOOLBAR_HEIGHT,
+            minHeight: sizeRef.current.h,
             outline: "none",
             cursor: isDrawing ? "crosshair" : toolCursor,
           }}
