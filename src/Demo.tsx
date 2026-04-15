@@ -465,40 +465,49 @@ export default function Demo() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const { w } = sizeRef.current;
-    const h = sizeRef.current.h - TOOLBAR_HEIGHT;
 
-    // Retina / HiDPI: set physical pixel size to CSS pixel size * devicePixelRatio
+    // Compute total content height: max of all prose lines and wireframe bottoms
+    let contentH = 0;
+    for (const line of posLinesRef.current) {
+      contentH = Math.max(contentH, line.y + SPATIAL_LH);
+    }
+    for (const wf of wireframesRef.current) {
+      contentH = Math.max(contentH, wf.y + wf.h);
+    }
+    contentH = Math.max(contentH + 40, sizeRef.current.h - TOOLBAR_HEIGHT); // pad + min viewport
+
+    // Retina / HiDPI
     const dpr = window.devicePixelRatio || 1;
     const physW = Math.floor(w * dpr);
-    const physH = Math.floor(h * dpr);
+    const physH = Math.floor(contentH * dpr);
     if (canvas.width !== physW || canvas.height !== physH) {
       canvas.width = physW;
       canvas.height = physH;
     }
 
     const ctx = canvas.getContext("2d")!;
-    // Scale all drawing operations so coordinates remain in CSS pixels
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const scrollY = scrollYRef.current;
+
+    // Subtle grey background
+    ctx.fillStyle = "#1e1e2e";
+    ctx.fillRect(0, 0, w, contentH);
+
     const cw = cwRef.current;
     const ch = chRef.current;
 
-    ctx.clearRect(0, 0, w, h);
+    const scrollY = 0; // browser scroll handles scrolling; canvas renders full content
 
     // Draw prose lines
     ctx.font = SPATIAL_FONT;
     ctx.fillStyle = FG_COLOR;
     ctx.textBaseline = "top";
     for (const line of posLinesRef.current) {
-      const screenY = line.y - scrollY;
-      if (screenY + SPATIAL_LH < 0 || screenY > h) continue;
-      ctx.fillText(line.text, line.x, screenY);
+      ctx.fillText(line.text, line.x, line.y);
     }
 
     // Draw wireframes
     for (const wf of wireframesRef.current) {
-      const top = wf.y - scrollY;
-      if (top + wf.h < 0 || top > h) continue;
+      const top = wf.y;
 
       ctx.font = SPATIAL_FONT;
       ctx.fillStyle = FG_COLOR;
@@ -1030,7 +1039,7 @@ export default function Demo() {
     canvas.focus();
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
-    const docY = e.clientY - rect.top + scrollYRef.current;
+    const docY = e.clientY - rect.top + (canvasRef.current?.parentElement?.scrollTop ?? 0);
 
     // ── Drawing tools: rect, line, text ──────────────────
     const tool = activeToolRef.current;
@@ -1190,7 +1199,7 @@ export default function Demo() {
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
-    const docY = e.clientY - rect.top + scrollYRef.current;
+    const docY = e.clientY - rect.top + (canvasRef.current?.parentElement?.scrollTop ?? 0);
 
     // Update draw gesture preview
     const dg = drawGestureRef.current;
@@ -1361,22 +1370,7 @@ export default function Demo() {
     }
   }
 
-  function onWheel(e: React.WheelEvent) {
-    // Estimate total doc height from last positioned line + wireframes below it
-    let totalH = 0;
-    if (posLinesRef.current.length > 0) {
-      const last = posLinesRef.current[posLinesRef.current.length - 1];
-      totalH = Math.max(totalH, last.y + SPATIAL_LH);
-    }
-    for (const wf of wireframesRef.current) {
-      totalH = Math.max(totalH, wf.y + wf.h);
-    }
-    scrollYRef.current = Math.max(
-      0,
-      Math.min(Math.max(0, totalH - (sizeRef.current.h - TOOLBAR_HEIGHT)), scrollYRef.current + e.deltaY),
-    );
-    paint();
-  }
+  // Browser native scroll handles scrolling (canvas in scrollable div)
 
   if (!ready) return <div style={{ background: BG_COLOR, width: "100vw", height: "100vh" }} />;
 
@@ -1441,26 +1435,26 @@ export default function Demo() {
         ))}
       </div>
 
-      {/* Canvas */}
-      <canvas
-        ref={canvasRef}
-        tabIndex={0}
-        style={{
-          background: BG_COLOR,
-          display: "block",
-          position: "fixed",
-          top: TOOLBAR_HEIGHT,
-          left: 0,
-          width: sizeRef.current.w,
-          height: sizeRef.current.h - TOOLBAR_HEIGHT,
-          outline: "none",
-          cursor: isDrawing ? "crosshair" : toolCursor,
-        }}
-        onWheel={onWheel}
-        onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={onMouseUp}
-      />
+      {/* Canvas — scrolls naturally via browser scroll */}
+      <div style={{
+        position: "fixed", top: TOOLBAR_HEIGHT, left: 0, right: 0, bottom: 0,
+        overflow: "auto", background: "#141420",
+      }}>
+        <canvas
+          ref={canvasRef}
+          tabIndex={0}
+          style={{
+            display: "block",
+            width: sizeRef.current.w,
+            minHeight: sizeRef.current.h - TOOLBAR_HEIGHT,
+            outline: "none",
+            cursor: isDrawing ? "crosshair" : toolCursor,
+          }}
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseUp={onMouseUp}
+        />
+      </div>
     </div>
   );
 }
