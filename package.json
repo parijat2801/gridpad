@@ -14,14 +14,9 @@
     "@chenglou/pretext": "^0.0.5",
     "@mantine/core": "^9.0.2",
     "@mantine/hooks": "^9.0.2",
-    "@tabler/icons-react": "^3.41.1",
-    "konva": "^10.2.5",
     "munkres-js": "^1.2.2",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "react-konva": "^19.2.3",
-    "zundo": "^2.3.0",
-    "zustand": "^5.0.12"
+    "react-dom": "^19.2.4"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
