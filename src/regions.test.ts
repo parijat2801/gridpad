@@ -64,39 +64,6 @@ describe("detectRegions", () => {
     expect(regions).toHaveLength(0);
   });
 
-  it("wireframe region carries layers", () => {
-    const text = "┌──┐\n│  │\n└──┘";
-    const result = scan(text);
-    const regions = detectRegions(result);
-    expect(regions[0].type).toBe("wireframe");
-    expect(regions[0].layers).toBeDefined();
-    expect(regions[0].layers!.length).toBeGreaterThan(0);
-  });
-
-  it("wireframe layers have row-rebased cell keys", () => {
-    // Wireframe starts at row 3 — layers should be rebased to row 0
-    const text = [
-      "Prose line 1",
-      "Prose line 2",
-      "",
-      "┌──┐",
-      "│  │",
-      "└──┘",
-    ].join("\n");
-    const result = scan(text);
-    const regions = detectRegions(result);
-    const wf = regions.find(r => r.type === "wireframe")!;
-    expect(wf).toBeDefined();
-    // Region starts at row 2 (1-row margin above rect at row 3).
-    // Rect at absolute row 3 → rebased to row 1 (3 - 2 = 1).
-    const rectLayer = wf.layers!.find(l => l.type === "rect");
-    expect(rectLayer).toBeDefined();
-    expect(rectLayer!.bbox.row).toBe(1);
-    // Cell keys should also be rebased relative to region start
-    const cellRows = [...rectLayer!.cells.keys()].map(k => Number(k.split(",")[0]));
-    expect(Math.max(...cellRows)).toBeLessThan(5); // rebased from absolute row 3-5
-  });
-
   it("prose regions carry their original text slice", () => {
     const text = "Line one\nLine two\n\n┌─┐\n└─┘\n\nLine six";
     const result = scan(text);

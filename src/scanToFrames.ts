@@ -13,6 +13,6 @@ export function scanToFrames(
 } {
   const scanResult = scan(text);
   const regions = detectRegions(scanResult);
-  const { frames, prose } = framesFromRegions(regions, charWidth, charHeight);
+  const { frames, prose } = framesFromRegions(regions, charWidth, charHeight, scanResult);
   return { frames, prose, regions };
 }

@@ -13,7 +13,7 @@ import {
 } from "./frame";
 import { scan } from "./scanner";
 import { detectRegions } from "./regions";
-import { LIGHT_RECT_STYLE } from "./layers";
+import { LIGHT_RECT_STYLE, buildLayersFromScan } from "./layers";
 
 // Pixel dimensions used in tests. These match the fallback constants in
 // grid.ts (FALLBACK_CHAR_WIDTH = 9.6, FALLBACK_CHAR_HEIGHT = 18.4) but we
@@ -344,7 +344,7 @@ describe("framesFromRegions", () => {
     const scanResult = scan(text);
     const regions = detectRegions(scanResult);
 
-    const { frames } = framesFromRegions(regions, CHAR_W, CHAR_H);
+    const { frames } = framesFromRegions(regions, CHAR_W, CHAR_H, scanResult);
 
     expect(frames).toBeDefined();
     expect(frames.length).toBeGreaterThan(0);
@@ -355,7 +355,7 @@ describe("framesFromRegions", () => {
     const text = "┌──────┐\n│      │\n└──────┘";
     const scanResult = scan(text);
     const regions = detectRegions(scanResult);
-    const { frames } = framesFromRegions(regions, CHAR_W, CHAR_H);
+    const { frames } = framesFromRegions(regions, CHAR_W, CHAR_H, scanResult);
 
     expect(frames).toHaveLength(1);
     const container = frames[0];
@@ -364,7 +364,11 @@ describe("framesFromRegions", () => {
     expect(container.children.length).toBeGreaterThan(0);
     // Each layer in the region is a child frame
     const wfRegion = regions[0];
-    expect(container.children).toHaveLength(wfRegion.layers!.length);
+    const regionLayers = buildLayersFromScan(scanResult).filter(l => {
+      const layerEndRow = l.bbox.row + l.bbox.h - 1;
+      return l.bbox.row >= wfRegion.startRow && layerEndRow <= wfRegion.endRow;
+    });
+    expect(container.children).toHaveLength(regionLayers.length);
   });
 
   it("prose regions are NOT frames (just returned as prose text)", () => {
@@ -381,7 +385,7 @@ describe("framesFromRegions", () => {
 
     const scanResult = scan(text);
     const regions = detectRegions(scanResult);
-    const result = framesFromRegions(regions, CHAR_W, CHAR_H);
+    const result = framesFromRegions(regions, CHAR_W, CHAR_H, scanResult);
 
     expect(result.frames).toHaveLength(1); // one wireframe region → one container frame
     expect(result.prose).toHaveLength(2);  // two prose regions
@@ -403,7 +407,7 @@ describe("framesFromRegions", () => {
 
     const scanResult = scan(text);
     const regions = detectRegions(scanResult);
-    const { frames } = framesFromRegions(regions, CHAR_W, CHAR_H);
+    const { frames } = framesFromRegions(regions, CHAR_W, CHAR_H, scanResult);
 
     // There should be exactly 1 frame (the wireframe container)
     expect(frames).toHaveLength(1);
@@ -425,8 +429,9 @@ describe("framesFromRegions", () => {
 describe("framesFromRegions return type", () => {
   it("returns a plain object with frames and prose arrays", () => {
     const text = "Hello world\n\n┌──┐\n│  │\n└──┘\n\nGoodbye";
-    const regions = detectRegions(scan(text));
-    const result = framesFromRegions(regions, CHAR_W, CHAR_H);
+    const scanResult = scan(text);
+    const regions = detectRegions(scanResult);
+    const result = framesFromRegions(regions, CHAR_W, CHAR_H, scanResult);
     // Should be a plain object, NOT an array
     expect(Array.isArray(result)).toBe(false);
     expect(result.frames).toBeInstanceOf(Array);

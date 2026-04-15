@@ -2,8 +2,8 @@
 // Each Frame is either a container (clip: true, children: Frame[]) or a
 // leaf with content. All coordinates are in pixels.
 
-import { regenerateCells, buildLineCells } from "./layers";
-import type { RectStyle } from "./scanner";
+import { regenerateCells, buildLineCells, buildLayersFromScan } from "./layers";
+import type { RectStyle, ScanResult } from "./scanner";
 import type { Region } from "./regions";
 import type { Bbox } from "./types";
 
@@ -215,9 +215,11 @@ export function framesFromRegions(
   regions: Region[],
   charWidth: number,
   charHeight: number,
+  scanResult?: ScanResult,
 ): { frames: Frame[]; prose: { startRow: number; text: string }[] } {
   const frames: Frame[] = [];
   const prose: { startRow: number; text: string }[] = [];
+  const allLayers = scanResult ? buildLayersFromScan(scanResult) : [];
 
   for (const region of regions) {
     if (region.type === "prose") {
@@ -226,7 +228,10 @@ export function framesFromRegions(
     }
 
     // wireframe region → container + child frames per layer
-    const layers = region.layers ?? [];
+    const layers = allLayers.filter(l => {
+      const layerEndRow = l.bbox.row + l.bbox.h - 1;
+      return l.bbox.row >= region.startRow && layerEndRow <= region.endRow;
+    });
     if (layers.length === 0) continue;
 
     // Compute bbox of all layers for container sizing
