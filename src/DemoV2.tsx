@@ -10,12 +10,17 @@ import {
   selectFrameEffect, getSelectedId,
   moveFrameEffect, resizeFrameEffect,
   applyAddFrame, applyDeleteFrame,
+  proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
+  proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
+  editorUndo, editorRedo,
+  rebuildProseParts, getRegions,
+  type CursorPos,
 } from "./editorState";
+import { framesToMarkdown } from "./serialize";
 import { type Frame, framesToObstacles, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT_FAMILY } from "./grid";
-import { insertChar, deleteChar, type CursorPos } from "./proseCursor";
 
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 const LH = Math.ceil(FONT_SIZE * 1.15);
@@ -99,7 +104,19 @@ export default function DemoV2() {
 
   type WritableHandle = FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> };
   async function saveToHandle(h: FileSystemFileHandle) {
-    try { const w = await (h as WritableHandle).createWritable(); await w.write(proseRef.current); await w.close(); } catch { /* ignore */ }
+    try {
+      const state = stateRef.current;
+      const md = framesToMarkdown(
+        getFrames(state),
+        rebuildProseParts(state),
+        getRegions(state),
+        cwRef.current,
+        chRef.current,
+      );
+      const w = await (h as WritableHandle).createWritable();
+      await w.write(md);
+      await w.close();
+    } catch { /* ignore write errors */ }
   }
   function scheduleAutosave() {
     if (!fileHandleRef.current) return;
@@ -309,7 +326,9 @@ export default function DemoV2() {
       stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
       dragRef.current = null;
       textEditRef.current = null;
-      proseCursorRef.current = proseCursorFromClick(px, py);
+      const cursor = proseCursorFromClick(px, py);
+      proseCursorRef.current = cursor;
+      if (cursor) stateRef.current = moveCursorTo(stateRef.current, cursor);
       blinkRef.current = true; paint();
     }
   }
@@ -424,6 +443,24 @@ export default function DemoV2() {
   useEffect(() => {
     const fn = async (e: KeyboardEvent) => {
       const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
+      if (mod && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        stateRef.current = editorUndo(stateRef.current);
+        framesRef.current = getFrames(stateRef.current);
+        proseRef.current = getDoc(stateRef.current);
+        preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
+        doLayout(); paint();
+        return;
+      }
+      if (mod && e.key === "z" && e.shiftKey) {
+        e.preventDefault();
+        stateRef.current = editorRedo(stateRef.current);
+        framesRef.current = getFrames(stateRef.current);
+        proseRef.current = getDoc(stateRef.current);
+        preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
+        doLayout(); paint();
+        return;
+      }
       if (mod && e.key === "o") {
         e.preventDefault();
         try {
@@ -506,49 +543,56 @@ export default function DemoV2() {
         return;
       }
       if (proseCursorRef.current) {
-        const cursor = proseCursorRef.current;
-        const lines = proseRef.current.split("\n");
         if (e.key === "Escape") { proseCursorRef.current = null; paint(); return; }
         if (e.key === "ArrowLeft") {
           e.preventDefault();
-          proseCursorRef.current = cursor.col > 0 ? { ...cursor, col: cursor.col - 1 } : cursor.row > 0 ? { row: cursor.row - 1, col: (lines[cursor.row - 1] ?? "").length } : cursor;
+          stateRef.current = proseMoveLeft(stateRef.current);
+          proseCursorRef.current = getCursor(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "ArrowRight") {
           e.preventDefault();
-          const lineLen = (lines[cursor.row] ?? "").length;
-          proseCursorRef.current = cursor.col < lineLen ? { ...cursor, col: cursor.col + 1 } : cursor.row < lines.length - 1 ? { row: cursor.row + 1, col: 0 } : cursor;
+          stateRef.current = proseMoveRight(stateRef.current);
+          proseCursorRef.current = getCursor(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "ArrowUp") {
           e.preventDefault();
-          if (cursor.row > 0) proseCursorRef.current = { row: cursor.row - 1, col: Math.min(cursor.col, (lines[cursor.row - 1] ?? "").length) };
+          stateRef.current = proseMoveUp(stateRef.current);
+          proseCursorRef.current = getCursor(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "ArrowDown") {
           e.preventDefault();
-          if (cursor.row < lines.length - 1) proseCursorRef.current = { row: cursor.row + 1, col: Math.min(cursor.col, (lines[cursor.row + 1] ?? "").length) };
+          stateRef.current = proseMoveDown(stateRef.current);
+          proseCursorRef.current = getCursor(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "Backspace") {
           e.preventDefault();
-          const r = deleteChar(proseRef.current, cursor);
-          proseRef.current = r.text; proseCursorRef.current = r.cursor;
-          preparedRef.current = prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" });
+          stateRef.current = proseDeleteBefore(stateRef.current, getCursor(stateRef.current)!);
+          proseRef.current = getDoc(stateRef.current);
+          framesRef.current = getFrames(stateRef.current);
+          preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
+          proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key === "Enter") {
           e.preventDefault();
-          const r = insertChar(proseRef.current, cursor, "\n");
-          proseRef.current = r.text; proseCursorRef.current = r.cursor;
-          preparedRef.current = prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" });
+          stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, "\n");
+          proseRef.current = getDoc(stateRef.current);
+          framesRef.current = getFrames(stateRef.current);
+          preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
+          proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key.length === 1 && !mod) {
           e.preventDefault();
-          const r = insertChar(proseRef.current, cursor, e.key);
-          proseRef.current = r.text; proseCursorRef.current = r.cursor;
-          preparedRef.current = prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" });
+          stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, e.key);
+          proseRef.current = getDoc(stateRef.current);
+          framesRef.current = getFrames(stateRef.current);
+          preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
+          proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         return;
