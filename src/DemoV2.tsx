@@ -126,17 +126,22 @@ export default function DemoV2() {
   function paint() {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const { w } = sizeRef.current;
+    const { w, h: viewH } = sizeRef.current;
     let contentH = 100;
     for (const line of linesRef.current) contentH = Math.max(contentH, line.y + LH);
     for (const f of framesRef.current) contentH = Math.max(contentH, f.y + f.h);
-    contentH = Math.max(contentH + 40, sizeRef.current.h);
+    contentH = Math.max(contentH + 40, viewH);
+    // Update scroll spacer to enable scrolling over full content
+    const spacer = canvas.parentElement?.querySelector("[data-spacer]") as HTMLElement | null;
+    if (spacer) spacer.style.height = `${contentH}px`;
+    const scrollTop = canvas.parentElement?.scrollTop ?? 0;
+    // Canvas is viewport-sized (never exceeds GPU limits), drawing is offset by scrollTop
     const dpr = window.devicePixelRatio || 1;
-    const pw = Math.floor(w * dpr), ph = Math.floor(contentH * dpr);
+    const pw = Math.floor(w * dpr), ph = Math.floor(viewH * dpr);
     if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
     const ctx = canvas.getContext("2d")!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = BG; ctx.fillRect(0, 0, w, contentH);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, -scrollTop);
+    ctx.fillStyle = BG; ctx.fillRect(0, scrollTop, w, viewH);
     ctx.font = FONT; ctx.fillStyle = FG_COLOR; ctx.textBaseline = "top";
     for (const line of linesRef.current) ctx.fillText(line.text, line.x, line.y);
     const cw = cwRef.current, ch = chRef.current;
@@ -367,10 +372,18 @@ export default function DemoV2() {
   }, []);
 
   useEffect(() => {
-    const fn = () => { sizeRef.current = { w: window.innerWidth, h: window.innerHeight }; };
+    const fn = () => { sizeRef.current = { w: window.innerWidth, h: window.innerHeight }; doLayout(); paint(); };
     window.addEventListener("resize", fn);
     return () => window.removeEventListener("resize", fn);
   }, []);
+
+  useEffect(() => {
+    const container = canvasRef.current?.parentElement;
+    if (!container) return;
+    const onScroll = () => paint();
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => container.removeEventListener("scroll", onScroll);
+  });
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -389,7 +402,7 @@ export default function DemoV2() {
           fileHandleRef.current = handle;
           const file = await handle.getFile();
           loadDocument(await file.text()); doLayout(); paint();
-        } catch { /* cancelled */ }
+        } catch (err) { if (err instanceof DOMException && err.name === "AbortError") { /* cancelled */ } else { console.error("File open failed:", err); throw err; } }
       }
       if (mod && e.key === "s") {
         e.preventDefault();
@@ -543,11 +556,12 @@ export default function DemoV2() {
       <canvas
         ref={canvasRef}
         tabIndex={0}
-        style={{ display: "block", width: sizeRef.current.w, outline: "none", cursor: "default" }}
+        style={{ display: "block", width: sizeRef.current.w, height: sizeRef.current.h, position: "sticky", top: 0, outline: "none", cursor: "default" }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
       />
+      <div data-spacer="" style={{ pointerEvents: "none" }} />
     </div>
   );
 }

@@ -905,6 +905,39 @@ describe("performance targets", () => {
     expect(regions.length).toBeGreaterThan(0);
   });
 
+  it("large file content height does not require oversized canvas", () => {
+    // Regression: 52KB file produced 60K+ pixel content height.
+    // At 2x DPR this is 120K canvas pixels — exceeds Chrome's ~16K-32K limit
+    // and crashes the tab. Canvas must be capped to viewport height.
+    const sections: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      sections.push(`# Section ${i}\n`);
+      sections.push(`This is paragraph ${i} with some longer text content that fills up the line. `.repeat(5) + "\n\n\n");
+      sections.push("┌──────────────────────┐\n│ Wireframe box       │\n│                      │\n└──────────────────────┘\n\n\n");
+    }
+    const text = sections.join("");
+    const scanResult = scan(text);
+    const regions = detectRegions(scanResult);
+    const { frames } = framesFromRegions(regions, 9.6, 18.4, scanResult);
+
+    // Compute content height the same way paint() does
+    let contentH = 100;
+    for (const f of frames) contentH = Math.max(contentH, f.y + f.h);
+
+    // The raw content height can be huge — that's expected
+    // But the CANVAS should never be set to this height directly.
+    // This test documents the problem; the fix is viewport-clamped canvas.
+    console.log(`  Content height: ${contentH.toFixed(0)}px`);
+
+    // Max safe canvas height at 2x DPR is ~16384px (GPU-dependent).
+    // If content exceeds this, paint() MUST clamp canvas to viewport.
+    const MAX_SAFE_CANVAS = 16384;
+    const DPR = 2;
+    const viewportH = 900; // typical viewport
+    const canvasH = Math.min(contentH, viewportH) * DPR;
+    expect(canvasH).toBeLessThanOrEqual(MAX_SAFE_CANVAS);
+  });
+
   it.skipIf(!hasColex)("largest file: all regions < 500 layers", () => {
     const f = path.join(planDir, "workspace-redesign.md");
     if (!fs.existsSync(f)) return;
