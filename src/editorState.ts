@@ -102,17 +102,23 @@ export const framesField = StateField.define<Frame[]>({
       } else if (e.is(setZEffect)) {
         result = result.map(f => f.id === e.value.id ? { ...f, z: e.value.z } : f);
       } else if (e.is(editTextFrameEffect)) {
-        result = result.map(f => {
-          if (f.id !== e.value.id) return f;
-          const cps = [...e.value.text];
-          const cells = new Map<string, string>();
-          cps.forEach((ch, i) => cells.set(`0,${i}`, ch));
-          return {
-            ...f,
-            w: Math.max(cps.length, 1) * e.value.charWidth,
-            content: f.content ? { ...f.content, text: e.value.text, cells } : { type: "text" as const, cells, text: e.value.text },
-          };
-        });
+        const editFrame = (f: Frame): Frame => {
+          if (f.id === e.value.id) {
+            const cps = [...e.value.text];
+            const cells = new Map<string, string>();
+            cps.forEach((ch, i) => cells.set(`0,${i}`, ch));
+            return {
+              ...f,
+              w: Math.max(cps.length, 1) * e.value.charWidth,
+              content: f.content ? { ...f.content, text: e.value.text, cells } : { type: "text" as const, cells, text: e.value.text },
+            };
+          }
+          if (f.children.length > 0) {
+            return { ...f, children: f.children.map(editFrame) };
+          }
+          return f;
+        };
+        result = result.map(editFrame);
       }
     }
     return result;
