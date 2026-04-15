@@ -429,7 +429,7 @@ export default function DemoV2() {
     measureCellSize().then(() => {
       cwRef.current = getCharWidth(); chRef.current = getCharHeight();
       loadDocument(DEFAULT_TEXT); setReady(true);
-    });
+    }).catch(err => console.error("Init failed:", err));
   }, []);
 
   useEffect(() => {
