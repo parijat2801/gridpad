@@ -24,6 +24,7 @@ export interface Frame {
   y: number;
   w: number;
   h: number;
+  z: number;
   children: Frame[];
   content: FrameContent | null;
   clip: boolean;
@@ -59,6 +60,7 @@ export function createFrame(params: {
     y: params.y,
     w: params.w,
     h: params.h,
+    z: 0,
     children: [],
     content: null,
     clip: true,
@@ -83,6 +85,7 @@ export function createRectFrame(params: {
     y: 0,
     w: gridW * charWidth,
     h: gridH * charHeight,
+    z: 0,
     children: [],
     content: { type: "rect", cells, style },
     clip: true,
@@ -110,6 +113,7 @@ export function createTextFrame(params: {
     y: row * charHeight,
     w: codepoints.length * charWidth,
     h: charHeight,
+    z: 0,
     children: [],
     content: { type: "text", cells, text },
     clip: true,
@@ -134,6 +138,7 @@ export function createLineFrame(params: {
     y: bbox.row * charHeight,
     w: bbox.w * charWidth,
     h: bbox.h * charHeight,
+    z: 0,
     children: [],
     content: { type: "line", cells },
     clip: true,
@@ -171,7 +176,8 @@ function hitTestOne(frame: Frame, px: number, py: number): Frame | null {
 }
 
 export function hitTestFrames(frames: Frame[], px: number, py: number): Frame | null {
-  for (const frame of frames) {
+  const sorted = [...frames].sort((a, b) => (b.z ?? 0) - (a.z ?? 0));
+  for (const frame of sorted) {
     const hit = hitTestOne(frame, px, py);
     if (hit) return hit;
   }
@@ -277,7 +283,7 @@ export function framesFromRegions(
         content = { type: "rect", cells: rebasedCells, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" } };
       }
 
-      return { id: nextId(), x, y, w, h, children: [], content, clip: false };
+      return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: false };
     });
 
     const container: Frame = {
@@ -286,6 +292,7 @@ export function framesFromRegions(
       y: containerY,
       w: containerW,
       h: containerH,
+      z: 0,
       children,
       content: null,
       clip: true,

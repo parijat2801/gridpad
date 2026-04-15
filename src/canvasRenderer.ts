@@ -78,13 +78,16 @@ export function buildRenderState(
     ? reflowLayout(prepared, viewport.w, LH, framesToObstacles(frames)).lines
     : [];
 
+  // Sort frames by ascending z so higher-z frames are painted on top
+  const sortedFrames = [...frames].sort((a, b) => (a.z ?? 0) - (b.z ?? 0));
+
   return {
     viewport,
     dpr,
     proseText,
     proseParts,
     lines,
-    frames,
+    frames: sortedFrames,
     selectedId: opts.selectedId ?? null,
     charWidth,
     charHeight,

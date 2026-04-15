@@ -52,6 +52,8 @@ export const addFrameEffect = StateEffect.define<Frame>();
 
 export const deleteFrameEffect = StateEffect.define<{ id: string }>();
 
+export const setZEffect = StateEffect.define<{ id: string; z: number }>();
+
 export const setToolEffect = StateEffect.define<ToolName>();
 
 export const setRegionsEffect = StateEffect.define<Region[]>();
@@ -91,6 +93,8 @@ export const framesField = StateField.define<Frame[]>({
         result = [...result, e.value];
       } else if (e.is(deleteFrameEffect)) {
         result = result.filter((f) => f.id !== e.value.id);
+      } else if (e.is(setZEffect)) {
+        result = result.map(f => f.id === e.value.id ? { ...f, z: e.value.z } : f);
       }
     }
     return result;
@@ -147,7 +151,8 @@ export function createEditorState(init: EditorStateInit): EditorState {
         e.is(moveFrameEffect) ||
         e.is(resizeFrameEffect) ||
         e.is(addFrameEffect) ||
-        e.is(deleteFrameEffect),
+        e.is(deleteFrameEffect) ||
+        e.is(setZEffect),
     );
     if (!hasFrameEffect) return [];
     // Capture the frames BEFORE this transaction was applied
