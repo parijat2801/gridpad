@@ -10,6 +10,8 @@ import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT_FAMILY } from "./grid";
 import { insertChar, deleteChar, type CursorPos } from "./proseCursor";
+import { framesToMarkdown } from "./serialize";
+import type { Region } from "./regions";
 
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 const LH = Math.ceil(FONT_SIZE * 1.15);
@@ -90,10 +92,20 @@ export default function DemoV2() {
   const textPlacementRef = useRef<{ x: number; y: number; chars: string } | null>(null);
   const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const regionsRef = useRef<Region[]>([]);
+  const prosePartsRef = useRef<{ startRow: number; text: string }[]>([]);
 
   type WritableHandle = FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> };
   async function saveToHandle(h: FileSystemFileHandle) {
-    try { const w = await (h as WritableHandle).createWritable(); await w.write(proseRef.current); await w.close(); } catch { /* ignore */ }
+    try {
+      const md = framesToMarkdown(
+        framesRef.current, prosePartsRef.current,
+        regionsRef.current, cwRef.current, chRef.current,
+      );
+      const w = await (h as WritableHandle).createWritable();
+      await w.write(md);
+      await w.close();
+    } catch { /* ignore */ }
   }
   function scheduleAutosave() {
     if (!fileHandleRef.current) return;
@@ -115,6 +127,8 @@ export default function DemoV2() {
     }
     proseRef.current = proseText;
     framesRef.current = frames;
+    regionsRef.current = regions;
+    prosePartsRef.current = prose;
     selectedRef.current = null;
     dragRef.current = null;
     proseCursorRef.current = null;
