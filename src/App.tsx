@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "./store";
 import LayerPanel from "./LayerPanel";
-import { KonvaCanvas } from "./KonvaCanvas";
+import { SpatialCanvas } from "./SpatialCanvas";
 import { Toolbar } from "./Toolbar";
 
 const DEFAULT_ASCII = `┌─────────────────────────────────────────────────┐
@@ -152,7 +152,7 @@ export default function App() {
           <Toolbar onOpen={handleOpen} onSave={handleSave} onReload={handleReload} />
         </div>
         <div className="canvas-area">
-          <KonvaCanvas />
+          <SpatialCanvas />
         </div>
       </div>
     </div>
