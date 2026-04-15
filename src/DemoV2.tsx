@@ -299,9 +299,12 @@ export default function DemoV2() {
     // Drill-down UX: first click selects container, second click on child selects child
     const hitContainer = hit ? framesRef.current.find(f => f.id === hit.id || f.children.some(c => c.id === hit.id)) : null;
     const targetId = hit ? (
-      hitContainer && currentSelectedId === hitContainer.id && hit.id !== hitContainer.id
-        ? hit.id        // already selected container → drill down to child
-        : hitContainer?.id ?? hit.id  // first click → select container
+      // If the hit IS what's already selected (child or container), keep it
+      currentSelectedId === hit.id ? hit.id
+      // If the container is selected and we click a child, drill down
+      : hitContainer && currentSelectedId === hitContainer.id ? hit.id
+      // Otherwise select the container
+      : hitContainer?.id ?? hit.id
     ) : null;
     const now = Date.now();
     const last = lastClickRef.current;
