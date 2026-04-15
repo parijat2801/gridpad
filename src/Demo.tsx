@@ -792,7 +792,7 @@ export default function Demo() {
                 { ...layer, cells, content: fc, bbox: { ...bbox, w: Math.max(1, fc.length) } },
                 ...wf.layers.slice(layerIdx + 1),
               ];
-              wf.sparse = buildSparseRows(compositeLayers(wf.layers));
+              recalcFrameBounds(wf);
               wireframeTextEditRef.current = { ...wte, col: wte.col - 1 };
               resetBlink();
               paint();
@@ -811,7 +811,7 @@ export default function Demo() {
               { ...layer, cells, content: fc, bbox: { ...bbox, w: Math.max(1, fc.length) } },
               ...wf.layers.slice(layerIdx + 1),
             ];
-            wf.sparse = buildSparseRows(compositeLayers(wf.layers));
+            recalcFrameBounds(wf);
             wireframeTextEditRef.current = { ...wte, col: wte.col + 1 };
             resetBlink();
             paint();
@@ -869,7 +869,7 @@ export default function Demo() {
           );
           if (wf) {
             wf.layers = wf.layers.filter(l => l.id !== selLayerId);
-            wf.sparse = buildSparseRows(compositeLayers(wf.layers));
+            recalcFrameBounds(wf);
           }
           selectedLayerIdRef.current = null;
           selectedIdRef.current = null;
@@ -1002,21 +1002,25 @@ export default function Demo() {
   }
 
   /** Add a new layer to a wireframe, recomposite, and repaint. */
-  function addLayerToWireframe(wf: Wireframe, newLayer: Layer) {
-    const maxZ = wf.layers.reduce((m, l) => Math.max(m, l.z), -1);
-    const layerWithZ: Layer = { ...newLayer, z: maxZ + 1 };
-    wf.layers = [...wf.layers, layerWithZ];
-    wf.sparse = buildSparseRows(compositeLayers(wf.layers));
-
-    // Grow wireframe to fit all layers
+  /** Recalculate frame bounds to tightly fit all layers + 1 cell padding. */
+  function recalcFrameBounds(wf: Wireframe) {
+    const cw = cwRef.current;
+    const ch = chRef.current;
     let maxRow = 0;
     let maxCol = 0;
     for (const l of wf.layers) {
       maxRow = Math.max(maxRow, l.bbox.row + l.bbox.h);
       maxCol = Math.max(maxCol, l.bbox.col + l.bbox.w);
     }
-    wf.h = Math.max(wf.h, maxRow * chRef.current);
-    wf.w = Math.max(wf.w, maxCol * cwRef.current);
+    wf.h = (maxRow + 1) * ch; // +1 cell padding
+    wf.w = (maxCol + 1) * cw;
+    recalcFrameBounds(wf);
+  }
+
+  function addLayerToWireframe(wf: Wireframe, newLayer: Layer) {
+    const maxZ = wf.layers.reduce((m, l) => Math.max(m, l.z), -1);
+    wf.layers = [...wf.layers, { ...newLayer, z: maxZ + 1 }];
+    recalcFrameBounds(wf);
     doLayout();
   }
 
@@ -1272,14 +1276,8 @@ export default function Demo() {
             resizedLayer,
             ...wf.layers.slice(layerIdx + 1),
           ];
-          wf.sparse = buildSparseRows(compositeLayers(wf.layers));
-          // Recalculate wireframe obstacle height from layer bounds
-          let maxRow = 0;
-          for (const l of wf.layers) {
-            maxRow = Math.max(maxRow, l.bbox.row + l.bbox.h);
-          }
-          wf.h = maxRow * chRef.current;
-          doLayout(); // reflow prose around resized wireframe
+          recalcFrameBounds(wf);
+          doLayout(); // reflow prose around resized frame
           paint();
         } else {
           // Move gesture
@@ -1295,7 +1293,7 @@ export default function Demo() {
               ...wf.layers.slice(layerIdx + 1),
             ];
             // Recomposite wireframe (wireframe position unchanged — no reflow)
-            wf.sparse = buildSparseRows(compositeLayers(wf.layers));
+            recalcFrameBounds(wf);
             // Keep selectedLayerIdRef in sync (id is unchanged)
             paint();
           }
