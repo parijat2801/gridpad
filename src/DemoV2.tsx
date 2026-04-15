@@ -12,6 +12,7 @@ import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT
 import { insertChar, deleteChar, type CursorPos } from "./proseCursor";
 import { framesToMarkdown } from "./serialize";
 import type { Region } from "./regions";
+// import corpusText from "./fixtures/corpus.md?raw";
 
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 const LH = Math.ceil(FONT_SIZE * 1.15);
@@ -154,9 +155,18 @@ export default function DemoV2() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = BG; ctx.fillRect(0, 0, w, contentH);
     ctx.font = FONT; ctx.fillStyle = FG_COLOR; ctx.textBaseline = "top";
-    for (const line of linesRef.current) ctx.fillText(line.text, line.x, line.y);
+    // Viewport culling — only draw visible content
+    const scrollTop = canvas.parentElement?.scrollTop ?? 0;
+    const viewH = sizeRef.current.h;
+    const viewTop = scrollTop - LH; // pad one line above
+    const viewBot = scrollTop + viewH + LH; // pad one line below
+    for (const line of linesRef.current) {
+      if (line.y + LH >= viewTop && line.y <= viewBot) ctx.fillText(line.text, line.x, line.y);
+    }
     const cw = cwRef.current, ch = chRef.current;
-    for (const frame of framesRef.current) renderFrame(ctx, frame, 0, 0, cw, ch);
+    for (const frame of framesRef.current) {
+      if (frame.y + frame.h >= viewTop && frame.y <= viewBot) renderFrame(ctx, frame, 0, 0, cw, ch);
+    }
     if (selectedRef.current) {
       const sel = findFrameById(framesRef.current, selectedRef.current);
       if (sel) renderFrameSelection(ctx, sel.frame, sel.absX, sel.absY);
@@ -236,20 +246,21 @@ export default function DemoV2() {
   function proseCursorFromClick(px: number, py: number): CursorPos | null {
     if (linesRef.current.length === 0) return null;
     const charWidth = getCharWidth();
-    let best: PositionedLine | null = null, bestDist = Infinity;
-    for (const pl of linesRef.current) {
-      const dist = Math.abs(pl.y + LH / 2 - py);
-      if (dist < bestDist) { bestDist = dist; best = pl; }
+    // Find the closest reflow line by Y
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < linesRef.current.length; i++) {
+      const dist = Math.abs(linesRef.current[i].y + LH / 2 - py);
+      if (dist < bestDist) { bestDist = dist; bestIdx = i; }
     }
-    if (!best) return null;
+    const best = linesRef.current[bestIdx];
+    // Use Pretext's cursor directly — segmentIndex = source line, graphemeIndex = column offset
+    const row = best.startCursor.segmentIndex;
+    const clickCol = Math.max(0, Math.floor((px - best.x) / charWidth));
+    const col = best.startCursor.graphemeIndex + Math.min(clickCol, best.text.length);
     const srcLines = proseRef.current.split("\n");
-    let srcRow = 0;
-    for (const pl of linesRef.current) {
-      if (pl === best) break;
-      if (pl.text.length >= (srcLines[srcRow] ?? "").length) srcRow++;
-    }
-    const col = Math.max(0, Math.floor((px - best.x) / charWidth));
-    return { row: srcRow, col: Math.min(col, (srcLines[srcRow] ?? "").length) };
+    const clampedRow = Math.min(row, srcLines.length - 1);
+    const clampedCol = Math.min(col, (srcLines[clampedRow] ?? "").length);
+    return { row: clampedRow, col: clampedCol };
   }
 
   function onMouseDown(e: React.MouseEvent) {
@@ -260,16 +271,17 @@ export default function DemoV2() {
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top + (canvas.parentElement?.scrollTop ?? 0);
     const tool = activeToolRef.current;
+    // Single hit-test for the whole click handler
+    const hit = hitTestFrames(framesRef.current, px, py);
     // Drawing tools only activate on empty space — clicking anything selects it + reverts to Select
-    const preHit = hitTestFrames(framesRef.current, px, py);
-    if (tool !== "select" && preHit) {
+    if (tool !== "select" && hit) {
       setTool("select"); // auto-revert to select on click
     }
-    if (!preHit && (tool === "rect" || tool === "line")) {
+    if (!hit && (tool === "rect" || tool === "line")) {
       drawPreviewRef.current = { startX: px, startY: py, curX: px, curY: py };
       paint(); return;
     }
-    if (!preHit && tool === "text") {
+    if (!hit && tool === "text") {
       const cw = cwRef.current, ch = chRef.current;
       const snappedX = Math.floor(px / cw) * cw, snappedY = Math.floor(py / ch) * ch;
       textPlacementRef.current = { x: snappedX, y: snappedY, chars: "" };
@@ -285,7 +297,6 @@ export default function DemoV2() {
         }
       }
     }
-    const hit = hitTestFrames(framesRef.current, px, py);
     const now = Date.now();
     const last = lastClickRef.current;
     const isDblClick = last !== null && now - last.time < 300 && Math.abs(px - last.px) < 10 && Math.abs(py - last.py) < 10;
@@ -548,7 +559,7 @@ export default function DemoV2() {
   if (!ready) return <div style={{ background: BG, width: "100vw", height: "100vh" }} />;
 
   return (
-    <div style={{ position: "fixed", inset: 0, overflow: "auto", background: "#141420" }}>
+    <div style={{ position: "fixed", inset: 0, overflow: "auto", background: "#141420" }} onScroll={paint}>
       <div style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 100, background: "#2b2b33", borderRadius: 10, padding: "4px 8px", boxShadow: "0 2px 12px rgba(0,0,0,0.5)", display: "flex", gap: 4 }}>
         {TOOL_BUTTONS.map(({ tool, label }) => (
           <button key={tool} onClick={() => setTool(tool)} style={{ background: activeTool === tool ? "#4a90e2" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: FONT_FAMILY, fontSize: 13, fontWeight: activeTool === tool ? 600 : 400 }}>
