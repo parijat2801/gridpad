@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pretext";
 import { scan } from "./scanner";
 import { detectRegions } from "./regions";
-import { type Frame, framesFromRegions, framesToObstacles, hitTestFrames, moveFrame, resizeFrame } from "./frame";
+import { type Frame, framesFromRegions, framesToObstacles, hitTestFrames, moveFrame, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT_FAMILY } from "./grid";
@@ -86,8 +86,21 @@ export default function DemoV2() {
   const blinkRef = useRef(true);
   const textEditRef = useRef<{ frameId: string; col: number } | null>(null);
   const lastClickRef = useRef<{ time: number; px: number; py: number } | null>(null);
+  const drawPreviewRef = useRef<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
+  const textPlacementRef = useRef<{ x: number; y: number; chars: string } | null>(null);
+  const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  function setTool(t: ToolName) { activeToolRef.current = t; setActiveTool(t); }
+  type WritableHandle = FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> };
+  async function saveToHandle(h: FileSystemFileHandle) {
+    try { const w = await (h as WritableHandle).createWritable(); await w.write(proseRef.current); await w.close(); } catch { /* ignore */ }
+  }
+  function scheduleAutosave() {
+    if (!fileHandleRef.current) return;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(() => { if (fileHandleRef.current) void saveToHandle(fileHandleRef.current); }, 500);
+  }
+  function setTool(t: ToolName) { activeToolRef.current = t; setActiveTool(t); drawPreviewRef.current = null; textPlacementRef.current = null; }
 
   function loadDocument(text: string) {
     const cw = cwRef.current, ch = chRef.current;
@@ -162,6 +175,24 @@ export default function DemoV2() {
         ctx.fillRect(found.absX + te.col * charWidth, found.absY, 2, charHeight);
       }
     }
+    // Drawing tool preview + text placement
+    const preview = drawPreviewRef.current;
+    if (preview) {
+      const x1 = Math.min(preview.startX, preview.curX), y1 = Math.min(preview.startY, preview.curY);
+      const x2 = Math.max(preview.startX, preview.curX), y2 = Math.max(preview.startY, preview.curY);
+      ctx.save(); ctx.strokeStyle = "#4a90e2"; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]);
+      if (activeToolRef.current === "rect") { ctx.strokeRect(x1, y1, x2 - x1, y2 - y1); }
+      else { ctx.beginPath(); ctx.moveTo(preview.startX, preview.startY); ctx.lineTo(preview.curX, preview.curY); ctx.stroke(); }
+      ctx.restore();
+    }
+    const tp = textPlacementRef.current;
+    if (tp) {
+      const cw2 = cwRef.current, ch2 = chRef.current;
+      ctx.save(); ctx.strokeStyle = "#4a90e2"; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
+      ctx.strokeRect(tp.x, tp.y, Math.max(1, [...tp.chars].length) * cw2, ch2); ctx.setLineDash([]);
+      if (tp.chars.length > 0) { ctx.fillStyle = FG_COLOR; ctx.font = FONT; ctx.textBaseline = "top"; ctx.fillText(tp.chars, tp.x, tp.y); }
+      ctx.restore();
+    }
   }
 
   function findFrameById(frames: Frame[], id: string, px = 0, py = 0): { frame: Frame; absX: number; absY: number } | null {
@@ -215,6 +246,17 @@ export default function DemoV2() {
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top + (canvas.parentElement?.scrollTop ?? 0);
+    const tool = activeToolRef.current;
+    if (tool === "rect" || tool === "line") {
+      drawPreviewRef.current = { startX: px, startY: py, curX: px, curY: py };
+      paint(); return;
+    }
+    if (tool === "text") {
+      const cw = cwRef.current, ch = chRef.current;
+      const snappedX = Math.floor(px / cw) * cw, snappedY = Math.floor(py / ch) * ch;
+      textPlacementRef.current = { x: snappedX, y: snappedY, chars: "" };
+      paint(); return;
+    }
     if (selectedRef.current) {
       const sel = findFrameById(framesRef.current, selectedRef.current);
       if (sel) {
@@ -234,20 +276,14 @@ export default function DemoV2() {
       if (isDblClick && hit.content?.type === "text") {
         const found = findFrameById(framesRef.current, hit.id);
         if (found) {
-          const charWidth = getCharWidth();
-          const relX = px - found.absX;
-          const text = hit.content.text ?? "";
-          const col = Math.max(0, Math.min(Math.round(relX / charWidth), [...text].length));
-          textEditRef.current = { frameId: hit.id, col };
-          selectedRef.current = hit.id;
-          proseCursorRef.current = null;
-          dragRef.current = null;
+          const cw2 = getCharWidth(), text = hit.content.text ?? "";
+          const col = Math.max(0, Math.min(Math.round((px - found.absX) / cw2), [...text].length));
+          textEditRef.current = { frameId: hit.id, col }; selectedRef.current = hit.id;
+          proseCursorRef.current = null; dragRef.current = null;
           blinkRef.current = true; canvas.focus(); paint(); return;
         }
       }
-      selectedRef.current = hit.id;
-      proseCursorRef.current = null;
-      textEditRef.current = null;
+      selectedRef.current = hit.id; proseCursorRef.current = null; textEditRef.current = null;
       const found = findFrameById(framesRef.current, hit.id);
       if (found) dragRef.current = { frameId: hit.id, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false };
       paint();
@@ -260,13 +296,14 @@ export default function DemoV2() {
   }
 
   function onMouseMove(e: React.MouseEvent) {
-    const drag = dragRef.current;
-    if (!drag) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top + (canvas.parentElement?.scrollTop ?? 0);
+    if (drawPreviewRef.current) { drawPreviewRef.current = { ...drawPreviewRef.current, curX: px, curY: py }; paint(); return; }
+    const drag = dragRef.current;
+    if (!drag) return;
     const dx = px - drag.startX, dy = py - drag.startY;
     if (!drag.hasMoved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
     drag.hasMoved = true;
@@ -300,7 +337,24 @@ export default function DemoV2() {
     doLayout(); paint();
   }
 
-  function onMouseUp() { if (dragRef.current) dragRef.current = null; }
+  function onMouseUp() {
+    if (dragRef.current) { dragRef.current = null; scheduleAutosave(); }
+    const preview = drawPreviewRef.current;
+    if (!preview) return;
+    const cw = cwRef.current, ch = chRef.current;
+    const tool = activeToolRef.current;
+    const x1 = Math.min(preview.startX, preview.curX), y1 = Math.min(preview.startY, preview.curY);
+    const x2 = Math.max(preview.startX, preview.curX), y2 = Math.max(preview.startY, preview.curY);
+    drawPreviewRef.current = null;
+    if (tool === "rect" && x2 - x1 >= cw && y2 - y1 >= ch) {
+      const f = createRectFrame({ gridW: Math.max(2, Math.round((x2 - x1) / cw)), gridH: Math.max(2, Math.round((y2 - y1) / ch)), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
+      framesRef.current = [...framesRef.current, { ...f, x: x1, y: y1 }]; scheduleAutosave();
+    } else if (tool === "line") {
+      const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
+      if (r1 !== r2 || c1 !== c2) { framesRef.current = [...framesRef.current, createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch })]; scheduleAutosave(); }
+    }
+    doLayout(); paint();
+  }
 
   useEffect(() => {
     measureCellSize().then(() => {
@@ -329,9 +383,32 @@ export default function DemoV2() {
         e.preventDefault();
         try {
           const [handle] = await window.showOpenFilePicker({ types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }] });
+          fileHandleRef.current = handle;
           const file = await handle.getFile();
           loadDocument(await file.text()); doLayout(); paint();
         } catch { /* cancelled */ }
+      }
+      if (mod && e.key === "s") {
+        e.preventDefault();
+        if (autosaveTimerRef.current) { clearTimeout(autosaveTimerRef.current); autosaveTimerRef.current = null; }
+        if (fileHandleRef.current) await saveToHandle(fileHandleRef.current);
+      }
+      // Text placement tool — collect typed chars
+      const tp = textPlacementRef.current;
+      if (tp) {
+        if (e.key === "Escape") { e.preventDefault(); textPlacementRef.current = null; paint(); return; }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          if (tp.chars.length > 0) {
+            const cw = cwRef.current, ch = chRef.current;
+            framesRef.current = [...framesRef.current, createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch })];
+            scheduleAutosave(); doLayout();
+          }
+          textPlacementRef.current = null; paint(); return;
+        }
+        if (e.key === "Backspace") { e.preventDefault(); const cps = [...tp.chars]; cps.pop(); textPlacementRef.current = { ...tp, chars: cps.join("") }; paint(); return; }
+        if (e.key.length === 1 && !mod) { e.preventDefault(); textPlacementRef.current = { ...tp, chars: tp.chars + e.key }; paint(); return; }
+        return;
       }
       if (textEditRef.current) {
         const te = textEditRef.current;
@@ -365,6 +442,7 @@ export default function DemoV2() {
             const newFrame: Frame = { ...frame, w: Math.max(newCp.length, 1) * charWidth, content: { ...content, text: newText, cells: newCells } };
             framesRef.current = replaceFrame(framesRef.current, te.frameId, newFrame);
             textEditRef.current = { ...te, col: te.col - 1 };
+            scheduleAutosave();
           }
           blinkRef.current = true; paint(); return;
         }
@@ -377,7 +455,7 @@ export default function DemoV2() {
           const newFrame: Frame = { ...frame, w: newCp.length * charWidth, content: { ...content, text: newText, cells: newCells } };
           framesRef.current = replaceFrame(framesRef.current, te.frameId, newFrame);
           textEditRef.current = { ...te, col: te.col + 1 };
-          blinkRef.current = true; paint(); return;
+          scheduleAutosave(); blinkRef.current = true; paint(); return;
         }
         return;
       }
@@ -411,21 +489,21 @@ export default function DemoV2() {
           const r = deleteChar(proseRef.current, cursor);
           proseRef.current = r.text; proseCursorRef.current = r.cursor;
           preparedRef.current = prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" });
-          doLayout(); blinkRef.current = true; paint(); return;
+          scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key === "Enter") {
           e.preventDefault();
           const r = insertChar(proseRef.current, cursor, "\n");
           proseRef.current = r.text; proseCursorRef.current = r.cursor;
           preparedRef.current = prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" });
-          doLayout(); blinkRef.current = true; paint(); return;
+          scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key.length === 1 && !mod) {
           e.preventDefault();
           const r = insertChar(proseRef.current, cursor, e.key);
           proseRef.current = r.text; proseCursorRef.current = r.cursor;
           preparedRef.current = prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" });
-          doLayout(); blinkRef.current = true; paint(); return;
+          scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         return;
       }
