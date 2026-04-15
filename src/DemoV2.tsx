@@ -168,9 +168,16 @@ export default function DemoV2() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.translate(0, -scrollTop);
     ctx.font = FONT; ctx.fillStyle = FG_COLOR; ctx.textBaseline = "top";
-    for (const line of linesRef.current) ctx.fillText(line.text, line.x, line.y);
+    // Viewport culling — only draw visible content
+    const viewTop = scrollTop - LH;
+    const viewBot = scrollTop + viewH + LH;
+    for (const line of linesRef.current) {
+      if (line.y + LH >= viewTop && line.y <= viewBot) ctx.fillText(line.text, line.x, line.y);
+    }
     const cw = cwRef.current, ch = chRef.current;
-    for (const frame of framesRef.current) renderFrame(ctx, frame, 0, 0, cw, ch);
+    for (const frame of framesRef.current) {
+      if (frame.y + frame.h >= viewTop && frame.y <= viewBot) renderFrame(ctx, frame, 0, 0, cw, ch);
+    }
     const selectedId = getSelectedId(stateRef.current);
     if (selectedId) {
       const sel = findFrameById(framesRef.current, selectedId);
@@ -244,21 +251,14 @@ export default function DemoV2() {
       if (dist < bestDist) { bestDist = dist; best = pl; }
     }
     if (!best) return null;
-    // Map visual line → source row by tracking consumed characters
+    // Use Pretext's startCursor — segmentIndex = source line, graphemeIndex = column offset
+    const row = best.startCursor.segmentIndex;
+    const clickCol = Math.max(0, Math.floor((px - best.x) / charWidth));
+    const col = best.startCursor.graphemeIndex + Math.min(clickCol, best.text.length);
     const srcLines = proseRef.current.split("\n");
-    let srcRow = 0;
-    let srcColConsumed = 0;
-    for (const pl of linesRef.current) {
-      if (pl === best) break;
-      srcColConsumed += pl.text.length;
-      // Check if we've consumed the entire current source line
-      while (srcRow < srcLines.length && srcColConsumed >= srcLines[srcRow].length) {
-        srcColConsumed -= srcLines[srcRow].length;
-        srcRow++;
-      }
-    }
-    const col = Math.max(0, Math.floor((px - best.x) / charWidth));
-    return { row: srcRow, col: Math.min(col, (srcLines[srcRow] ?? "").length) };
+    const clampedRow = Math.min(row, srcLines.length - 1);
+    const clampedCol = Math.min(col, (srcLines[clampedRow] ?? "").length);
+    return { row: clampedRow, col: clampedCol };
   }
 
   function onMouseDown(e: React.MouseEvent) {

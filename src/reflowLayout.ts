@@ -26,6 +26,8 @@ export interface PositionedLine {
   y: number;
   text: string;
   width: number;
+  /** Pretext cursor at the start of this line — segmentIndex maps to source line */
+  startCursor: { segmentIndex: number; graphemeIndex: number };
 }
 
 export interface ReflowResult {
@@ -93,6 +95,7 @@ export function reflowLayout(
 
     for (const slot of slots) {
       const slotWidth = slot.right - slot.left;
+      const startCursor = { segmentIndex: cursor.segmentIndex, graphemeIndex: cursor.graphemeIndex };
       const line = layoutNextLine(prepared, cursor, slotWidth);
       if (line === null) {
         exhausted = true;
@@ -103,6 +106,7 @@ export function reflowLayout(
         y: Math.round(lineTop),
         text: line.text,
         width: line.width,
+        startCursor,
       });
       cursor = line.end;
     }
