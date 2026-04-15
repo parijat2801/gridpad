@@ -237,17 +237,25 @@ export default function DemoV2() {
   function proseCursorFromClick(px: number, py: number): CursorPos | null {
     if (linesRef.current.length === 0) return null;
     const charWidth = getCharWidth();
+    // Find closest visual line by vertical distance
     let best: PositionedLine | null = null, bestDist = Infinity;
     for (const pl of linesRef.current) {
       const dist = Math.abs(pl.y + LH / 2 - py);
       if (dist < bestDist) { bestDist = dist; best = pl; }
     }
     if (!best) return null;
+    // Map visual line → source row by tracking consumed characters
     const srcLines = proseRef.current.split("\n");
     let srcRow = 0;
+    let srcColConsumed = 0;
     for (const pl of linesRef.current) {
       if (pl === best) break;
-      if (pl.text.length >= (srcLines[srcRow] ?? "").length) srcRow++;
+      srcColConsumed += pl.text.length;
+      // Check if we've consumed the entire current source line
+      while (srcRow < srcLines.length && srcColConsumed >= srcLines[srcRow].length) {
+        srcColConsumed -= srcLines[srcRow].length;
+        srcRow++;
+      }
     }
     const col = Math.max(0, Math.floor((px - best.x) / charWidth));
     return { row: srcRow, col: Math.min(col, (srcLines[srcRow] ?? "").length) };
@@ -366,13 +374,19 @@ export default function DemoV2() {
       }).state;
       framesRef.current = getFrames(stateRef.current);
     } else {
-      const newX = Math.max(0, drag.startFrameX + dx - (found.absX - found.frame.x));
-      const newY = Math.max(0, drag.startFrameY + dy - (found.absY - found.frame.y));
-      stateRef.current = stateRef.current.update({
-        effects: moveFrameEffect.of({ id: drag.frameId, dx: newX - found.frame.x, dy: newY - found.frame.y }),
-        annotations: [Transaction.addToHistory.of(false)],
-      }).state;
-      framesRef.current = getFrames(stateRef.current);
+      // Compute target position from drag start + mouse delta
+      const targetX = Math.max(0, drag.startFrameX + dx);
+      const targetY = Math.max(0, drag.startFrameY + dy);
+      // Delta from current frame position to target
+      const frameDx = targetX - found.absX;
+      const frameDy = targetY - found.absY;
+      if (frameDx !== 0 || frameDy !== 0) {
+        stateRef.current = stateRef.current.update({
+          effects: moveFrameEffect.of({ id: drag.frameId, dx: frameDx, dy: frameDy }),
+          annotations: [Transaction.addToHistory.of(false)],
+        }).state;
+        framesRef.current = getFrames(stateRef.current);
+      }
     }
     doLayout(); paint();
   }
