@@ -69,8 +69,8 @@ const BL_CORNERS = new Set(["└", "╰", "╚", "+", "┴", "├", "┼"]);
 const BR_CORNERS = new Set(["┘", "╯", "╝", "+", "┴", "┤", "┼"]);
 
 
-const H_EDGE = new Set(["─", "━", "═", "┬", "┴", "┼", "╤", "╧", "╪", "-"]);
-const V_EDGE = new Set(["│", "║", "├", "┤", "┼", "╟", "╢", "╫", "|"]);
+const H_EDGE = new Set(["─", "━", "═", "┬", "┴", "┼", "╤", "╧", "╪", "-", "▼", "▲"]);
+const V_EDGE = new Set(["│", "║", "├", "┤", "┼", "╟", "╢", "╫", "|", "►", "◄"]);
 
 // For line detection (stricter than edge — excludes corners)
 const H_LINE_CHAR = new Set(["─", "━", "═", "-"]);

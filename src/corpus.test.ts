@@ -156,17 +156,14 @@ describe("corpus: simple dashboard", () => {
 describe("corpus: vertical flow diagram", () => {
   const section = extractSection("2. Vertical Flow Diagram");
 
-  it("detects the first box (clean top edge, no ▼)", () => {
-    // First box has ┌────────┐ — clean edge, should parse
+  it("detects all 3 flow boxes (including ▼ edge)", () => {
     const rects = scan(section).rects;
-    expect(rects.length).toBeGreaterThanOrEqual(1);
+    expect(rects.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("KNOWN GAP: ▼ in top edge breaks rect detection for 2nd/3rd boxes", () => {
-    // ┌─────▼──────┐ uses ▼ in the top border — not in H_EDGE.
-    // TODO: add ▼►◄▲ to H_EDGE/V_EDGE for production.
+  it("box with ▼ in top edge IS detected as rect", () => {
     const arrowBox = "┌─────▼──────────────────────┐\n│  Executor                  │\n└─────┬──────────────────────┘";
-    expect(scan(arrowBox).rects.length).toBe(0);
+    expect(scan(arrowBox).rects.length).toBeGreaterThanOrEqual(1);
   });
 
   it("arrow characters (▼) are in the wireframe region", () => {
@@ -434,9 +431,9 @@ describe("corpus: agent misalignment (content wider than border)", () => {
 describe("corpus: arrow-edge boxes", () => {
   const section = extractSection("14. Arrow-Edge Boxes (Common Agent Flow Pattern)");
 
-  it("KNOWN GAP: ▼ in top edge prevents rect detection", () => {
+  it("box with ▼ in top edge IS detected as rect", () => {
     const arrowTop = "┌─────▼──────────────────────┐\n│  Executor                  │\n│  Runs the task             │\n└─────┬──────────────────────┘";
-    expect(scan(arrowTop).rects.length).toBe(0);
+    expect(scan(arrowTop).rects.length).toBeGreaterThanOrEqual(1);
   });
 
   it("┬ in bottom edge IS valid (detected as rect)", () => {
@@ -448,6 +445,33 @@ describe("corpus: arrow-edge boxes", () => {
   it("section creates wireframe region (has box-drawing chars)", () => {
     const regions = detectRegions(scan(section));
     expect(regions.some(r => r.type === "wireframe")).toBe(true);
+  });
+
+  it("box with ► in left vertical edge IS detected as rect", () => {
+    const arrowLeft = "┌──────┐\n►      │\n│ Box  │\n└──────┘";
+    expect(scan(arrowLeft).rects.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("box with ▲ in bottom edge IS detected as rect", () => {
+    const arrowBot = "┌────────────────┐\n│  Result        │\n└───────▲────────┘";
+    expect(scan(arrowBot).rects.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("full vertical flow: 3 boxes with ▼ connectors all detected", () => {
+    const flow = [
+      "┌────────────────────────────┐",
+      "│  API: POST /start-task     │",
+      "└─────┬──────────────────────┘",
+      "      │",
+      "┌─────▼──────────────────────┐",
+      "│  Executor                  │",
+      "└─────┬──────────────────────┘",
+      "      │",
+      "┌─────▼──────────────────────┐",
+      "│  Evaluation Pipeline       │",
+      "└────────────────────────────┘",
+    ].join("\n");
+    expect(scan(flow).rects.length).toBeGreaterThanOrEqual(3);
   });
 });
 
