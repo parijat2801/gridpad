@@ -14,6 +14,7 @@ import {
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
   rebuildProseParts, getRegions,
+  setTextEditEffect, editTextFrameEffect, getTextEdit,
   type CursorPos,
 } from "./editorState";
 import { framesToMarkdown } from "./serialize";
@@ -232,20 +233,6 @@ export default function DemoV2() {
     return null;
   }
 
-  function replaceFrame(frames: Frame[], id: string, newFrame: Frame): Frame[] {
-    return frames.map(f => {
-      if (f.id === id) return newFrame;
-      if (f.children.length > 0) return { ...f, children: replaceFrame(f.children, id, newFrame) };
-      return f;
-    });
-  }
-
-  function buildTextCells(text: string): Map<string, string> {
-    const cells = new Map<string, string>();
-    const codepoints = [...text];
-    for (let i = 0; i < codepoints.length; i++) cells.set(`0,${i}`, codepoints[i]);
-    return cells;
-  }
 
   function proseCursorFromClick(px: number, py: number): CursorPos | null {
     if (linesRef.current.length === 0) return null;
@@ -310,9 +297,11 @@ export default function DemoV2() {
         const found = findFrameById(framesRef.current, hit.id);
         if (found) {
           const cw2 = getCharWidth(), text = hit.content.text ?? "";
-          const col = Math.max(0, Math.min(Math.round((px - found.absX) / cw2), [...text].length));
-          textEditRef.current = { frameId: hit.id, col };
-          stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(hit.id) }).state;
+          const textLen = Math.max(0, Math.min(Math.round((px - found.absX) / cw2), [...text].length));
+          stateRef.current = stateRef.current.update({
+            effects: [selectFrameEffect.of(hit.id), setTextEditEffect.of({ frameId: hit.id, col: textLen })],
+          }).state;
+          textEditRef.current = getTextEdit(stateRef.current); // sync for paint
           proseCursorRef.current = null; dragRef.current = null;
           blinkRef.current = true; canvas.focus(); paint(); return;
         }
@@ -496,23 +485,33 @@ export default function DemoV2() {
       if (textEditRef.current) {
         const te = textEditRef.current;
         const found = findFrameById(framesRef.current, te.frameId);
-        if (!found || found.frame.content?.type !== "text") { textEditRef.current = null; paint(); return; }
-        const frame = found.frame;
-        const content = frame.content!;
-        const text = content.text ?? "";
+        if (!found || found.frame.content?.type !== "text") {
+          stateRef.current = stateRef.current.update({ effects: setTextEditEffect.of(null) }).state;
+          textEditRef.current = getTextEdit(stateRef.current);
+          paint(); return;
+        }
+        const text = found.frame.content!.text ?? "";
         const codepoints = [...text];
         if (e.key === "Escape" || e.key === "Enter") {
           e.preventDefault();
-          textEditRef.current = null; blinkRef.current = true; paint(); return;
+          stateRef.current = stateRef.current.update({ effects: setTextEditEffect.of(null) }).state;
+          textEditRef.current = getTextEdit(stateRef.current);
+          blinkRef.current = true; paint(); return;
         }
         if (e.key === "ArrowLeft") {
           e.preventDefault();
-          textEditRef.current = { ...te, col: Math.max(0, te.col - 1) };
+          stateRef.current = stateRef.current.update({
+            effects: setTextEditEffect.of({ frameId: te.frameId, col: Math.max(0, te.col - 1) }),
+          }).state;
+          textEditRef.current = getTextEdit(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "ArrowRight") {
           e.preventDefault();
-          textEditRef.current = { ...te, col: Math.min(codepoints.length, te.col + 1) };
+          stateRef.current = stateRef.current.update({
+            effects: setTextEditEffect.of({ frameId: te.frameId, col: Math.min(codepoints.length, te.col + 1) }),
+          }).state;
+          textEditRef.current = getTextEdit(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
         if (e.key === "Backspace") {
@@ -520,11 +519,16 @@ export default function DemoV2() {
           if (te.col > 0) {
             const newCp = [...codepoints.slice(0, te.col - 1), ...codepoints.slice(te.col)];
             const newText = newCp.join("");
-            const newCells = buildTextCells(newText);
             const charWidth = getCharWidth();
-            const newFrame: Frame = { ...frame, w: Math.max(newCp.length, 1) * charWidth, content: { ...content, text: newText, cells: newCells } };
-            framesRef.current = replaceFrame(framesRef.current, te.frameId, newFrame);
-            textEditRef.current = { ...te, col: te.col - 1 };
+            stateRef.current = stateRef.current.update({
+              effects: [
+                editTextFrameEffect.of({ id: te.frameId, text: newText, charWidth }),
+                setTextEditEffect.of({ frameId: te.frameId, col: te.col - 1 }),
+              ],
+              annotations: [Transaction.addToHistory.of(true)],
+            }).state;
+            framesRef.current = getFrames(stateRef.current);
+            textEditRef.current = getTextEdit(stateRef.current);
             scheduleAutosave();
           }
           blinkRef.current = true; paint(); return;
@@ -533,11 +537,16 @@ export default function DemoV2() {
           e.preventDefault();
           const newCp = [...codepoints.slice(0, te.col), e.key, ...codepoints.slice(te.col)];
           const newText = newCp.join("");
-          const newCells = buildTextCells(newText);
           const charWidth = getCharWidth();
-          const newFrame: Frame = { ...frame, w: newCp.length * charWidth, content: { ...content, text: newText, cells: newCells } };
-          framesRef.current = replaceFrame(framesRef.current, te.frameId, newFrame);
-          textEditRef.current = { ...te, col: te.col + 1 };
+          stateRef.current = stateRef.current.update({
+            effects: [
+              editTextFrameEffect.of({ id: te.frameId, text: newText, charWidth }),
+              setTextEditEffect.of({ frameId: te.frameId, col: te.col + 1 }),
+            ],
+            annotations: [Transaction.addToHistory.of(true)],
+          }).state;
+          framesRef.current = getFrames(stateRef.current);
+          textEditRef.current = getTextEdit(stateRef.current);
           scheduleAutosave(); blinkRef.current = true; paint(); return;
         }
         return;
