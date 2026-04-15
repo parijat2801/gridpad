@@ -1090,14 +1090,39 @@ export default function Demo() {
     if (wf) {
       const cw = cwRef.current;
       const ch = chRef.current;
-      // Convert click to wireframe-local grid coords (account for wf.x offset)
       const gridRow = Math.floor((docY - wf.y) / ch);
       const gridCol = Math.floor((px - wf.x) / cw);
 
-      // Find the topmost layer (highest z) whose bbox contains this grid cell
+      // If a layer is already selected, check if click is on its resize handle
+      if (selectedLayerIdRef.current) {
+        const selLayer = wf.layers.find(l => l.id === selectedLayerIdRef.current);
+        if (selLayer && selLayer.type === "rect" && selLayer.style) {
+          const edge = detectResizeEdge(selLayer, gridRow, gridCol, 2);
+          if (edge) {
+            proseCursorRef.current = null;
+            wireframeTextEditRef.current = null;
+            stopBlink();
+            dragRef.current = {
+              wireframeId: wf.id,
+              layerId: selLayer.id,
+              startBbox: { ...selLayer.bbox },
+              startY: docY,
+              startWfY: wf.y,
+              startX: px,
+              startWfX: wf.x,
+              startMX: px,
+              resizeEdge: edge,
+            };
+            paint();
+            return;
+          }
+        }
+      }
+
+      // Find the topmost layer whose bbox contains this grid cell
       const sortedLayers = [...wf.layers]
         .filter(l => l.visible && l.type !== "group")
-        .sort((a, b) => b.z - a.z); // descending z — topmost first
+        .sort((a, b) => b.z - a.z);
       const hitLayer = sortedLayers.find(l =>
         gridRow >= l.bbox.row &&
         gridRow < l.bbox.row + l.bbox.h &&
@@ -1153,7 +1178,7 @@ export default function Demo() {
         // Check if this is a resize gesture (rect layer with style, near edge)
         let resizeEdge: ResizeEdge | undefined;
         if (hitLayer.type === "rect" && hitLayer.style) {
-          const edge = detectResizeEdge(hitLayer, gridRow, gridCol, 1);
+          const edge = detectResizeEdge(hitLayer, gridRow, gridCol, 2);
           if (edge) resizeEdge = edge;
         }
 
