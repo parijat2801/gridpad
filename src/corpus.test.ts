@@ -400,16 +400,10 @@ describe("corpus: empty boxes", () => {
 describe("corpus: agent misalignment (content wider than border)", () => {
   const section = extractSection("13. Agent Misalignment (Content Wider Than Border)");
 
-  it("KNOWN GAP: misaligned box (content 1 char wider) not detected as rect", () => {
-    // Agents frequently produce:
-    //   ┌─────────┐     (11 chars)
-    //   │ Check A  │     (12 chars — extra space before │)
-    //   └─────────┘     (11 chars)
-    // The right │ at col 11 doesn't line up with ┐ at col 10.
+  it("misaligned box (content 1 char wider) IS detected as rect", () => {
     const misaligned = "┌─────────┐\n│ Check A  │\n│ (Form)   │\n└─────────┘";
     const rects = scan(misaligned).rects;
-    // Currently fails — scanner requires exact column alignment
-    expect(rects.length).toBe(0);
+    expect(rects.length).toBeGreaterThanOrEqual(1);
   });
 
   it("properly aligned version of same box IS detected", () => {
@@ -417,14 +411,35 @@ describe("corpus: agent misalignment (content wider than border)", () => {
     expect(scan(aligned).rects.length).toBe(1);
   });
 
-  it("label overflow (middle row wider) not detected", () => {
+  it("label overflow (middle row wider) IS detected as rect", () => {
     const overflow = "┌────────────────────────────┐\n│  Runs the task to completion│\n└────────────────────────────┘";
-    // Middle row has │ at col 30 but ┐ is at col 29
-    expect(scan(overflow).rects.length).toBe(0);
+    expect(scan(overflow).rects.length).toBeGreaterThanOrEqual(1);
   });
 
   it("section still parses without crashing", () => {
     expect(() => detectRegions(scan(section))).not.toThrow();
+  });
+
+  it("box with content 2+ chars wider is NOT detected (only ±1)", () => {
+    // Content extends 5+ chars beyond border — well beyond ±1 tolerance
+    const tooWide = "┌────┐\n│ Too wide │\n└────┘";
+    expect(scan(tooWide).rects.length).toBe(0);
+  });
+
+  it("pipe char 2+ cols away does not cause false positive", () => {
+    const withPipe = "┌──┐\n└──┘   │";
+    const rects = scan(withPipe).rects;
+    // The 4-wide box should still be detected normally
+    expect(rects.length).toBe(1);
+    expect(rects[0].w).toBe(4);
+  });
+
+  it("misaligned box: detected rect has correct height", () => {
+    const misaligned = "┌─────────┐\n│ Check A  │\n│ (Form)   │\n└─────────┘";
+    const rects = scan(misaligned).rects;
+    if (rects.length > 0) {
+      expect(rects[0].h).toBe(4);
+    }
   });
 });
 

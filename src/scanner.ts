@@ -126,19 +126,72 @@ function traceRight(grid: string[][], row: number, startCol: number): number {
 }
 
 // Trace down from (startRow+1, col) along vertical edge characters until we
-// hit any bottom corner. Returns the row of the bottom corner, or -1 if break.
+// hit any bottom corner. Returns {row, col} of the bottom corner, or null if
+// the trace breaks. Tolerates ±1 column drift from the original column
+// (prevents drift from accumulating across multiple rows).
 function traceDown(
   grid: string[][],
   startRow: number,
   col: number,
   expectCorner: (ch: string) => boolean,
-): number {
+): { row: number; col: number; drifted: boolean } | null {
+  const origCol = col;
+  let currentCol = col;
+  let drifted = false;
   for (let r = startRow + 1; r < grid.length; r++) {
-    const ch = getCell(grid, r, col);
-    if (expectCorner(ch)) return r;
-    if (!isVEdge(ch)) return -1;
+    const ch = getCell(grid, r, currentCol);
+    if (expectCorner(ch)) return { row: r, col: currentCol, drifted };
+    if (isVEdge(ch)) continue;
+    // When drifted, also check if the original column has a corner or edge
+    // (allows the border to snap back to its original position).
+    if (currentCol !== origCol) {
+      const chOrig = getCell(grid, r, origCol);
+      if (expectCorner(chOrig)) return { row: r, col: origCol, drifted };
+      if (isVEdge(chOrig)) {
+        currentCol = origCol;
+        continue;
+      }
+    }
+    // Fuzzy ±1 from ORIGINAL column only (prevents cumulative drift)
+    if (currentCol === origCol) {
+      const chPlus = getCell(grid, r, origCol + 1);
+      if (isVEdge(chPlus) || expectCorner(chPlus)) {
+        currentCol = origCol + 1;
+        drifted = true;
+        if (expectCorner(chPlus)) return { row: r, col: currentCol, drifted };
+        continue;
+      }
+      const chMinus = getCell(grid, r, origCol - 1);
+      if (isVEdge(chMinus) || expectCorner(chMinus)) {
+        currentCol = origCol - 1;
+        drifted = true;
+        if (expectCorner(chMinus)) return { row: r, col: currentCol, drifted };
+        continue;
+      }
+    }
+    return null;
   }
-  return -1;
+  return null;
+}
+
+// Returns true if the interior of the potential rectangle (rows row+1..botRow-1,
+// cols leftCol+1..rightCol-1) contains at least one non-space character.
+// Used to reject "fuzzy" detections where the drift is due to an empty extra
+// space rather than genuine content overflow.
+function interiorHasContent(
+  grid: string[][],
+  topRow: number,
+  botRow: number,
+  leftCol: number,
+  rightCol: number,
+): boolean {
+  for (let r = topRow + 1; r < botRow; r++) {
+    for (let c = leftCol + 1; c < rightCol; c++) {
+      const ch = getCell(grid, r, c);
+      if (ch !== " " && ch !== "") return true;
+    }
+  }
+  return false;
 }
 
 // Verify the bottom edge from (row, startCol) to (row, endCol) is all
@@ -185,19 +238,23 @@ function detectRectangles(
       if (trCol < 0) continue;
 
       // Trace down the left edge to find BL corner
-      const blRow = traceDown(grid, row, col, isBL);
-      if (blRow < 0) continue;
+      const bl = traceDown(grid, row, col, isBL);
+      if (!bl) continue;
 
       // Trace down the right edge to find BR corner (should be same row as BL)
-      const brRow = traceDown(grid, row, trCol, isBR);
-      if (brRow !== blRow) continue;
+      const br = traceDown(grid, row, trCol, isBR);
+      if (!br || br.row !== bl.row) continue;
 
-      // Verify the bottom edge
-      if (!verifyBottomEdge(grid, blRow, col, trCol)) continue;
+      // Verify the bottom edge using actual BL/BR columns (may be ±1 shifted)
+      if (!verifyBottomEdge(grid, bl.row, bl.col, br.col)) continue;
+
+      // If the right or left edge drifted ±1, reject boxes whose interior is
+      // empty — drift from user-added whitespace rather than content overflow.
+      if ((bl.drifted || br.drifted) && !interiorHasContent(grid, row, bl.row, col, trCol)) continue;
 
       // Rectangle confirmed — record it (dedup)
       const w = trCol - col + 1;
-      const h = blRow - row + 1;
+      const h = bl.row - row + 1;
       const sig = `${row},${col},${w},${h}`;
       if (seen.has(sig)) continue;
       seen.add(sig);
@@ -206,9 +263,12 @@ function detectRectangles(
       // Mark boundary cells as claimed
       for (let c = col; c <= trCol; c++) {
         claimed.add(key(row, c));
-        claimed.add(key(blRow, c));
       }
-      for (let r = row; r <= blRow; r++) {
+      // Claim bottom edge using actual BL/BR positions
+      for (let c = Math.min(bl.col, col); c <= Math.max(br.col, trCol); c++) {
+        claimed.add(key(bl.row, c));
+      }
+      for (let r = row; r <= bl.row; r++) {
         claimed.add(key(r, col));
         claimed.add(key(r, trCol));
       }
