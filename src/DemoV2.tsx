@@ -4,8 +4,14 @@
 import { useEffect, useRef, useState } from "react";
 import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pretext";
 import type { EditorState } from "@codemirror/state";
-import { createEditorStateFromText, getDoc, getFrames } from "./editorState";
-import { type Frame, framesToObstacles, hitTestFrames, moveFrame, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
+import { Transaction } from "@codemirror/state";
+import {
+  createEditorStateFromText, getDoc, getFrames,
+  selectFrameEffect, getSelectedId,
+  moveFrameEffect, resizeFrameEffect,
+  applyAddFrame, applyDeleteFrame,
+} from "./editorState";
+import { type Frame, framesToObstacles, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT_FAMILY } from "./grid";
@@ -76,7 +82,6 @@ export default function DemoV2() {
   const proseRef = useRef("");
   const preparedRef = useRef<PreparedTextWithSegments | null>(null);
   const linesRef = useRef<PositionedLine[]>([]);
-  const selectedRef = useRef<string | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const cwRef = useRef(0);
   const chRef = useRef(0);
@@ -112,7 +117,6 @@ export default function DemoV2() {
     proseRef.current = proseText;
     framesRef.current = frames;
     preparedRef.current = proseText.length > 0 ? prepareWithSegments(proseText, FONT, { whiteSpace: "pre-wrap" }) : null;
-    selectedRef.current = null;
     dragRef.current = null;
     proseCursorRef.current = null;
   }
@@ -149,8 +153,9 @@ export default function DemoV2() {
     for (const line of linesRef.current) ctx.fillText(line.text, line.x, line.y);
     const cw = cwRef.current, ch = chRef.current;
     for (const frame of framesRef.current) renderFrame(ctx, frame, 0, 0, cw, ch);
-    if (selectedRef.current) {
-      const sel = findFrameById(framesRef.current, selectedRef.current);
+    const selectedId = getSelectedId(stateRef.current);
+    if (selectedId) {
+      const sel = findFrameById(framesRef.current, selectedId);
       if (sel) renderFrameSelection(ctx, sel.frame, sel.absX, sel.absY);
     }
     // Prose cursor (blinking)
@@ -267,8 +272,9 @@ export default function DemoV2() {
       textPlacementRef.current = { x: snappedX, y: snappedY, chars: "" };
       paint(); return;
     }
-    if (selectedRef.current) {
-      const sel = findFrameById(framesRef.current, selectedRef.current);
+    const currentSelectedId = getSelectedId(stateRef.current);
+    if (currentSelectedId) {
+      const sel = findFrameById(framesRef.current, currentSelectedId);
       if (sel) {
         const handleHit = hitTestHandle(computeHandleRects(sel.absX, sel.absY, sel.frame.w, sel.frame.h), px, py);
         if (handleHit) {
@@ -288,17 +294,20 @@ export default function DemoV2() {
         if (found) {
           const cw2 = getCharWidth(), text = hit.content.text ?? "";
           const col = Math.max(0, Math.min(Math.round((px - found.absX) / cw2), [...text].length));
-          textEditRef.current = { frameId: hit.id, col }; selectedRef.current = hit.id;
+          textEditRef.current = { frameId: hit.id, col };
+          stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(hit.id) }).state;
           proseCursorRef.current = null; dragRef.current = null;
           blinkRef.current = true; canvas.focus(); paint(); return;
         }
       }
-      selectedRef.current = hit.id; proseCursorRef.current = null; textEditRef.current = null;
+      stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(hit.id) }).state;
+      proseCursorRef.current = null; textEditRef.current = null;
       const found = findFrameById(framesRef.current, hit.id);
       if (found) dragRef.current = { frameId: hit.id, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false };
       paint();
     } else {
-      selectedRef.current = null; dragRef.current = null;
+      stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
+      dragRef.current = null;
       textEditRef.current = null;
       proseCursorRef.current = proseCursorFromClick(px, py);
       blinkRef.current = true; paint();
@@ -337,12 +346,25 @@ export default function DemoV2() {
       const newAbsX = newDx !== 0 ? anchorX - resized.w : drag.startFrameX;
       const newAbsY = newDy !== 0 ? anchorY - resized.h : drag.startFrameY;
       const parentOffX = found.absX - found.frame.x, parentOffY = found.absY - found.frame.y;
-      const finalFrame = moveFrame(resized, { dx: newAbsX - parentOffX - resized.x, dy: newAbsY - parentOffY - resized.y });
-      framesRef.current = replaceFrame(framesRef.current, drag.frameId, finalFrame);
+      const moveDx = newAbsX - parentOffX - found.frame.x;
+      const moveDy = newAbsY - parentOffY - found.frame.y;
+      const effects = [
+        resizeFrameEffect.of({ id: drag.frameId, w: newW, h: newH, charWidth: cw, charHeight: ch }),
+        moveFrameEffect.of({ id: drag.frameId, dx: moveDx, dy: moveDy }),
+      ];
+      stateRef.current = stateRef.current.update({
+        effects,
+        annotations: [Transaction.addToHistory.of(false)],
+      }).state;
+      framesRef.current = getFrames(stateRef.current);
     } else {
       const newX = Math.max(0, drag.startFrameX + dx - (found.absX - found.frame.x));
       const newY = Math.max(0, drag.startFrameY + dy - (found.absY - found.frame.y));
-      framesRef.current = replaceFrame(framesRef.current, drag.frameId, moveFrame(found.frame, { dx: newX - found.frame.x, dy: newY - found.frame.y }));
+      stateRef.current = stateRef.current.update({
+        effects: moveFrameEffect.of({ id: drag.frameId, dx: newX - found.frame.x, dy: newY - found.frame.y }),
+        annotations: [Transaction.addToHistory.of(false)],
+      }).state;
+      framesRef.current = getFrames(stateRef.current);
     }
     doLayout(); paint();
   }
@@ -358,10 +380,14 @@ export default function DemoV2() {
     drawPreviewRef.current = null;
     if (tool === "rect" && x2 - x1 >= cw && y2 - y1 >= ch) {
       const f = createRectFrame({ gridW: Math.max(2, Math.round((x2 - x1) / cw)), gridH: Math.max(2, Math.round((y2 - y1) / ch)), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
-      framesRef.current = [...framesRef.current, { ...f, x: x1, y: y1 }]; scheduleAutosave();
+      stateRef.current = applyAddFrame(stateRef.current, { ...f, x: x1, y: y1 });
+      framesRef.current = getFrames(stateRef.current); scheduleAutosave();
     } else if (tool === "line") {
       const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
-      if (r1 !== r2 || c1 !== c2) { framesRef.current = [...framesRef.current, createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch })]; scheduleAutosave(); }
+      if (r1 !== r2 || c1 !== c2) {
+        stateRef.current = applyAddFrame(stateRef.current, createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch }));
+        framesRef.current = getFrames(stateRef.current); scheduleAutosave();
+      }
     }
     setTool("select"); // one-shot: revert to Select after drawing
     doLayout(); paint();
@@ -420,7 +446,8 @@ export default function DemoV2() {
           e.preventDefault();
           if (tp.chars.length > 0) {
             const cw = cwRef.current, ch = chRef.current;
-            framesRef.current = [...framesRef.current, createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch })];
+            stateRef.current = applyAddFrame(stateRef.current, createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch }));
+            framesRef.current = getFrames(stateRef.current);
             scheduleAutosave(); doLayout();
           }
           setTool("select"); paint(); return; // one-shot: revert to Select
@@ -527,10 +554,15 @@ export default function DemoV2() {
         return;
       }
       // Global shortcuts (no prose cursor)
-      if (e.key === "Escape") { selectedRef.current = null; paint(); }
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedRef.current) {
-        framesRef.current = framesRef.current.filter(f => f.id !== selectedRef.current).map(f => ({ ...f, children: f.children.filter(c => c.id !== selectedRef.current) }));
-        selectedRef.current = null; doLayout(); paint();
+      if (e.key === "Escape") {
+        stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
+        paint();
+      }
+      const deleteSelectedId = getSelectedId(stateRef.current);
+      if ((e.key === "Delete" || e.key === "Backspace") && deleteSelectedId) {
+        stateRef.current = applyDeleteFrame(stateRef.current, deleteSelectedId);
+        framesRef.current = getFrames(stateRef.current);
+        doLayout(); paint();
       }
       if (!mod) {
         if (e.key === "v" || e.key === "V") setTool("select");
