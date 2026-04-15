@@ -3,7 +3,8 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pretext";
-import { scanToFrames } from "./scanToFrames";
+import type { EditorState } from "@codemirror/state";
+import { createEditorStateFromText, getDoc, getFrames } from "./editorState";
 import { type Frame, framesToObstacles, hitTestFrames, moveFrame, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
@@ -69,6 +70,7 @@ const TOOL_BUTTONS: { tool: ToolName; label: string }[] = [
 
 export default function DemoV2() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stateRef = useRef<EditorState>(null!);
   const [ready, setReady] = useState(false);
   const framesRef = useRef<Frame[]>([]);
   const proseRef = useRef("");
@@ -103,16 +105,13 @@ export default function DemoV2() {
 
   function loadDocument(text: string) {
     const cw = cwRef.current, ch = chRef.current;
-    const { frames, prose, regions } = scanToFrames(text, cw, ch);
-    const proseText = prose.map(p => p.text).join("\n\n");
-    preparedRef.current = proseText.length > 0 ? prepareWithSegments(proseText, FONT, { whiteSpace: "pre-wrap" }) : null;
-    let curY = 0, frameIdx = 0;
-    for (const r of regions) {
-      if (r.type === "prose") { curY += r.text.split("\n").length * LH; }
-      else if (frameIdx < frames.length) { frames[frameIdx].y = curY; curY += frames[frameIdx].h; frameIdx++; }
-    }
+    stateRef.current = createEditorStateFromText(text, cw, ch);
+    // Sync old refs for un-migrated code paths
+    const frames = getFrames(stateRef.current);
+    const proseText = getDoc(stateRef.current);
     proseRef.current = proseText;
     framesRef.current = frames;
+    preparedRef.current = proseText.length > 0 ? prepareWithSegments(proseText, FONT, { whiteSpace: "pre-wrap" }) : null;
     selectedRef.current = null;
     dragRef.current = null;
     proseCursorRef.current = null;
