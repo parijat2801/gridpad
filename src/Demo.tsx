@@ -1067,12 +1067,42 @@ export default function Demo() {
   function recalcFrameBounds(wf: Wireframe) {
     const cw = cwRef.current;
     const ch = chRef.current;
-    let maxRow = 0;
-    let maxCol = 0;
+    if (wf.layers.length === 0) { wf.sparse = []; return; }
+
+    let minRow = Infinity, minCol = Infinity, maxRow = 0, maxCol = 0;
     for (const l of wf.layers) {
+      minRow = Math.min(minRow, l.bbox.row);
+      minCol = Math.min(minCol, l.bbox.col);
       maxRow = Math.max(maxRow, l.bbox.row + l.bbox.h);
       maxCol = Math.max(maxCol, l.bbox.col + l.bbox.w);
     }
+
+    // If layers extend above/left of origin, shift everything down/right
+    // and adjust the frame's position to compensate
+    if (minRow < 0 || minCol < 0) {
+      const rowShift = minRow < 0 ? -minRow : 0;
+      const colShift = minCol < 0 ? -minCol : 0;
+      for (const l of wf.layers) {
+        // Shift bbox
+        l.bbox.row += rowShift;
+        l.bbox.col += colShift;
+        // Rekey cells
+        const newCells = new Map<string, string>();
+        for (const [key, val] of l.cells) {
+          const ci = key.indexOf(",");
+          const r = Number(key.slice(0, ci)) + rowShift;
+          const c = Number(key.slice(ci + 1)) + colShift;
+          newCells.set(`${r},${c}`, val);
+        }
+        l.cells = newCells;
+      }
+      // Move frame origin to compensate
+      wf.y -= rowShift * ch;
+      wf.x -= colShift * cw;
+      maxRow += rowShift;
+      maxCol += colShift;
+    }
+
     wf.h = (maxRow + 1) * ch;
     wf.w = (maxCol + 1) * cw;
     wf.sparse = buildSparseRows(compositeLayers(wf.layers));
