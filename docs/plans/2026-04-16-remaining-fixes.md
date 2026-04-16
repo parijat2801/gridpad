@@ -1,18 +1,18 @@
-# Remaining Fixes (v4 — Gemini + Codex consensus)
+# Remaining Fixes (v5 — corrected after code review)
 
 **Goal:** Fix "Field is not present" crash, fix missing cursor on long docs.
 
 ---
 
-1. **Null-guard the keydown listener** (DemoV2.tsx:464). Keep the `window.addEventListener` — moving to `onKeyDown` prop breaks global shortcuts (Cmd+O) when div isn't focused (Gemini + Codex agree). Add `if (!stateRef.current) return;` as the first line inside `fn`. Change stateRef type to `useRef<EditorState | null>(null)` so TypeScript enforces null checks everywhere.
+1. **Null-guard the keydown listener** (DemoV2.tsx:457, `fn` closure). Keep the `window.addEventListener` — moving to `onKeyDown` prop breaks global shortcuts (Cmd+O) when div isn't focused (Gemini + Codex agree). Add `if (!stateRef.current) return;` as the first line inside `fn`. **Keep `useRef<EditorState>(null!)` type unchanged** — changing to nullable would cause TS errors in ~15 handler locations that are already safe at runtime (canvas doesn't render until `ready=true`). The runtime guards are what matter here.
 
-2. **Guard paint()** (DemoV2.tsx:154). Add `if (!stateRef.current) return;` after the canvas null check. Defense in depth — paint can't reach `getSelectedId` before init (canvas isn't rendered), but the guard makes the nullable type work cleanly.
+2. **Guard paint()** (DemoV2.tsx:148). Add `if (!stateRef.current) return;` after the canvas null check. Defense in depth — paint can't reach `getSelectedId` before init (canvas isn't rendered), but the guard makes the nullable type work cleanly.
 
-3. **Remove duplicate scroll useEffect** (DemoV2.tsx:448-454). The outer div already has `onScroll={paint}` at line 667. The useEffect duplicates it and re-attaches every render (no deps array). Both reviewers confirm safe to delete.
+3. **Replace scroll useEffect with React prop** (DemoV2.tsx:441-447). The current useEffect has no deps array, so it re-attaches the scroll listener every render. Fix: add `onScroll={paint}` to the outer `<div>` (line 660), then delete the useEffect entirely. This follows the project rule "No useEffect for data flow — explicit calls only."
 
-4. **Guard resize handler** (DemoV2.tsx:443). Add `if (!stateRef.current) return;` inside the resize handler. Window resize fires regardless of component state.
+4. **Guard resize handler** (DemoV2.tsx:436). Add `if (!stateRef.current) return;` inside the `fn` closure. Window resize fires regardless of component state.
 
-5. **Fix cursor rendering** (DemoV2.tsx:194-207). Replace the `srcRow` walk with Gemini's last-matching-line algorithm plus Gemini's empty-line fallback for arrow-key navigation:
+5. **Fix cursor rendering** (DemoV2.tsx:187-201). Replace the `srcRow` walk with last-matching-line algorithm plus empty-line fallback for arrow-key navigation:
 
 ```typescript
 const cursor = proseCursorRef.current;
@@ -42,6 +42,9 @@ if (cursor && blinkRef.current) {
       lastLineBefore.y + LH * (cursor.row - lastLineBefore.startCursor.segmentIndex),
       2, LH,
     );
+  } else {
+    // Empty document fallback — no lines at all
+    ctx.fillRect(0, 0, 2, LH);
   }
 }
 ```
@@ -50,10 +53,10 @@ if (cursor && blinkRef.current) {
 
 | File | Changes |
 |------|---------|
-| `src/DemoV2.tsx:85` | `useRef<EditorState \| null>(null)` |
-| `src/DemoV2.tsx:443` | Guard resize: `if (!stateRef.current) return;` |
-| `src/DemoV2.tsx:448-454` | Delete scroll useEffect |
-| `src/DemoV2.tsx:464` | Guard keydown: `if (!stateRef.current) return;` |
-| `src/DemoV2.tsx:194-207` | Last-matching-line cursor + empty-line fallback |
+| `src/DemoV2.tsx:85` | Keep `useRef<EditorState>(null!)` unchanged |
+| `src/DemoV2.tsx:436` | Guard resize: `if (!stateRef.current) return;` |
+| `src/DemoV2.tsx:441-447` | Delete scroll useEffect, add `onScroll={paint}` to outer div (line 660) |
+| `src/DemoV2.tsx:457` | Guard keydown: `if (!stateRef.current) return;` |
+| `src/DemoV2.tsx:187-201` | Last-matching-line cursor + empty-line fallback |
 
 **What does NOT change:** editorState.ts, canvasRenderer.ts, frame.ts, serialize.ts, all test files. Window keydown listener stays. Canvas tabIndex stays.

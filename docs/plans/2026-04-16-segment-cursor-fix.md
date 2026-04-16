@@ -1,0 +1,45 @@
+# Segment-to-Line Cursor Mapping Fix (v3 — with runtime guards)
+
+**Goal:** Prose cursor click/render uses Pretext word-segment indices as source line numbers — fix the mapping so clicks edit the correct line and typed text appears where the cursor is.
+
+---
+
+1. **The invariant that's broken.** `proseCursorFromClick` reads `startCursor.segmentIndex` from `PositionedLine` and passes it as `row` to `moveCursorTo` → `rowColToPos(state, row, col)` → `state.doc.line(row + 1)`. But `segmentIndex` indexes Pretext's flat word/space/break token array (~10 tokens per source line), not source lines. A 1935-line doc has ~19225 segments, so segment 407 lands on a completely different line than source line 407. Same bug in `findCursorLine` which matches `segmentIndex === cursor.row`. Same bug in `proseCursorFromClick`'s column calculation: `graphemeIndex` is the grapheme offset within a single word token, not within the source line.
+
+2. **Build `segToLine` and `segToCol` prefix maps** (reflowLayout.ts). Before the layout loop, walk `prepared.kinds` and `prepared.segments` once to build two parallel arrays: `segToLine[segIdx]` = 0-indexed source line number (incremented on each `'hard-break'` entry); `segToCol[segIdx]` = cumulative grapheme count from the start of that source line to the start of this segment. Use `Intl.Segmenter({ granularity: "grapheme" })` to count each segment's graphemes (not `string.length`, which is UTF-16 code units — the editor model in `editorState.ts:292` is explicitly grapheme-based). Reset the grapheme accumulator to 0 on each hard-break. This is O(totalSegments) to build — for a 19K-segment doc that's ~1ms.
+
+3. **Add `sourceLine` and `sourceCol` to `PositionedLine`** (reflowLayout.ts). These are EditorState-compatible grapheme coordinates: `sourceLine` = 0-indexed `\n`-delimited line number, `sourceCol` = cumulative grapheme offset from the start of that source line to where this visual line begins. For each emitted visual line: `sourceLine = segToLine[startCursor.segmentIndex]`; `sourceCol = segToCol[startCursor.segmentIndex] + startCursor.graphemeIndex`. The comment on `startCursor` changes from `"segmentIndex maps to source line"` to `"Pretext word-segment cursor — use sourceLine/sourceCol for EditorState coordinates"`. Comment on `sourceCol` must explicitly state it's a grapheme column, not UTF-16.
+
+4. **Fix `proseCursorFromClick`** (DemoV2.tsx:244-261). Three changes: (a) Replace `row = best.startCursor.segmentIndex` with `row = best.sourceLine`. (b) Replace column calculation — instead of `best.startCursor.graphemeIndex + clickCol`, use `best.sourceCol + clickCol`. (c) Fix the clamp: currently `Math.min(clickCol, best.text.length)` uses UTF-16 `.length` — change to grapheme count via `[...graphemeSegmenter.segment(best.text)].length` (share the module-level `Intl.Segmenter` from editorState or create one locally). Remove the `srcLines` array; clamp using `[...graphemeSegmenter.segment(state.doc.line(row + 1).text)].length` for the final col value. The `moveCursorTo` call receives correct `{row, col}` where row is a CM doc line number and col is a grapheme cluster offset.
+
+5. **Fix click hit-testing for multi-slot obstacle bands** (DemoV2.tsx:244-261). Currently `proseCursorFromClick` picks the closest line by vertical distance only (`Math.abs(pl.y + LH/2 - py)`). When wireframe obstacles carve a line band into multiple horizontal slots, all slots share the same `y` — vertical-only matching picks an arbitrary one. Fix: when multiple lines tie on vertical distance, break ties by checking whether `px` falls within `[pl.x, pl.x + pl.width]`; if it does, prefer that line. If `px` is outside all tied lines, pick the nearest by horizontal distance. This prevents mis-clicks where the user targets the right slot but lands on the left.
+
+6. **Fix `findCursorLine`** (cursorFind.ts). Change matching from `pl.startCursor.segmentIndex === cursor.row` to `pl.sourceLine === cursor.row`; from `pl.startCursor.graphemeIndex <= cursor.col` to `pl.sourceCol <= cursor.col`. Update x-position from `cursor.col - pl.startCursor.graphemeIndex` to `cursor.col - pl.sourceCol`. The `lastLineBefore` check changes from `pl.startCursor.segmentIndex < cursor.row` to `pl.sourceLine < cursor.row`. The empty-line fallback (`lastLineBefore` extrapolation) and empty-document fallback (`cursor.row * lineHeight`) remain correct after the mapping change because they already work in source-line space.
+
+7. **Update tests** (cursorFind.test.ts). All `makeLine` helpers gain `sourceLine` and `sourceCol` parameters. Existing tests update to pass these fields. Add new test cases: (a) wrapped line where `sourceLine` is the same but `sourceCol` differs — verifies cursor lands on the correct wrap segment; (b) multi-line with gaps (empty source lines between text lines) — verifies empty-line fallback still works; (c) sourceCol > 0 on a continuation line — verifies x-position calculation uses `sourceCol` not `graphemeIndex`.
+
+8. **Edge cases (all addressed in the implementation above):**
+   - **Empty document** (no segments, no lines): `findCursorLine` returns `{x: 0, y: cursor.row * lineHeight}`. `segToLine`/`segToCol` are empty arrays — never indexed.
+   - **Consecutive empty lines** (`\n\n`): each hard-break segment increments `sourceLine`; `segToCol` resets to 0. `findCursorLine`'s `lastLineBefore` fallback handles cursor positioning between non-empty lines.
+   - **Wrapped lines**: multiple visual lines share the same `sourceLine` but have increasing `sourceCol`. The `<=` comparison in `findCursorLine` naturally picks the last matching wrap segment.
+   - **Last line without trailing `\n`**: `segToLine` assigns the current line number to all segments including final ones — no off-by-one.
+   - **Leading skipped segments**: Pretext may skip spaces/zero-width-breaks at line starts, so `startCursor.segmentIndex` may not be the raw first segment of a source line. This doesn't break the mapping — `segToCol` correctly accounts for all segments between line start and `startCursor`.
+   - **Emoji/ZWJ in line text**: all clamps and column calculations use `Intl.Segmenter` grapheme counts, matching `editorState.ts:292`.
+   - **`prepared.kinds` stability**: we access `kinds` from `PreparedTextWithSegments` via the `PreparedCore` base type. This is Pretext's "unstable escape hatch" — document as an implementation dependency in a code comment.
+
+9. **Runtime guards (regression safety net):**
+   - **(a) ~~Validate prefix maps against `prepared.chunks`~~:** REMOVED — `PreparedLineChunk[]` tracks layout break opportunities, NOT `\n`-delimited source lines. `chunks.length` does not correlate to source line count. This guard would fire false positives on nearly all inputs.
+   - **(b) Clamp `sourceLine` to doc line count:** After computing `sourceLine` for a `PositionedLine`, clamp to `[0, maxSourceLine]` where `maxSourceLine` is `segToLine[segToLine.length - 1]` (or passed as a parameter). If the clamp activates, `console.warn` — prevents out-of-bounds in `rowColToPos`.
+   - **(c) Round-trip sanity check in dev mode:** Behind `import.meta.env.DEV`, after building a `PositionedLine`, verify `sourceLine < docLineCount` AND `sourceCol` doesn't exceed the cumulative grapheme count on that source line (computed from the segment data). This catches map errors at layout time rather than at click time. Requires passing `docLineCount` into `reflowLayout` — add as optional parameter.
+   - **(d) `prepared.kinds` existence guard:** Before building prefix maps, verify `prepared.kinds` exists, is an array, and has the same length as `prepared.segments`. If not, `console.error` and fill with zeros — broken-but-non-crashing behavior identical to today. **(d-ii)** After building maps, if the text contains newlines but no `'hard-break'` was found in `kinds`, emit `console.error` — the segment taxonomy may have changed.
+
+---
+
+| File | Changes |
+|------|---------|
+| `src/reflowLayout.ts` | Add `sourceLine`, `sourceCol` to `PositionedLine`; build `segToLine`/`segToCol` prefix maps from `prepared.kinds`/`prepared.segments` using `Intl.Segmenter`; populate per visual line; fix comment on `startCursor`; runtime guards (chunks validation, clamp, dev-mode round-trip, kinds existence check) |
+| `src/DemoV2.tsx` | `proseCursorFromClick` uses `sourceLine`/`sourceCol`; grapheme-based clamp for click offset; multi-slot horizontal tie-breaking in hit-test |
+| `src/cursorFind.ts` | `findCursorLine` matches on `sourceLine`/`sourceCol` instead of `startCursor.segmentIndex`/`graphemeIndex` |
+| `src/cursorFind.test.ts` | Update `makeLine` helper; update all existing tests; add wrapped-line, empty-line-gap, and continuation-line tests |
+
+**What does NOT change:** editorState.ts (all row/col semantics stay the same), frame.ts, frameRenderer.ts, serialize.ts, proseCursor.ts (dead module). The `startCursor` field stays on `PositionedLine` for any future Pretext-level needs — `sourceLine`/`sourceCol` are the new canonical fields for EditorState interop.
