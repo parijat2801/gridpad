@@ -14,6 +14,14 @@ import {
   type LayoutCursor,
 } from "@chenglou/pretext";
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function countGraphemes(text: string): number {
+  let count = 0;
+  for (const _ of graphemeSegmenter.segment(text)) count++;
+  return count;
+}
+
 export interface Obstacle {
   x: number;
   y: number;
@@ -26,8 +34,12 @@ export interface PositionedLine {
   y: number;
   text: string;
   width: number;
-  /** Pretext cursor at the start of this line — segmentIndex maps to source line */
+  /** Pretext word-segment cursor — use sourceLine/sourceCol for EditorState coordinates */
   startCursor: { segmentIndex: number; graphemeIndex: number };
+  /** 0-indexed source line number (\n-delimited) — EditorState-compatible */
+  sourceLine: number;
+  /** Grapheme offset from start of source line to this visual line's start — grapheme clusters, not UTF-16 code units */
+  sourceCol: number;
 }
 
 export interface ReflowResult {
@@ -69,6 +81,45 @@ export function reflowLayout(
   let lineTop = 0;
   let exhausted = false;
 
+  // Access PreparedCore fields via the base type (unstable Pretext escape hatch).
+  // If Pretext changes the segment taxonomy, these maps will drift — the
+  // runtime guards below will catch it.
+  const kinds: string[] | undefined = (prepared as any).kinds;
+  const segments: string[] = prepared.segments;
+
+  let segToLine: number[] = [];
+  let segToCol: number[] = [];
+
+  if (kinds && Array.isArray(kinds) && kinds.length === segments.length) {
+    let currentLine = 0;
+    let currentColGraphemes = 0;
+
+    for (let i = 0; i < kinds.length; i++) {
+      if (kinds[i] === "hard-break") {
+        // The hard-break segment itself belongs to the current line
+        segToLine.push(currentLine);
+        segToCol.push(currentColGraphemes);
+        // Advance to next source line
+        currentLine++;
+        currentColGraphemes = 0;
+      } else {
+        segToLine.push(currentLine);
+        segToCol.push(currentColGraphemes);
+        currentColGraphemes += countGraphemes(segments[i]);
+      }
+    }
+
+    // Guard (d-ii): for multi-line text, verify at least one hard-break exists
+    if (!currentLine && segments.join("").includes("\n")) {
+      console.error("[reflowLayout] text contains newlines but no 'hard-break' found in kinds — prefix map may be wrong");
+    }
+  } else if (segments.length > 0) {
+    // Guard (d): kinds missing or mismatched — fall back to zeros
+    console.error("[reflowLayout] prepared.kinds missing or length mismatch — sourceLine/sourceCol will be 0");
+    segToLine = new Array(segments.length).fill(0);
+    segToCol = new Array(segments.length).fill(0);
+  }
+
   while (!exhausted) {
     const bandTop = lineTop;
     const bandBottom = lineTop + lineHeight;
@@ -101,12 +152,28 @@ export function reflowLayout(
         exhausted = true;
         break;
       }
+
+      let sourceLine = 0;
+      let sourceCol = 0;
+      if (segToLine.length > 0 && startCursor.segmentIndex < segToLine.length) {
+        sourceLine = segToLine[startCursor.segmentIndex];
+        sourceCol = segToCol[startCursor.segmentIndex] + startCursor.graphemeIndex;
+        // Guard (b): clamp sourceLine
+        const maxLine = segToLine[segToLine.length - 1];
+        if (sourceLine > maxLine) {
+          console.warn(`[reflowLayout] sourceLine ${sourceLine} exceeds max ${maxLine}, clamping`);
+          sourceLine = maxLine;
+        }
+      }
+
       lines.push({
         x: Math.round(slot.left),
         y: Math.round(lineTop),
         text: line.text,
         width: line.width,
         startCursor,
+        sourceLine,
+        sourceCol,
       });
       cursor = line.end;
     }

@@ -19,24 +19,24 @@ export function findCursorLine(
   let targetLine: PositionedLine | null = null;
   let lastLineBefore: PositionedLine | null = null;
   for (const pl of lines) {
-    if (pl.startCursor.segmentIndex === cursor.row &&
-        pl.startCursor.graphemeIndex <= cursor.col) {
+    if (pl.sourceLine === cursor.row &&
+        pl.sourceCol <= cursor.col) {
       targetLine = pl;
     }
-    if (pl.startCursor.segmentIndex < cursor.row) {
+    if (pl.sourceLine < cursor.row) {
       lastLineBefore = pl;
     }
   }
   if (targetLine) {
     return {
-      x: targetLine.x + (cursor.col - targetLine.startCursor.graphemeIndex) * charWidth,
+      x: targetLine.x + (cursor.col - targetLine.sourceCol) * charWidth,
       y: targetLine.y,
     };
   } else if (lastLineBefore) {
     // Empty line fallback (e.g., \n\n separator navigated via arrow keys)
     return {
       x: 0,
-      y: lastLineBefore.y + lineHeight * (cursor.row - lastLineBefore.startCursor.segmentIndex),
+      y: lastLineBefore.y + lineHeight * (cursor.row - lastLineBefore.sourceLine),
     };
   }
   // Empty document fallback — position cursor at correct row

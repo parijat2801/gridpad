@@ -27,6 +27,7 @@ import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 const LH = Math.ceil(FONT_SIZE * 1.15);
 const BG = "#1e1e2e";
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 type ResizeHandle = "tl" | "tm" | "tr" | "ml" | "mr" | "bl" | "bm" | "br";
 interface HandleRect { handle: ResizeHandle; x: number; y: number; w: number; h: number; }
@@ -237,20 +238,52 @@ export default function DemoV2() {
   function proseCursorFromClick(px: number, py: number): CursorPos | null {
     if (linesRef.current.length === 0) return null;
     const charWidth = getCharWidth();
-    // Find closest visual line by vertical distance
-    let best: PositionedLine | null = null, bestDist = Infinity;
+    // Find closest visual line — vertical distance first, horizontal tie-break
+    let best: PositionedLine | null = null;
+    let bestDist = Infinity;
+    const candidates: PositionedLine[] = [];
+    let minVDist = Infinity;
+
     for (const pl of linesRef.current) {
-      const dist = Math.abs(pl.y + LH / 2 - py);
-      if (dist < bestDist) { bestDist = dist; best = pl; }
+      const vDist = Math.abs(pl.y + LH / 2 - py);
+      if (vDist < minVDist) minVDist = vDist;
+    }
+    // Collect all lines within 1px of the best vertical distance (same y-band)
+    for (const pl of linesRef.current) {
+      const vDist = Math.abs(pl.y + LH / 2 - py);
+      if (vDist <= minVDist + 1) candidates.push(pl);
+    }
+    if (candidates.length === 1) {
+      best = candidates[0];
+    } else {
+      // Multi-slot tie-break: prefer the slot that contains px horizontally
+      for (const pl of candidates) {
+        if (px >= pl.x && px <= pl.x + pl.width) { best = pl; break; }
+      }
+      // If px is outside all slots, pick nearest by horizontal distance
+      if (!best) {
+        for (const pl of candidates) {
+          const hDist = px < pl.x ? pl.x - px : px > pl.x + pl.width ? px - pl.x - pl.width : 0;
+          if (hDist < bestDist) { bestDist = hDist; best = pl; }
+        }
+      }
     }
     if (!best) return null;
-    // Use Pretext's startCursor — segmentIndex = source line, graphemeIndex = column offset
-    const row = best.startCursor.segmentIndex;
+
+    // Use sourceLine/sourceCol — the EditorState-compatible coordinates
+    const row = best.sourceLine;
     const clickCol = Math.max(0, Math.floor((px - best.x) / charWidth));
-    const col = best.startCursor.graphemeIndex + Math.min(clickCol, best.text.length);
-    const srcLines = proseRef.current.split("\n");
-    const clampedRow = Math.min(row, srcLines.length - 1);
-    const clampedCol = Math.min(col, (srcLines[clampedRow] ?? "").length);
+    // Grapheme-based clamp on the visual line text (uses module-level graphemeSegmenter)
+    const visualLineGraphemes = [...graphemeSegmenter.segment(best.text)].length;
+    const col = best.sourceCol + Math.min(clickCol, visualLineGraphemes);
+
+    // Clamp against actual source line length (grapheme count)
+    const state = stateRef.current;
+    if (!state) return null;
+    const clampedRow = Math.min(Math.max(row, 0), state.doc.lines - 1);
+    const lineText = state.doc.line(clampedRow + 1).text;
+    const lineGraphemes = [...graphemeSegmenter.segment(lineText)].length;
+    const clampedCol = Math.min(col, lineGraphemes);
     return { row: clampedRow, col: clampedCol };
   }
 
