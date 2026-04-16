@@ -1023,4 +1023,39 @@ describe("Task 5.0.5: rebuildProseParts", () => {
     const parts = rebuildProseParts(state);
     expect(parts[0].text).toBe("hello world");
   });
+
+  it("multi-region: second prose part reflects edits after \\n\\n join", () => {
+    let state = createEditorState({
+      prose: "Hello\n\nWorld",
+      frames: [],
+      regions: [
+        { type: "prose" as const, startRow: 0, endRow: 0, text: "Hello" },
+        { type: "wireframe" as const, startRow: 1, endRow: 3, text: "┌─┐\n│ │\n└─┘" },
+        { type: "prose" as const, startRow: 4, endRow: 4, text: "World" },
+      ],
+      proseParts: [
+        { startRow: 0, text: "Hello" },
+        { startRow: 4, text: "World" },
+      ],
+    });
+    state = proseInsert(state, { row: 2, col: 5 }, "!");
+    const parts = rebuildProseParts(state);
+    expect(parts).toHaveLength(2);
+    expect(parts[0].text).toBe("Hello");
+    expect(parts[1].text).toBe("World!");
+  });
+
+  it("single prose region: no separator skip needed", () => {
+    const state = createEditorState({
+      prose: "Just one region",
+      frames: [],
+      regions: [
+        { type: "prose" as const, startRow: 0, endRow: 0, text: "Just one region" },
+      ],
+      proseParts: [{ startRow: 0, text: "Just one region" }],
+    });
+    const parts = rebuildProseParts(state);
+    expect(parts).toHaveLength(1);
+    expect(parts[0].text).toBe("Just one region");
+  });
 });

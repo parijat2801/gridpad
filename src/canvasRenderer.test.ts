@@ -169,6 +169,26 @@ describe("paintCanvas", () => {
     );
     expect(drawCalls.length).toBeGreaterThan(0);
   });
+
+  it("paintCanvas with prose and frames calls both fillText and fillRect", () => {
+    const ctx = makeMockCtx();
+    const frame = createRectFrame({ gridW: 4, gridH: 3, style: LIGHT_RECT_STYLE, charWidth: CW, charHeight: CH });
+    const state = createEditorState({
+      prose: "Some prose text",
+      frames: [frame],
+      regions: [],
+      proseParts: [{ startRow: 0, text: "Some prose text" }],
+    });
+    const rs = buildRenderState(state, VIEWPORT, DPR, CW, CH);
+    paintCanvas(ctx as unknown as CanvasRenderingContext2D, rs);
+
+    const fillTextCalls = ctx.__calls.filter((c) => c.method === "fillText");
+    const fillRectCalls = ctx.__calls.filter((c) => c.method === "fillRect");
+
+    // Both prose (fillText) and frame cursor/selection (fillRect) should appear
+    expect(fillTextCalls.length).toBeGreaterThan(0);
+    expect(fillRectCalls.length).toBeGreaterThan(0);
+  });
 });
 
 // ── clickToCursor tests ───────────────────────────────────────────────────────

@@ -166,6 +166,36 @@ describe("createLineFrame", () => {
     expect(frame.w).toBeCloseTo(5 * CHAR_W);
     expect(frame.h).toBeCloseTo(CHAR_H);
   });
+
+  it("vertical line has correct pixel dimensions", () => {
+    // 4-row vertical line (rows 0-3)
+    const frame: Frame = createLineFrame({
+      r1: 0,
+      c1: 2,
+      r2: 3,
+      c2: 2,
+      charWidth: CHAR_W,
+      charHeight: CHAR_H,
+    });
+
+    expect(frame.content!.type).toBe("line");
+    expect(frame.w).toBeCloseTo(CHAR_W);
+    expect(frame.h).toBeCloseTo(4 * CHAR_H);
+  });
+
+  it("reversed coordinates (r2 < r1 or c2 < c1) still produce positive dimensions", () => {
+    const frame: Frame = createLineFrame({
+      r1: 3,
+      c1: 5,
+      r2: 0,
+      c2: 0,
+      charWidth: CHAR_W,
+      charHeight: CHAR_H,
+    });
+
+    expect(frame.w).toBeGreaterThan(0);
+    expect(frame.h).toBeGreaterThan(0);
+  });
 });
 
 // ── framesToObstacles ─────────────────────────────────────────────────────
@@ -206,6 +236,19 @@ describe("framesToObstacles", () => {
 // ── hitTestFrames ─────────────────────────────────────────────────────────
 
 describe("hitTestFrames", () => {
+  it("hit inside a single frame returns that frame", () => {
+    const frame: Frame = createFrame({ x: 10, y: 10, w: 80, h: 60 });
+    const result = hitTestFrames([frame], 50, 40);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe(frame.id);
+  });
+
+  it("miss outside all frames returns null", () => {
+    const frame: Frame = createFrame({ x: 10, y: 10, w: 80, h: 60 });
+    const result = hitTestFrames([frame], 200, 200);
+    expect(result).toBeNull();
+  });
+
   it("returns deepest child frame that contains the click point", () => {
     const child: Frame = createFrame({ x: 20, y: 20, w: 40, h: 30 });
     const parent: Frame = {

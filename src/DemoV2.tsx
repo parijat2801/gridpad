@@ -48,6 +48,13 @@ function hitTestHandle(rects: HandleRect[], px: number, py: number): ResizeHandl
   return null;
 }
 
+function hasDescendant(frame: Frame, id: string): boolean {
+  for (const c of frame.children) {
+    if (c.id === id || hasDescendant(c, id)) return true;
+  }
+  return false;
+}
+
 const DEFAULT_TEXT = `# Welcome to Gridpad
 
 Open a markdown file with wireframes to see them rendered.
@@ -297,7 +304,7 @@ export default function DemoV2() {
       }
     }
     // Drill-down UX: first click selects container, second click on child selects child
-    const hitContainer = hit ? framesRef.current.find(f => f.id === hit.id || f.children.some(c => c.id === hit.id)) : null;
+    const hitContainer = hit ? framesRef.current.find(f => f.id === hit.id || hasDescendant(f, hit.id)) : null;
     const targetId = hit ? (
       // If the hit IS what's already selected (child or container), keep it
       currentSelectedId === hit.id ? hit.id

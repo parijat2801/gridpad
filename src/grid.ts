@@ -17,7 +17,8 @@ export async function measureCellSize(): Promise<{
 }> {
   await document.fonts.ready;
   const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return { charWidth: FALLBACK_CHAR_WIDTH, charHeight: FALLBACK_CHAR_HEIGHT };
   ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
   const sample = "M┌─┐│└─┘ABCDEFGHIJ";
   _charWidth = ctx.measureText(sample).width / sample.length;

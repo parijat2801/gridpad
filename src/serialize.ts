@@ -33,7 +33,7 @@ export function framesToMarkdown(
 
   for (const region of regions) {
     if (region.type === "prose") {
-      parts.push(prose[proseIdx]?.text ?? "");
+      parts.push(prose[proseIdx]?.text ?? region.text);
       proseIdx++;
       continue;
     }

@@ -267,16 +267,18 @@ export function rebuildProseParts(state: EditorState): { startRow: number; text:
   const regions = getRegions(state);
   const doc = getDoc(state);
   const lines = doc.split("\n");
+  const proseRegions = regions.filter(r => r.type === "prose");
   const parts: { startRow: number; text: string }[] = [];
   let lineOffset = 0;
 
-  for (const region of regions) {
-    if (region.type === "prose") {
-      const regionLines = region.text.split("\n").length;
-      const slice = lines.slice(lineOffset, lineOffset + regionLines).join("\n");
-      parts.push({ startRow: region.startRow, text: slice });
-      lineOffset += regionLines;
-    }
+  for (let i = 0; i < proseRegions.length; i++) {
+    const region = proseRegions[i];
+    const regionLines = region.text.split("\n").length;
+    const slice = lines.slice(lineOffset, lineOffset + regionLines).join("\n");
+    parts.push({ startRow: region.startRow, text: slice });
+    lineOffset += regionLines;
+    // Skip the \n\n separator between prose parts (adds 1 empty line in the doc)
+    if (i < proseRegions.length - 1) lineOffset += 1;
   }
   return parts;
 }
