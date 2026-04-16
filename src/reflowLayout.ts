@@ -75,6 +75,7 @@ export function reflowLayout(
   canvasWidth: number,
   lineHeight: number,
   obstacles: Obstacle[],
+  docLineCount?: number,
 ): ReflowResult {
   const lines: PositionedLine[] = [];
   let cursor: LayoutCursor = { segmentIndex: 0, graphemeIndex: 0 };
@@ -163,6 +164,29 @@ export function reflowLayout(
         if (sourceLine > maxLine) {
           console.warn(`[reflowLayout] sourceLine ${sourceLine} exceeds max ${maxLine}, clamping`);
           sourceLine = maxLine;
+        }
+      }
+
+      // Guard (c): dev-mode round-trip check
+      if (import.meta.env.DEV && docLineCount !== undefined) {
+        if (sourceLine >= docLineCount) {
+          console.error(
+            `[reflowLayout] sourceLine ${sourceLine} >= docLineCount ${docLineCount} at segmentIndex ${startCursor.segmentIndex}`
+          );
+        }
+        // Verify sourceCol doesn't exceed graphemes on this source line
+        if (segToLine.length > 0) {
+          let maxColOnLine = 0;
+          for (let si = 0; si < segToLine.length; si++) {
+            if (segToLine[si] === sourceLine) {
+              maxColOnLine = segToCol[si] + countGraphemes(segments[si]);
+            }
+          }
+          if (sourceCol > maxColOnLine) {
+            console.error(
+              `[reflowLayout] sourceCol ${sourceCol} > max graphemes ${maxColOnLine} on sourceLine ${sourceLine}`
+            );
+          }
         }
       }
 

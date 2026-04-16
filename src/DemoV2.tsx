@@ -143,7 +143,8 @@ export default function DemoV2() {
 
   function doLayout() {
     if (!preparedRef.current) { linesRef.current = []; return; }
-    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, LH, framesToObstacles(framesRef.current)).lines;
+    const docLines = stateRef.current?.doc.lines;
+    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, LH, framesToObstacles(framesRef.current), docLines).lines;
   }
 
   function paint() {
