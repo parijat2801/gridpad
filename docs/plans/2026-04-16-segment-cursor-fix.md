@@ -1,4 +1,4 @@
-# Segment-to-Line Cursor Mapping Fix (v2 — after Codex review)
+# Segment-to-Line Cursor Mapping Fix (v3 — with runtime guards)
 
 **Goal:** Prose cursor click/render uses Pretext word-segment indices as source line numbers — fix the mapping so clicks edit the correct line and typed text appears where the cursor is.
 
@@ -27,11 +27,17 @@
    - **Emoji/ZWJ in line text**: all clamps and column calculations use `Intl.Segmenter` grapheme counts, matching `editorState.ts:292`.
    - **`prepared.kinds` stability**: we access `kinds` from `PreparedTextWithSegments` via the `PreparedCore` base type. This is Pretext's "unstable escape hatch" — document as an implementation dependency in a code comment.
 
+9. **Runtime guards (regression safety net):**
+   - **(a) ~~Validate prefix maps against `prepared.chunks`~~:** REMOVED — `PreparedLineChunk[]` tracks layout break opportunities, NOT `\n`-delimited source lines. `chunks.length` does not correlate to source line count. This guard would fire false positives on nearly all inputs.
+   - **(b) Clamp `sourceLine` to doc line count:** After computing `sourceLine` for a `PositionedLine`, clamp to `[0, maxSourceLine]` where `maxSourceLine` is `segToLine[segToLine.length - 1]` (or passed as a parameter). If the clamp activates, `console.warn` — prevents out-of-bounds in `rowColToPos`.
+   - **(c) Round-trip sanity check in dev mode:** Behind `import.meta.env.DEV`, after building a `PositionedLine`, verify `sourceLine < docLineCount` AND `sourceCol` doesn't exceed the cumulative grapheme count on that source line (computed from the segment data). This catches map errors at layout time rather than at click time. Requires passing `docLineCount` into `reflowLayout` — add as optional parameter.
+   - **(d) `prepared.kinds` existence guard:** Before building prefix maps, verify `prepared.kinds` exists, is an array, and has the same length as `prepared.segments`. If not, `console.error` and fill with zeros — broken-but-non-crashing behavior identical to today. **(d-ii)** After building maps, if the text contains newlines but no `'hard-break'` was found in `kinds`, emit `console.error` — the segment taxonomy may have changed.
+
 ---
 
 | File | Changes |
 |------|---------|
-| `src/reflowLayout.ts` | Add `sourceLine`, `sourceCol` to `PositionedLine`; build `segToLine`/`segToCol` prefix maps from `prepared.kinds`/`prepared.segments` using `Intl.Segmenter`; populate per visual line; fix comment on `startCursor` |
+| `src/reflowLayout.ts` | Add `sourceLine`, `sourceCol` to `PositionedLine`; build `segToLine`/`segToCol` prefix maps from `prepared.kinds`/`prepared.segments` using `Intl.Segmenter`; populate per visual line; fix comment on `startCursor`; runtime guards (chunks validation, clamp, dev-mode round-trip, kinds existence check) |
 | `src/DemoV2.tsx` | `proseCursorFromClick` uses `sourceLine`/`sourceCol`; grapheme-based clamp for click offset; multi-slot horizontal tie-breaking in hit-test |
 | `src/cursorFind.ts` | `findCursorLine` matches on `sourceLine`/`sourceCol` instead of `startCursor.segmentIndex`/`graphemeIndex` |
 | `src/cursorFind.test.ts` | Update `makeLine` helper; update all existing tests; add wrapped-line, empty-line-gap, and continuation-line tests |
