@@ -21,6 +21,7 @@ import { framesToMarkdown } from "./serialize";
 import { type Frame, framesToObstacles, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
+import { findCursorLine } from "./cursorFind";
 import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT_FAMILY } from "./grid";
 
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
@@ -147,6 +148,7 @@ export default function DemoV2() {
   function paint() {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    if (!stateRef.current) return;
     const { w, h: viewH } = sizeRef.current;
     let contentH = 100;
     for (const line of linesRef.current) contentH = Math.max(contentH, line.y + LH);
@@ -186,18 +188,9 @@ export default function DemoV2() {
     // Prose cursor (blinking)
     const cursor = proseCursorRef.current;
     if (cursor && blinkRef.current) {
-      const charWidth = getCharWidth();
-      const srcLines = proseRef.current.split("\n");
-      let srcRow = 0;
-      for (const pl of linesRef.current) {
-        if (srcRow === cursor.row) {
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(pl.x + cursor.col * charWidth, pl.y, 2, LH);
-          break;
-        }
-        const srcLineText = srcLines[srcRow] ?? "";
-        if (pl.text.length >= srcLineText.length) srcRow++;
-      }
+      const pos = findCursorLine(cursor, linesRef.current, getCharWidth(), LH);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(pos.x, pos.y, 2, LH);
     }
     // Text frame cursor (blinking)
     const te = textEditRef.current;
@@ -433,18 +426,10 @@ export default function DemoV2() {
   }, []);
 
   useEffect(() => {
-    const fn = () => { sizeRef.current = { w: window.innerWidth, h: window.innerHeight }; doLayout(); paint(); };
+    const fn = () => { if (!stateRef.current) return; sizeRef.current = { w: window.innerWidth, h: window.innerHeight }; doLayout(); paint(); };
     window.addEventListener("resize", fn);
     return () => window.removeEventListener("resize", fn);
   }, []);
-
-  useEffect(() => {
-    const container = canvasRef.current?.parentElement;
-    if (!container) return;
-    const onScroll = () => paint();
-    container.addEventListener("scroll", onScroll, { passive: true });
-    return () => container.removeEventListener("scroll", onScroll);
-  });
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -455,6 +440,7 @@ export default function DemoV2() {
 
   useEffect(() => {
     const fn = async (e: KeyboardEvent) => {
+      if (!stateRef.current) return;
       const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
       if (mod && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
@@ -657,7 +643,7 @@ export default function DemoV2() {
   if (!ready) return <div style={{ background: BG, width: "100vw", height: "100vh" }} />;
 
   return (
-    <div style={{ position: "fixed", inset: 0, overflow: "auto", background: "#141420" }}>
+    <div style={{ position: "fixed", inset: 0, overflow: "auto", background: "#141420" }} onScroll={paint}>
       <div style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 100, background: "#2b2b33", borderRadius: 10, padding: "4px 8px", boxShadow: "0 2px 12px rgba(0,0,0,0.5)", display: "flex", gap: 4 }}>
         {TOOL_BUTTONS.map(({ tool, label }) => (
           <button key={tool} onClick={() => setTool(tool)} style={{ background: activeTool === tool ? "#4a90e2" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: FONT_FAMILY, fontSize: 13, fontWeight: activeTool === tool ? 600 : 400 }}>
