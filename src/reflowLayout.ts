@@ -90,6 +90,7 @@ export function reflowLayout(
 
   let segToLine: number[] = [];
   let segToCol: number[] = [];
+  const maxColForLine = new Map<number, number>();
 
   if (kinds && Array.isArray(kinds) && kinds.length === segments.length) {
     let currentLine = 0;
@@ -113,6 +114,16 @@ export function reflowLayout(
     // Guard (d-ii): for multi-line text, verify at least one hard-break exists
     if (!currentLine && segments.join("").includes("\n")) {
       console.error("[reflowLayout] text contains newlines but no 'hard-break' found in kinds — prefix map may be wrong");
+    }
+
+    // Precompute max grapheme col per source line for dev-mode guard (c).
+    // This avoids O(segments × lines) scanning inside the layout loop.
+    if (import.meta.env.DEV) {
+      for (let i = 0; i < kinds.length; i++) {
+        const line = segToLine[i];
+        const endCol = segToCol[i] + (kinds[i] === "hard-break" ? 0 : countGraphemes(segments[i]));
+        maxColForLine.set(line, Math.max(maxColForLine.get(line) ?? 0, endCol));
+      }
     }
   } else if (segments.length > 0) {
     // Guard (d): kinds missing or mismatched — fall back to zeros
@@ -167,26 +178,18 @@ export function reflowLayout(
         }
       }
 
-      // Guard (c): dev-mode round-trip check
+      // Guard (c): dev-mode round-trip check — O(1) via precomputed maxColForLine
       if (import.meta.env.DEV && docLineCount !== undefined) {
         if (sourceLine >= docLineCount) {
           console.error(
             `[reflowLayout] sourceLine ${sourceLine} >= docLineCount ${docLineCount} at segmentIndex ${startCursor.segmentIndex}`
           );
         }
-        // Verify sourceCol doesn't exceed graphemes on this source line
-        if (segToLine.length > 0) {
-          let maxColOnLine = 0;
-          for (let si = 0; si < segToLine.length; si++) {
-            if (segToLine[si] === sourceLine) {
-              maxColOnLine = segToCol[si] + countGraphemes(segments[si]);
-            }
-          }
-          if (sourceCol > maxColOnLine) {
-            console.error(
-              `[reflowLayout] sourceCol ${sourceCol} > max graphemes ${maxColOnLine} on sourceLine ${sourceLine}`
-            );
-          }
+        const maxCol = maxColForLine.get(sourceLine);
+        if (maxCol !== undefined && sourceCol > maxCol) {
+          console.error(
+            `[reflowLayout] sourceCol ${sourceCol} > max graphemes ${maxCol} on sourceLine ${sourceLine}`
+          );
         }
       }
 
