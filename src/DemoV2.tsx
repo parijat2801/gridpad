@@ -2,7 +2,7 @@
  * DemoV2 — Frame-based spatial canvas. Thin shell using frame.ts + frameRenderer.ts.
  */
 import { useEffect, useRef, useState } from "react";
-import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pretext";
+import { buildPreparedCache, invalidateLine, splitLine, mergeLines, type PreparedCache } from "./preparedCache";
 import type { EditorState } from "@codemirror/state";
 import { Transaction } from "@codemirror/state";
 import {
@@ -95,7 +95,7 @@ export default function DemoV2() {
   const [ready, setReady] = useState(false);
   const framesRef = useRef<Frame[]>([]);
   const proseRef = useRef("");
-  const preparedRef = useRef<PreparedTextWithSegments | null>(null);
+  const preparedRef = useRef<PreparedCache>([]);
   const linesRef = useRef<PositionedLine[]>([]);
   const dragRef = useRef<DragState | null>(null);
   const cwRef = useRef(0);
@@ -143,15 +143,14 @@ export default function DemoV2() {
     const proseText = getDoc(stateRef.current);
     proseRef.current = proseText;
     framesRef.current = frames;
-    preparedRef.current = proseText.length > 0 ? prepareWithSegments(proseText, FONT, { whiteSpace: "pre-wrap" }) : null;
+    preparedRef.current = buildPreparedCache(proseText);
     dragRef.current = null;
     proseCursorRef.current = null;
   }
 
   function doLayout() {
-    if (!preparedRef.current) { linesRef.current = []; return; }
-    const docLines = stateRef.current?.doc.lines;
-    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, LH, framesToObstacles(framesRef.current), docLines).lines;
+    if (preparedRef.current.length === 0) { linesRef.current = []; return; }
+    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, LH, framesToObstacles(framesRef.current)).lines;
   }
 
   function paint() {
@@ -488,8 +487,9 @@ export default function DemoV2() {
         stateRef.current = editorUndo(stateRef.current);
         framesRef.current = getFrames(stateRef.current);
         proseRef.current = getDoc(stateRef.current);
-        preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
-        doLayout(); paint();
+        preparedRef.current = buildPreparedCache(proseRef.current);
+        proseCursorRef.current = getCursor(stateRef.current);
+        doLayout(); blinkRef.current = true; paint();
         return;
       }
       if (mod && e.key === "z" && e.shiftKey) {
@@ -497,8 +497,9 @@ export default function DemoV2() {
         stateRef.current = editorRedo(stateRef.current);
         framesRef.current = getFrames(stateRef.current);
         proseRef.current = getDoc(stateRef.current);
-        preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
-        doLayout(); paint();
+        preparedRef.current = buildPreparedCache(proseRef.current);
+        proseCursorRef.current = getCursor(stateRef.current);
+        doLayout(); blinkRef.current = true; paint();
         return;
       }
       if (mod && e.key === "o") {
@@ -630,19 +631,30 @@ export default function DemoV2() {
         }
         if (e.key === "Backspace") {
           e.preventDefault();
-          stateRef.current = proseDeleteBefore(stateRef.current, getCursor(stateRef.current)!);
+          const beforeCursor = getCursor(stateRef.current)!;
+          stateRef.current = proseDeleteBefore(stateRef.current, beforeCursor);
           proseRef.current = getDoc(stateRef.current);
           framesRef.current = getFrames(stateRef.current);
-          preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
-          proseCursorRef.current = getCursor(stateRef.current);
+          const afterCursor = getCursor(stateRef.current)!;
+          if (beforeCursor.col === 0 && beforeCursor.row > 0) {
+            // Backspace at line start — merge with previous line
+            mergeLines(preparedRef.current, beforeCursor.row, stateRef.current.doc.line(afterCursor.row + 1).text);
+          } else {
+            invalidateLine(preparedRef.current, afterCursor.row, stateRef.current.doc.line(afterCursor.row + 1).text);
+          }
+          proseCursorRef.current = afterCursor;
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key === "Enter") {
           e.preventDefault();
+          const beforeRow = getCursor(stateRef.current)!.row;
           stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, "\n");
           proseRef.current = getDoc(stateRef.current);
           framesRef.current = getFrames(stateRef.current);
-          preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
+          // Split: beforeRow keeps text before cursor, beforeRow+1 gets text after
+          const firstText = stateRef.current.doc.line(beforeRow + 1).text;
+          const secondText = stateRef.current.doc.line(beforeRow + 2).text;
+          splitLine(preparedRef.current, beforeRow, firstText, secondText);
           proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
@@ -651,8 +663,9 @@ export default function DemoV2() {
           stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, e.key);
           proseRef.current = getDoc(stateRef.current);
           framesRef.current = getFrames(stateRef.current);
-          preparedRef.current = proseRef.current.length > 0 ? prepareWithSegments(proseRef.current, FONT, { whiteSpace: "pre-wrap" }) : null;
-          proseCursorRef.current = getCursor(stateRef.current);
+          const cur = getCursor(stateRef.current)!;
+          invalidateLine(preparedRef.current, cur.row, stateRef.current.doc.line(cur.row + 1).text);
+          proseCursorRef.current = cur;
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         return;
@@ -695,7 +708,7 @@ export default function DemoV2() {
       <canvas
         ref={canvasRef}
         tabIndex={0}
-        style={{ display: "block", width: sizeRef.current.w, height: sizeRef.current.h, position: "sticky", top: 0, outline: "none", cursor: "default" }}
+        style={{ display: "block", width: "100%", height: "100%", position: "sticky", top: 0, outline: "none", cursor: "default" }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
