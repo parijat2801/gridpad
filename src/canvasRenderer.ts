@@ -9,7 +9,7 @@ import { framesToObstacles } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { FG_COLOR, FONT_SIZE, FONT_FAMILY } from "./grid";
-import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pretext";
+import { buildPreparedCache } from "./preparedCache";
 
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 const LH = Math.ceil(FONT_SIZE * 1.15);
@@ -71,11 +71,11 @@ export function buildRenderState(
   const proseParts = getProseParts(state);
 
   // Reflow prose around frame obstacles
-  const prepared: PreparedTextWithSegments | null = proseText.length > 0
-    ? prepareWithSegments(proseText, FONT, { whiteSpace: "pre-wrap" })
-    : null;
-  const lines = prepared
-    ? reflowLayout(prepared, viewport.w, LH, framesToObstacles(frames)).lines
+  const preparedLines = proseText.length > 0
+    ? buildPreparedCache(proseText)
+    : [];
+  const lines = preparedLines.length > 0
+    ? reflowLayout(preparedLines, viewport.w, LH, framesToObstacles(frames)).lines
     : [];
 
   // Sort frames by ascending z so higher-z frames are painted on top
