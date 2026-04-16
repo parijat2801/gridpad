@@ -240,24 +240,28 @@ export function framesFromRegions(
     });
     if (layers.length === 0) continue;
 
-    // Compute bbox of all layers for container sizing
+    // Compute bbox of all layers for container sizing (relative to region)
+    let minRow = Infinity;
+    let minCol = Infinity;
     let maxRow = 0;
     let maxCol = 0;
     for (const layer of layers) {
+      if (layer.bbox.row < minRow) minRow = layer.bbox.row;
+      if (layer.bbox.col < minCol) minCol = layer.bbox.col;
       const r = layer.bbox.row + layer.bbox.h;
       const c = layer.bbox.col + layer.bbox.w;
       if (r > maxRow) maxRow = r;
       if (c > maxCol) maxCol = c;
     }
 
-    const containerW = maxCol * charWidth;
-    const containerH = maxRow * charHeight;
-    const containerX = 0;
-    const containerY = region.startRow * charHeight;
+    const containerW = (maxCol - minCol) * charWidth;
+    const containerH = (maxRow - minRow) * charHeight;
+    const containerX = minCol * charWidth;
+    const containerY = minRow * charHeight;
 
     const children: Frame[] = layers.map((layer) => {
-      const x = layer.bbox.col * charWidth;
-      const y = layer.bbox.row * charHeight;
+      const x = (layer.bbox.col - minCol) * charWidth;
+      const y = (layer.bbox.row - minRow) * charHeight;
       const w = layer.bbox.w * charWidth;
       const h = layer.bbox.h * charHeight;
 
