@@ -21,10 +21,13 @@ function makeLine(
   };
 }
 
+// Simple fixed-width measureWidth for tests (8px per character)
+const fixedMeasure = (text: string) => text.length * 8;
+
 describe("findCursorLine", () => {
   it("finds cursor on a simple single line", () => {
     const lines: PositionedLine[] = [makeLine(0, 0, 0, 0, "Hello world")];
-    const result = findCursorLine({ row: 0, col: 3 }, lines, 8, 20);
+    const result = findCursorLine({ row: 0, col: 3 }, lines, fixedMeasure, 20);
     expect(result).toEqual({ x: 24, y: 0 });
   });
 
@@ -33,7 +36,7 @@ describe("findCursorLine", () => {
       makeLine(0, 0, 0, 0, "First line"),
       makeLine(1, 0, 0, 20, "Second line"),
     ];
-    const result = findCursorLine({ row: 1, col: 5 }, lines, 8, 20);
+    const result = findCursorLine({ row: 1, col: 5 }, lines, fixedMeasure, 20);
     expect(result).toEqual({ x: 40, y: 20 });
   });
 
@@ -43,31 +46,31 @@ describe("findCursorLine", () => {
       makeLine(0, 0, 0, 0, "A".repeat(40)),
       makeLine(0, 40, 0, 20, "B".repeat(20)),
     ];
-    const result = findCursorLine({ row: 0, col: 45 }, lines, 8, 20);
+    const result = findCursorLine({ row: 0, col: 45 }, lines, fixedMeasure, 20);
     // col 45 - sourceCol 40 = 5 chars in, so x = 5 * 8 = 40
     expect(result).toEqual({ x: 40, y: 20 });
   });
 
   it("empty line fallback via lastLineBefore", () => {
     const lines: PositionedLine[] = [makeLine(0, 0, 0, 0, "First line")];
-    const result = findCursorLine({ row: 2, col: 0 }, lines, 8, 20);
+    const result = findCursorLine({ row: 2, col: 0 }, lines, fixedMeasure, 20);
     // lastLineBefore is line 0 at y=0, cursor.row - sourceLine = 2, so y = 0 + 20*2 = 40
     expect(result).toEqual({ x: 0, y: 40 });
   });
 
   it("empty document returns origin", () => {
-    const result = findCursorLine({ row: 0, col: 0 }, [], 8, 20);
+    const result = findCursorLine({ row: 0, col: 0 }, [], fixedMeasure, 20);
     expect(result).toEqual({ x: 0, y: 0 });
   });
 
   it("empty document with cursor past row 0", () => {
-    const result = findCursorLine({ row: 2, col: 0 }, [], 8, 20);
+    const result = findCursorLine({ row: 2, col: 0 }, [], fixedMeasure, 20);
     expect(result).toEqual({ x: 0, y: 40 });
   });
 
   it("cursor at end of line", () => {
     const lines: PositionedLine[] = [makeLine(0, 0, 0, 0, "Hello")];
-    const result = findCursorLine({ row: 0, col: 5 }, lines, 8, 20);
+    const result = findCursorLine({ row: 0, col: 5 }, lines, fixedMeasure, 20);
     expect(result).toEqual({ x: 40, y: 0 });
   });
 
@@ -79,7 +82,7 @@ describe("findCursorLine", () => {
       makeLine(0, 60, 0, 40, "C".repeat(10)),
     ];
     // col 35 falls in second segment (sourceCol 30, so 35 >= 30)
-    const result = findCursorLine({ row: 0, col: 35 }, lines, 8, 20);
+    const result = findCursorLine({ row: 0, col: 35 }, lines, fixedMeasure, 20);
     expect(result).toEqual({ x: 40, y: 20 }); // (35-30)*8 = 40
   });
 
@@ -90,7 +93,7 @@ describe("findCursorLine", () => {
       makeLine(3, 0, 0, 20, "Line three"),
     ];
     // Cursor on source line 1 (empty) — uses lastLineBefore (line 0 at y=0)
-    const result = findCursorLine({ row: 1, col: 0 }, lines, 8, 20);
+    const result = findCursorLine({ row: 1, col: 0 }, lines, fixedMeasure, 20);
     expect(result).toEqual({ x: 0, y: 20 }); // y=0 + 20*(1-0) = 20
   });
 
@@ -101,7 +104,7 @@ describe("findCursorLine", () => {
       makeLine(2, 15, 0, 40, "continuation text"),
     ];
     // Cursor at row=2, col=20 → x = (20-15)*8 = 40
-    const result = findCursorLine({ row: 2, col: 20 }, lines, 8, 20);
+    const result = findCursorLine({ row: 2, col: 20 }, lines, fixedMeasure, 20);
     expect(result).toEqual({ x: 40, y: 40 });
   });
 
@@ -110,7 +113,7 @@ describe("findCursorLine", () => {
     const lines: PositionedLine[] = [
       makeLine(0, 0, 100, 0, "After obstacle"),
     ];
-    const result = findCursorLine({ row: 0, col: 3 }, lines, 8, 20);
+    const result = findCursorLine({ row: 0, col: 3 }, lines, fixedMeasure, 20);
     // x = 100 (line offset) + 3*8 = 124
     expect(result).toEqual({ x: 124, y: 0 });
   });

@@ -23,6 +23,7 @@ import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { findCursorLine } from "./cursorFind";
 import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT_FAMILY } from "./grid";
+import { PROSE_FONT_RENDER, PROSE_LINE_HEIGHT, ensureProseFontReady } from "./textFont";
 
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 const LH = Math.ceil(FONT_SIZE * 1.15);
@@ -231,7 +232,7 @@ export default function DemoV2() {
 
   function doLayout() {
     if (preparedRef.current.length === 0) { linesRef.current = []; return; }
-    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, LH, framesToObstacles(framesRef.current)).lines;
+    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, PROSE_LINE_HEIGHT, framesToObstacles(framesRef.current)).lines;
   }
 
   function paint() {
@@ -240,7 +241,7 @@ export default function DemoV2() {
     if (!stateRef.current) return;
     const { w, h: viewH } = sizeRef.current;
     let contentH = 100;
-    for (const line of linesRef.current) contentH = Math.max(contentH, line.y + LH);
+    for (const line of linesRef.current) contentH = Math.max(contentH, line.y + PROSE_LINE_HEIGHT);
     for (const f of framesRef.current) contentH = Math.max(contentH, f.y + f.h);
     contentH = Math.max(contentH + 40, viewH);
     // Update scroll spacer to enable scrolling over full content
@@ -258,12 +259,12 @@ export default function DemoV2() {
     // DPR scaling, then translate by scroll offset in CSS coords
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.translate(0, -scrollTop);
-    ctx.font = FONT; ctx.fillStyle = FG_COLOR; ctx.textBaseline = "top";
+    ctx.font = PROSE_FONT_RENDER; ctx.fillStyle = FG_COLOR; ctx.textBaseline = "top";
     // Viewport culling — only draw visible content
-    const viewTop = scrollTop - LH;
-    const viewBot = scrollTop + viewH + LH;
+    const viewTop = scrollTop - PROSE_LINE_HEIGHT;
+    const viewBot = scrollTop + viewH + PROSE_LINE_HEIGHT;
     for (const line of linesRef.current) {
-      if (line.y + LH >= viewTop && line.y <= viewBot) ctx.fillText(line.text, line.x, line.y);
+      if (line.y + PROSE_LINE_HEIGHT >= viewTop && line.y <= viewBot) ctx.fillText(line.text, line.x, line.y);
     }
     const cw = cwRef.current, ch = chRef.current;
     for (const frame of framesRef.current) {
@@ -277,9 +278,10 @@ export default function DemoV2() {
     // Prose cursor (blinking)
     const cursor = proseCursorRef.current;
     if (cursor && blinkRef.current) {
-      const pos = findCursorLine(cursor, linesRef.current, getCharWidth(), LH);
+      ctx.font = PROSE_FONT_RENDER;
+      const pos = findCursorLine(cursor, linesRef.current, (s) => ctx.measureText(s).width, PROSE_LINE_HEIGHT);
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(pos.x, pos.y, 2, LH);
+      ctx.fillRect(pos.x, pos.y, 2, PROSE_LINE_HEIGHT);
     }
     // Text frame cursor (blinking)
     const te = textEditRef.current;
@@ -325,7 +327,6 @@ export default function DemoV2() {
 
   function proseCursorFromClick(px: number, py: number): CursorPos | null {
     if (linesRef.current.length === 0) return null;
-    const charWidth = getCharWidth();
     // Find closest visual line — vertical distance first, horizontal tie-break
     let best: PositionedLine | null = null;
     let bestDist = Infinity;
@@ -333,12 +334,12 @@ export default function DemoV2() {
     let minVDist = Infinity;
 
     for (const pl of linesRef.current) {
-      const vDist = Math.abs(pl.y + LH / 2 - py);
+      const vDist = Math.abs(pl.y + PROSE_LINE_HEIGHT / 2 - py);
       if (vDist < minVDist) minVDist = vDist;
     }
     // Collect all lines within 1px of the best vertical distance (same y-band)
     for (const pl of linesRef.current) {
-      const vDist = Math.abs(pl.y + LH / 2 - py);
+      const vDist = Math.abs(pl.y + PROSE_LINE_HEIGHT / 2 - py);
       if (vDist <= minVDist + 1) candidates.push(pl);
     }
     if (candidates.length === 1) {
@@ -360,10 +361,27 @@ export default function DemoV2() {
 
     // Use sourceLine/sourceCol — the EditorState-compatible coordinates
     const row = best.sourceLine;
-    const clickCol = Math.max(0, Math.floor((px - best.x) / charWidth));
-    // Grapheme-based clamp on the visual line text (uses module-level graphemeSegmenter)
-    const visualLineGraphemes = [...graphemeSegmenter.segment(best.text)].length;
-    const col = best.sourceCol + Math.min(clickCol, visualLineGraphemes);
+
+    // Binary search for clicked grapheme using proportional font measurement
+    const graphemes = [...graphemeSegmenter.segment(best.text)];
+    let clickCol = graphemes.length; // default: click past end of line
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext("2d")!;
+      ctx.font = PROSE_FONT_RENDER;
+      const relX = px - best.x;
+      for (let g = 0; g < graphemes.length; g++) {
+        const prefix = graphemes.slice(0, g + 1).map(s => s.segment).join("");
+        const w = ctx.measureText(prefix).width;
+        if (w > relX) {
+          // Check if click is closer to this grapheme or the previous one
+          const prevW = g > 0 ? ctx.measureText(graphemes.slice(0, g).map(s => s.segment).join("")).width : 0;
+          clickCol = (relX - prevW) < (w - relX) ? g : g + 1;
+          break;
+        }
+      }
+    }
+    const col = best.sourceCol + Math.min(clickCol, graphemes.length);
 
     // Clamp against actual source line length (grapheme count)
     const state = stateRef.current;
@@ -540,7 +558,7 @@ export default function DemoV2() {
   }
 
   useEffect(() => {
-    measureCellSize().then(() => {
+    Promise.all([measureCellSize(), ensureProseFontReady()]).then(() => {
       cwRef.current = getCharWidth(); chRef.current = getCharHeight();
       loadDocument(DEFAULT_TEXT); setReady(true);
     }).catch(err => console.error("Init failed:", err));

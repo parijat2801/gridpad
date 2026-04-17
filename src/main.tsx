@@ -1,3 +1,4 @@
+import '@fontsource/inter/latin-400.css';
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";

@@ -36,10 +36,14 @@ export interface PositionedLine {
   width: number;
   /** Pretext word-segment cursor — use sourceLine/sourceCol for EditorState coordinates */
   startCursor: { segmentIndex: number; graphemeIndex: number };
+  /** End cursor (exclusive) — where the next line would start within this source line's segments */
+  endCursor: { segmentIndex: number; graphemeIndex: number };
   /** 0-indexed source line number (\n-delimited) — EditorState-compatible */
   sourceLine: number;
   /** Grapheme offset from start of source line to this visual line's start — grapheme clusters, not UTF-16 code units */
   sourceCol: number;
+  /** Pixel width of the slot this line was laid out into */
+  slotWidth: number;
 }
 
 export interface ReflowResult {
@@ -141,8 +145,10 @@ export function reflowLayout(
           text: line.text,
           width: line.width,
           startCursor,
+          endCursor: { segmentIndex: line.end.segmentIndex, graphemeIndex: line.end.graphemeIndex },
           sourceLine: i,
           sourceCol,
+          slotWidth,
         });
         cursor = line.end;
       }

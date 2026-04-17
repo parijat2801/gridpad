@@ -135,7 +135,7 @@ describe("reflowLayout + findCursorLine integration", () => {
   it("cursor on wrapped second line maps to correct y", () => {
     const text = "First line\n" + "word ".repeat(40);
     const result = reflowLayout(prepareLines(text), 300, LH, []);
-    const pos = findCursorLine({ row: 1, col: 10 }, result.lines, 9.6, LH);
+    const pos = findCursorLine({ row: 1, col: 10 }, result.lines, (s) => s.length * 9.6, LH);
     expect(pos.y).toBeGreaterThanOrEqual(LH);
     expect(pos.x).toBeGreaterThan(0);
   });
@@ -205,5 +205,41 @@ describe("reflowLayout per-line cache equivalence", () => {
     expect(affected.length).toBeGreaterThan(0);
     const hasNarrowed = affected.some(l => l.x !== 0 || l.width < 599);
     expect(hasNarrowed).toBe(true);
+  });
+});
+
+describe("reflowLayout PositionedLine metadata", () => {
+  it("each line has endCursor and slotWidth", () => {
+    const result = reflowLayout(prepareLines("Hello\nWorld"), 9999, LH, []);
+    for (const line of result.lines) {
+      expect(line.endCursor).toBeDefined();
+      expect(line.endCursor.segmentIndex).toBeGreaterThanOrEqual(0);
+      expect(line.endCursor.graphemeIndex).toBeGreaterThanOrEqual(0);
+      expect(line.slotWidth).toBeGreaterThan(0);
+    }
+  });
+
+  it("slotWidth matches canvas width when no obstacles", () => {
+    const result = reflowLayout(prepareLines("Hello"), 500, LH, []);
+    expect(result.lines[0].slotWidth).toBe(500);
+  });
+
+  it("slotWidth reflects narrowed slot from obstacle", () => {
+    const obstacle = { x: 0, y: 0, w: 200, h: 40 };
+    const text = "The quick brown fox jumps over the lazy dog";
+    const result = reflowLayout(prepareLines(text), 600, LH, [obstacle]);
+    const affected = result.lines.filter(l => l.y < 40);
+    // Lines in the obstacle band should have narrower slotWidth
+    for (const line of affected) {
+      expect(line.slotWidth).toBeLessThan(600);
+    }
+  });
+
+  it("endCursor advances past startCursor", () => {
+    const result = reflowLayout(prepareLines("Hello world"), 9999, LH, []);
+    const line = result.lines[0];
+    const startPos = line.startCursor.segmentIndex * 1000 + line.startCursor.graphemeIndex;
+    const endPos = line.endCursor.segmentIndex * 1000 + line.endCursor.graphemeIndex;
+    expect(endPos).toBeGreaterThan(startPos);
   });
 });

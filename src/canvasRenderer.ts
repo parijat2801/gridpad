@@ -10,6 +10,7 @@ import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { FG_COLOR, FONT_SIZE, FONT_FAMILY } from "./grid";
 import { buildPreparedCache } from "./preparedCache";
+import { PROSE_FONT_RENDER, PROSE_LINE_HEIGHT } from "./textFont";
 
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
 const LH = Math.ceil(FONT_SIZE * 1.15);
@@ -75,7 +76,7 @@ export function buildRenderState(
     ? buildPreparedCache(proseText)
     : [];
   const lines = preparedLines.length > 0
-    ? reflowLayout(preparedLines, viewport.w, LH, framesToObstacles(frames)).lines
+    ? reflowLayout(preparedLines, viewport.w, PROSE_LINE_HEIGHT, framesToObstacles(frames)).lines
     : [];
 
   // Sort frames by ascending z so higher-z frames are painted on top
@@ -107,7 +108,7 @@ export function paintCanvas(
 
   // Compute content height
   let contentH = 100;
-  for (const line of rs.lines) contentH = Math.max(contentH, line.y + LH);
+  for (const line of rs.lines) contentH = Math.max(contentH, line.y + PROSE_LINE_HEIGHT);
   for (const f of frames) contentH = Math.max(contentH, f.y + f.h);
   contentH = Math.max(contentH + 40, viewport.h);
 
@@ -119,7 +120,7 @@ export function paintCanvas(
   ctx.fillRect(0, 0, viewport.w, contentH);
 
   // Prose text
-  ctx.font = FONT;
+  ctx.font = PROSE_FONT_RENDER;
   ctx.fillStyle = FG_COLOR;
   ctx.textBaseline = "top";
   for (const line of rs.lines) {
@@ -139,16 +140,27 @@ export function paintCanvas(
 
   // Prose cursor
   if (rs.cursor && rs.cursorVisible) {
-    const srcLines = rs.proseText.split("\n");
-    let srcRow = 0;
+    ctx.font = PROSE_FONT_RENDER;
+    const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    // Find the visual line for the cursor
+    let cursorLine: typeof rs.lines[0] | null = null;
+    let lastBefore: typeof rs.lines[0] | null = null;
     for (const pl of rs.lines) {
-      if (srcRow === rs.cursor.row) {
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(pl.x + rs.cursor.col * charWidth, pl.y, 2, LH);
-        break;
+      if (pl.sourceLine === rs.cursor.row && pl.sourceCol <= rs.cursor.col) {
+        cursorLine = pl;
       }
-      const srcLineText = srcLines[srcRow] ?? "";
-      if (pl.text.length >= srcLineText.length) srcRow++;
+      if (pl.sourceLine < rs.cursor.row) lastBefore = pl;
+    }
+    if (cursorLine) {
+      const graphemeOffset = rs.cursor.col - cursorLine.sourceCol;
+      const graphemes = [...segmenter.segment(cursorLine.text)];
+      const prefix = graphemes.slice(0, graphemeOffset).map(g => g.segment).join("");
+      const curX = cursorLine.x + ctx.measureText(prefix).width;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(curX, cursorLine.y, 2, PROSE_LINE_HEIGHT);
+    } else if (lastBefore) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, lastBefore.y + PROSE_LINE_HEIGHT * (rs.cursor.row - lastBefore.sourceLine), 2, PROSE_LINE_HEIGHT);
     }
   }
 
@@ -209,39 +221,50 @@ export function clickToCursor(
   rs: RenderState,
   px: number,
   py: number,
+  ctx?: CanvasRenderingContext2D,
 ): { row: number; col: number } | null {
   if (rs.lines.length === 0) return null;
 
   // Find the closest visual line by vertical distance
   let best = rs.lines[0];
-  let bestDist = Math.abs(best.y + LH / 2 - py);
+  let bestDist = Math.abs(best.y + PROSE_LINE_HEIGHT / 2 - py);
   for (let i = 1; i < rs.lines.length; i++) {
-    const dist = Math.abs(rs.lines[i].y + LH / 2 - py);
+    const dist = Math.abs(rs.lines[i].y + PROSE_LINE_HEIGHT / 2 - py);
     if (dist < bestDist) { bestDist = dist; best = rs.lines[i]; }
   }
 
-  // Map visual line back to source text row.
-  // Walk visual lines, tracking which source line we're in.
-  // A source line may span multiple visual lines (wrapping).
+  // sourceLine and sourceCol are set by reflowLayout — use them directly
+  const srcRow = best.sourceLine;
   const srcLines = rs.proseText.split("\n");
-  let srcRow = 0;
-  let srcColConsumed = 0;
 
-  for (const pl of rs.lines) {
-    if (pl === best) break;
-    srcColConsumed += pl.text.length;
-    // Check if we've consumed the entire source line
-    while (srcRow < srcLines.length && srcColConsumed >= srcLines[srcRow].length) {
-      srcColConsumed -= srcLines[srcRow].length;
-      srcRow++;
+  // Column from horizontal offset using proportional font measurement if ctx available
+  let col: number;
+  if (ctx) {
+    ctx.font = PROSE_FONT_RENDER;
+    const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    const graphemes = [...segmenter.segment(best.text)];
+    const relX = px - best.x;
+    col = graphemes.length; // default: past end of line
+    for (let g = 0; g < graphemes.length; g++) {
+      const prefix = graphemes.slice(0, g + 1).map(s => s.segment).join("");
+      const w = ctx.measureText(prefix).width;
+      if (w > relX) {
+        const prevW = g > 0 ? ctx.measureText(graphemes.slice(0, g).map(s => s.segment).join("")).width : 0;
+        col = (relX - prevW) < (w - relX) ? g : g + 1;
+        break;
+      }
     }
+    col = best.sourceCol + Math.min(col, graphemes.length);
+  } else {
+    // Fallback: fixed-width approximation using charWidth
+    col = Math.max(0, Math.min(
+      Math.round((px - best.x) / rs.charWidth),
+      (srcLines[srcRow] ?? "").length,
+    ));
   }
 
-  // Column from horizontal offset, clamped to source line length
-  const col = Math.max(0, Math.min(
-    Math.round((px - best.x) / rs.charWidth),
-    (srcLines[srcRow] ?? "").length,
-  ));
+  // Clamp to source line length
+  col = Math.min(col, (srcLines[srcRow] ?? "").length);
 
   return { row: srcRow, col };
 }
