@@ -13,7 +13,6 @@ import { buildPreparedCache } from "./preparedCache";
 import { PROSE_FONT_RENDER, PROSE_LINE_HEIGHT } from "./textFont";
 
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
-const LH = Math.ceil(FONT_SIZE * 1.15);
 const BG = "#1e1e2e";
 
 export interface Viewport {

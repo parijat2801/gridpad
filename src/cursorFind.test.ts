@@ -14,10 +14,11 @@ function makeLine(
     y,
     text,
     width: text.length * 8,
-    // startCursor kept for backward compat — not used by findCursorLine anymore
     startCursor: { segmentIndex: 0, graphemeIndex: 0 },
+    endCursor: { segmentIndex: 0, graphemeIndex: 0 },
     sourceLine,
     sourceCol,
+    slotWidth: 9999,
   };
 }
 

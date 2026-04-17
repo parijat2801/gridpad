@@ -26,7 +26,6 @@ import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT
 import { PROSE_FONT_RENDER, PROSE_LINE_HEIGHT, ensureProseFontReady } from "./textFont";
 
 const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
-const LH = Math.ceil(FONT_SIZE * 1.15);
 const BG = "#1e1e2e";
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
