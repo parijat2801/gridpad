@@ -32,7 +32,7 @@ const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme
 
 type ResizeHandle = "tl" | "tm" | "tr" | "ml" | "mr" | "bl" | "bm" | "br";
 interface HandleRect { handle: ResizeHandle; x: number; y: number; w: number; h: number; }
-const HANDLE_HIT = 12;
+const HANDLE_HIT = 24;
 const HANDLE_HALF_HIT = HANDLE_HIT / 2;
 
 function computeHandleRects(absX: number, absY: number, fw: number, fh: number): HandleRect[] {
@@ -163,6 +163,8 @@ interface DragState {
   frameId: string; startX: number; startY: number;
   startFrameX: number; startFrameY: number; startFrameW: number; startFrameH: number;
   hasMoved: boolean; resizeHandle?: ResizeHandle;
+  /** Deferred drill-down: if set, apply this selection on mouseUp when !hasMoved */
+  pendingDrillDownId?: string;
 }
 
 type ToolName = "select" | "rect" | "line" | "text";
@@ -449,12 +451,15 @@ export default function DemoV2() {
       }
     }
     // Drill-down UX: first click selects container, second click on child selects child
+    // But drill-down is deferred to mouseUp — on mouseDown we always drag the
+    // currently selected frame (or its container) to avoid stealing resize handles.
     const hitContainer = hit ? framesRef.current.find(f => f.id === hit.id || hasDescendant(f, hit.id)) : null;
+    const wouldDrillDown = hit && hitContainer && currentSelectedId === hitContainer.id && currentSelectedId !== hit.id;
     const targetId = hit ? (
-      // If the hit IS what's already selected (child or container), keep it
-      currentSelectedId === hit.id ? hit.id
-      // If the container is selected and we click a child, drill down
-      : hitContainer && currentSelectedId === hitContainer.id ? hit.id
+      // If we'd drill down, defer it — keep current selection for dragging
+      wouldDrillDown ? currentSelectedId
+      // If the hit IS what's already selected, keep it
+      : currentSelectedId === hit.id ? hit.id
       // Otherwise select the container
       : hitContainer?.id ?? hit.id
     ) : null;
@@ -479,7 +484,7 @@ export default function DemoV2() {
       stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(targetId) }).state;
       proseCursorRef.current = null; textEditRef.current = null;
       const found = findFrameById(framesRef.current, targetId);
-      if (found) dragRef.current = { frameId: targetId, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false };
+      if (found) dragRef.current = { frameId: targetId, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false, pendingDrillDownId: wouldDrillDown ? hit.id : undefined };
       paint();
     } else {
       stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
@@ -554,7 +559,17 @@ export default function DemoV2() {
   }
 
   function onMouseUp() {
-    if (dragRef.current) { dragRef.current = null; scheduleAutosave(); }
+    if (dragRef.current) {
+      // Deferred drill-down: if user clicked without dragging, apply the
+      // drill-down selection now (selects the child instead of the container)
+      if (!dragRef.current.hasMoved && dragRef.current.pendingDrillDownId) {
+        stateRef.current = stateRef.current.update({
+          effects: selectFrameEffect.of(dragRef.current.pendingDrillDownId),
+        }).state;
+        paint();
+      }
+      dragRef.current = null; scheduleAutosave();
+    }
     const preview = drawPreviewRef.current;
     if (!preview) return;
     const cw = cwRef.current, ch = chRef.current;
