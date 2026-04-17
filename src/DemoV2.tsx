@@ -519,9 +519,9 @@ export default function DemoV2() {
             const cm: Record<ResizeHandle, string> = { tl: "nwse-resize", tr: "nesw-resize", bl: "nesw-resize", br: "nwse-resize", tm: "ns-resize", bm: "ns-resize", ml: "ew-resize", mr: "ew-resize" };
             setCanvasCursor(cm[handle]);
           } else {
-            setCanvasCursor(hitTestFrames(framesRef.current, px, py) ? "grab" : "default");
+            setCanvasCursor(hitTestFrames(framesRef.current, px, py) ? "grab" : "text");
           }
-        } else { setCanvasCursor("default"); }
+        } else { setCanvasCursor("text"); }
       } else {
         setCanvasCursor(hitTestFrames(framesRef.current, px, py) ? "grab" : "text");
       }

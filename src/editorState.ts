@@ -1,6 +1,6 @@
 // src/editorState.ts
 // Single CM EditorState backing all of Gridpad's state.
-// Prose in doc, frames/tool/regions/proseParts as StateFields.
+// Prose in doc, frames/regions/proseParts as StateFields.
 // One history stack for everything — no zustand, no zundo.
 
 import {
@@ -546,7 +546,10 @@ export function applyDeleteFrame(state: EditorState, id: string): EditorState {
 }
 
 export function applyClearDirty(state: EditorState): EditorState {
-  return state.update({ effects: clearDirtyEffect.of(null) }).state;
+  return state.update({
+    effects: clearDirtyEffect.of(null),
+    annotations: Transaction.addToHistory.of(false),
+  }).state;
 }
 
 
