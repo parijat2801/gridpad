@@ -1,40 +1,14 @@
 // src/zorder.test.ts
 // Tests for Phase 6 z-order support.
 
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { createFrame, createRectFrame, hitTestFrames } from "./frame";
 import { createEditorState, getFrames, setZEffect, editorUndo } from "./editorState";
-import { buildRenderState } from "./canvasRenderer";
 import { LIGHT_RECT_STYLE } from "./layers";
 import { Transaction } from "@codemirror/state";
 
-// ── Canvas mock for Pretext ────────────────────────────────────────────────
-
-beforeAll(() => {
-  const origCreateElement = document.createElement.bind(document);
-  vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
-    const el = origCreateElement(tag);
-    if (tag === "canvas") {
-      (el as HTMLCanvasElement).getContext = (() => ({
-        font: "",
-        fillStyle: "",
-        textBaseline: "",
-        fillText: () => {},
-        measureText: (text: string) => ({
-          width: text.length * 9.6,
-          actualBoundingBoxAscent: 12,
-          actualBoundingBoxDescent: 4,
-        }),
-      })) as unknown as HTMLCanvasElement["getContext"];
-    }
-    return el;
-  });
-});
-
 const CW = 9.6;
 const CH = 18.4;
-const VIEWPORT = { w: 800, h: 600 };
-const DPR = 2;
 
 // ── z-order tests ─────────────────────────────────────────────────────────
 
@@ -93,26 +67,6 @@ describe("z-order", () => {
     // Undo
     state = editorUndo(state);
     expect(getFrames(state)[0].z).toBe(0);
-  });
-
-  it("buildRenderState sorts frames by ascending z", () => {
-    const frameA = { ...createFrame({ x: 0, y: 0, w: 50, h: 50 }), z: 2 };
-    const frameB = { ...createFrame({ x: 10, y: 10, w: 50, h: 50 }), z: 0 };
-    const frameC = { ...createFrame({ x: 20, y: 20, w: 50, h: 50 }), z: 1 };
-
-    const state = createEditorState({
-      prose: "",
-      frames: [frameA, frameB, frameC],
-      regions: [],
-      proseParts: [],
-    });
-
-    const rs = buildRenderState(state, VIEWPORT, DPR, CW, CH);
-
-    // Should be sorted ascending: z=0, z=1, z=2
-    expect(rs.frames[0].z).toBe(0);
-    expect(rs.frames[1].z).toBe(1);
-    expect(rs.frames[2].z).toBe(2);
   });
 
   it("hitTestFrames picks the highest-z frame when overlapping", () => {

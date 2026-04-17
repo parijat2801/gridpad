@@ -21,7 +21,7 @@ export { undoDepth, redoDepth };
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export type ToolName = "select" | "rect" | "line" | "text";
+type ToolName = "select" | "rect" | "line" | "text";
 
 export interface ProsePart {
   startRow: number;
@@ -49,17 +49,17 @@ export const resizeFrameEffect = StateEffect.define<{
   charHeight: number;
 }>();
 
-export const addFrameEffect = StateEffect.define<Frame>();
+const addFrameEffect = StateEffect.define<Frame>();
 
-export const deleteFrameEffect = StateEffect.define<{ id: string }>();
+const deleteFrameEffect = StateEffect.define<{ id: string }>();
 
 export const setZEffect = StateEffect.define<{ id: string; z: number }>();
 
-export const setToolEffect = StateEffect.define<ToolName>();
+const setToolEffect = StateEffect.define<ToolName>();
 
-export const setRegionsEffect = StateEffect.define<Region[]>();
+const setRegionsEffect = StateEffect.define<Region[]>();
 
-export const setProsePartsEffect = StateEffect.define<ProsePart[]>();
+const setProsePartsEffect = StateEffect.define<ProsePart[]>();
 
 export const selectFrameEffect = StateEffect.define<string | null>();
 
@@ -80,7 +80,7 @@ const restoreFramesEffect = StateEffect.define<Frame[]>();
 
 // ── StateFields ────────────────────────────────────────────────────────────
 
-export const framesField = StateField.define<Frame[]>({
+const framesField = StateField.define<Frame[]>({
   create: () => [],
   update(frames, tr: Transaction) {
     let result = frames;
@@ -148,7 +148,7 @@ export const framesField = StateField.define<Frame[]>({
   },
 });
 
-export const toolField = StateField.define<ToolName>({
+const toolField = StateField.define<ToolName>({
   create: () => "select",
   update(tool, tr: Transaction) {
     for (const e of tr.effects) {
@@ -158,7 +158,7 @@ export const toolField = StateField.define<ToolName>({
   },
 });
 
-export const regionsField = StateField.define<Region[]>({
+const regionsField = StateField.define<Region[]>({
   create: () => [],
   update(regions, tr: Transaction) {
     for (const e of tr.effects) {
@@ -168,7 +168,7 @@ export const regionsField = StateField.define<Region[]>({
   },
 });
 
-export const prosePartsField = StateField.define<ProsePart[]>({
+const prosePartsField = StateField.define<ProsePart[]>({
   create: () => [],
   update(parts, tr: Transaction) {
     for (const e of tr.effects) {
@@ -208,7 +208,7 @@ export function getTextEdit(state: EditorState): { frameId: string; col: number 
 
 // ── Factory ────────────────────────────────────────────────────────────────
 
-export interface EditorStateInit {
+interface EditorStateInit {
   prose: string;
   frames: Frame[];
   regions: Region[];
