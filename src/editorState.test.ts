@@ -18,6 +18,8 @@ import {
   applyResizeFrame,
   applyAddFrame,
   applyDeleteFrame,
+  moveFrameEffect,
+  resizeFrameEffect,
   setTool,
   editorUndo,
   editorRedo,
@@ -38,7 +40,7 @@ import {
   type CursorPos,
   type ProsePart,
 } from "./editorState";
-import { createFrame, createTextFrame } from "./frame";
+import { createFrame, createTextFrame, type Frame } from "./frame";
 import type { Region } from "./regions";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -360,6 +362,176 @@ describe("applyDeleteFrame", () => {
     const s0 = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
     const s1 = applyDeleteFrame(s0, "nonexistent-id");
     expect(getFrames(s1)).toHaveLength(1);
+  });
+});
+
+describe("applyDeleteFrame — recursive (Phase 1)", () => {
+  it("deletes a child inside a container", () => {
+    const child1 = createFrame({ x: 0, y: 0, w: 30, h: 30 });
+    const child2 = createFrame({ x: 40, y: 0, w: 30, h: 30 });
+    const container: Frame = {
+      ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
+      children: [child1, child2],
+    };
+    const s0 = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    const s1 = applyDeleteFrame(s0, child1.id);
+    const frames = getFrames(s1);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].children).toHaveLength(1);
+    expect(frames[0].children[0].id).toBe(child2.id);
+  });
+
+  it("deletes a deeply nested child", () => {
+    const grandchild = createFrame({ x: 0, y: 0, w: 10, h: 10 });
+    const child: Frame = {
+      ...createFrame({ x: 0, y: 0, w: 50, h: 50 }),
+      children: [grandchild],
+    };
+    const container: Frame = {
+      ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
+      children: [child],
+    };
+    const s0 = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    const s1 = applyDeleteFrame(s0, grandchild.id);
+    const frames = getFrames(s1);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].children).toHaveLength(1);
+    expect(frames[0].children[0].children).toHaveLength(0);
+  });
+
+  it("still deletes top-level frames (regression)", () => {
+    const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
+    const s0 = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    const s1 = applyDeleteFrame(s0, f.id);
+    expect(getFrames(s1)).toHaveLength(0);
+  });
+
+  it("undo restores deleted child", () => {
+    const child = createFrame({ x: 0, y: 0, w: 30, h: 30 });
+    const container: Frame = {
+      ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
+      children: [child],
+    };
+    const s0 = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    const s1 = applyDeleteFrame(s0, child.id);
+    expect(getFrames(s1)[0].children).toHaveLength(0);
+    const s2 = editorUndo(s1);
+    expect(getFrames(s2)[0].children).toHaveLength(1);
+    expect(getFrames(s2)[0].children[0].id).toBe(child.id);
+  });
+});
+
+describe("delete clears selection and textEdit (Phase 1)", () => {
+  it("deleting selected frame clears selectedId", () => {
+    const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
+    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    state = state.update({ effects: selectFrameEffect.of(f.id) }).state;
+    expect(getSelectedId(state)).toBe(f.id);
+    state = applyDeleteFrame(state, f.id);
+    expect(getSelectedId(state)).toBeNull();
+  });
+
+  it("deleting frame being text-edited clears textEdit", () => {
+    const f = createTextFrame({ text: "hi", row: 0, col: 0, charWidth: 10, charHeight: 20 });
+    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    state = state.update({
+      effects: [selectFrameEffect.of(f.id), setTextEditEffect.of({ frameId: f.id, col: 0 })],
+    }).state;
+    expect(getTextEdit(state)).not.toBeNull();
+    state = applyDeleteFrame(state, f.id);
+    expect(getTextEdit(state)).toBeNull();
+    expect(getSelectedId(state)).toBeNull();
+  });
+
+  it("deleting unrelated frame does not clear selection", () => {
+    const f1 = createFrame({ x: 0, y: 0, w: 50, h: 50 });
+    const f2 = createFrame({ x: 100, y: 0, w: 50, h: 50 });
+    let state = createEditorState({ prose: "", frames: [f1, f2], regions: [], proseParts: [] });
+    state = state.update({ effects: selectFrameEffect.of(f1.id) }).state;
+    state = applyDeleteFrame(state, f2.id);
+    expect(getSelectedId(state)).toBe(f1.id);
+  });
+
+  it("deleting parent clears selected descendant", () => {
+    const child = createFrame({ x: 0, y: 0, w: 30, h: 30 });
+    const container: Frame = {
+      ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
+      children: [child],
+    };
+    let state = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    state = state.update({ effects: selectFrameEffect.of(child.id) }).state;
+    expect(getSelectedId(state)).toBe(child.id);
+    state = applyDeleteFrame(state, container.id);
+    expect(getSelectedId(state)).toBeNull();
+  });
+
+  it("deleting parent clears text-edited descendant", () => {
+    const child = createTextFrame({ text: "hi", row: 0, col: 0, charWidth: 10, charHeight: 20 });
+    const container: Frame = {
+      ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
+      children: [child],
+    };
+    let state = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    state = state.update({
+      effects: [selectFrameEffect.of(child.id), setTextEditEffect.of({ frameId: child.id, col: 0 })],
+    }).state;
+    state = applyDeleteFrame(state, container.id);
+    expect(getTextEdit(state)).toBeNull();
+    expect(getSelectedId(state)).toBeNull();
+  });
+});
+
+describe("drag undo — history=false then history=true (Phase 1)", () => {
+  it("move: first step with history=true captures pre-drag state for undo", () => {
+    const frame = createFrame({ x: 10, y: 20, w: 100, h: 50 });
+    let state = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+
+    // First drag step — history=true (captures pre-drag snapshot)
+    state = state.update({
+      effects: moveFrameEffect.of({ id: frame.id, dx: 5, dy: 5 }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    expect(getFrames(state)[0].x).toBe(15);
+
+    // Subsequent drag steps — history=false
+    state = state.update({
+      effects: moveFrameEffect.of({ id: frame.id, dx: 10, dy: 10 }),
+      annotations: Transaction.addToHistory.of(false),
+    }).state;
+    expect(getFrames(state)[0].x).toBe(25);
+
+    state = state.update({
+      effects: moveFrameEffect.of({ id: frame.id, dx: 5, dy: 5 }),
+      annotations: Transaction.addToHistory.of(false),
+    }).state;
+    expect(getFrames(state)[0].x).toBe(30);
+
+    // Undo should revert ALL the way back to pre-drag state
+    const undone = editorUndo(state);
+    expect(getFrames(undone)[0].x).toBe(10);
+    expect(getFrames(undone)[0].y).toBe(20);
+  });
+
+  it("resize: first step with history=true captures pre-drag state for undo", () => {
+    const frame = createFrame({ x: 0, y: 0, w: 100, h: 100 });
+    let state = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+
+    // First resize step — history=true
+    state = state.update({
+      effects: resizeFrameEffect.of({ id: frame.id, w: 120, h: 120, charWidth: 10, charHeight: 20 }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+
+    // Subsequent resize steps — history=false
+    state = state.update({
+      effects: resizeFrameEffect.of({ id: frame.id, w: 150, h: 150, charWidth: 10, charHeight: 20 }),
+      annotations: Transaction.addToHistory.of(false),
+    }).state;
+
+    // Undo should revert to pre-drag dimensions
+    const undone = editorUndo(state);
+    expect(getFrames(undone)[0].w).toBe(100);
+    expect(getFrames(undone)[0].h).toBe(100);
   });
 });
 

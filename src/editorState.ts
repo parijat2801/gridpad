@@ -104,9 +104,22 @@ const framesField = StateField.define<Frame[]>({
       } else if (e.is(addFrameEffect)) {
         result = [...result, e.value];
       } else if (e.is(deleteFrameEffect)) {
-        result = result.filter((f) => f.id !== e.value.id);
+        const removeById = (frames: Frame[]): Frame[] => {
+          const filtered = frames.filter(f => f.id !== e.value.id);
+          return filtered.map(f =>
+            f.children.length > 0
+              ? { ...f, children: removeById(f.children) }
+              : f
+          );
+        };
+        result = removeById(result);
       } else if (e.is(setZEffect)) {
-        result = result.map(f => f.id === e.value.id ? { ...f, z: e.value.z } : f);
+        const applyZ = (f: Frame): Frame => {
+          if (f.id === e.value.id) return { ...f, z: e.value.z };
+          if (f.children.length > 0) return { ...f, children: f.children.map(applyZ) };
+          return f;
+        };
+        result = result.map(applyZ);
       } else if (e.is(editTextFrameEffect)) {
         const editFrame = (f: Frame): Frame => {
           if (f.id === e.value.id) {
@@ -485,8 +498,29 @@ export function applyAddFrame(state: EditorState, frame: Frame): EditorState {
 }
 
 export function applyDeleteFrame(state: EditorState, id: string): EditorState {
+  // Check if targetId is the deleted frame or any of its descendants
+  const frameContains = (frame: Frame, targetId: string): boolean => {
+    if (frame.id === targetId) return true;
+    return frame.children.some(c => frameContains(c, targetId));
+  };
+  const deletedFrame = getFrames(state).find(f => frameContains(f, id));
+  const isAffected = (targetId: string): boolean => {
+    if (targetId === id) return true;
+    if (!deletedFrame) return false;
+    return frameContains(deletedFrame, targetId);
+  };
+
+  const effects: StateEffect<unknown>[] = [deleteFrameEffect.of({ id })];
+  const selectedId = getSelectedId(state);
+  if (selectedId && isAffected(selectedId)) {
+    effects.push(selectFrameEffect.of(null));
+  }
+  const te = getTextEdit(state);
+  if (te && isAffected(te.frameId)) {
+    effects.push(setTextEditEffect.of(null));
+  }
   return state.update({
-    effects: deleteFrameEffect.of({ id }),
+    effects,
     annotations: Transaction.addToHistory.of(true),
   }).state;
 }

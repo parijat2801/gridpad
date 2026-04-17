@@ -508,6 +508,7 @@ export default function DemoV2() {
     if (!drag) return;
     const dx = px - drag.startX, dy = py - drag.startY;
     if (!drag.hasMoved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+    const isFirstDragStep = !drag.hasMoved;
     drag.hasMoved = true;
     const found = findFrameById(framesRef.current, drag.frameId);
     if (!found) return;
@@ -537,7 +538,7 @@ export default function DemoV2() {
       ];
       stateRef.current = stateRef.current.update({
         effects,
-        annotations: [Transaction.addToHistory.of(false)],
+        annotations: [Transaction.addToHistory.of(isFirstDragStep)],
       }).state;
       framesRef.current = getFrames(stateRef.current);
     } else {
@@ -550,7 +551,7 @@ export default function DemoV2() {
       if (frameDx !== 0 || frameDy !== 0) {
         stateRef.current = stateRef.current.update({
           effects: moveFrameEffect.of({ id: drag.frameId, dx: frameDx, dy: frameDy }),
-          annotations: [Transaction.addToHistory.of(false)],
+          annotations: [Transaction.addToHistory.of(isFirstDragStep)],
         }).state;
         framesRef.current = getFrames(stateRef.current);
       }

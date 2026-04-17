@@ -2,7 +2,7 @@
 // Tests for Phase 6 z-order support.
 
 import { describe, it, expect } from "vitest";
-import { createFrame, createRectFrame, hitTestFrames } from "./frame";
+import { createFrame, createRectFrame, hitTestFrames, type Frame } from "./frame";
 import { createEditorState, getFrames, setZEffect, editorUndo } from "./editorState";
 import { LIGHT_RECT_STYLE } from "./layers";
 import { Transaction } from "@codemirror/state";
@@ -88,5 +88,26 @@ describe("z-order", () => {
     const hit = hitTestFrames([frameLow, frameHigh], 10, 10);
     expect(hit).not.toBeNull();
     expect(hit!.id).toBe(frameLow.id);
+  });
+});
+
+describe("setZEffect — recursive (Phase 1)", () => {
+  it("updates z on a child frame inside a container", () => {
+    const child = createFrame({ x: 0, y: 0, w: 30, h: 30 });
+    const container: Frame = {
+      ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
+      children: [child],
+    };
+    let state = createEditorState({
+      prose: "",
+      frames: [container],
+      regions: [],
+      proseParts: [],
+    });
+    state = state.update({
+      effects: setZEffect.of({ id: child.id, z: 7 }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    expect(getFrames(state)[0].children[0].z).toBe(7);
   });
 });
