@@ -54,6 +54,7 @@ function makeMockCtx() {
     setTransform: track("setTransform"),
     translate: track("translate"),
     setLineDash: track("setLineDash"),
+    measureText: (text: string) => ({ width: text.length * 9.6 }),
     fillStyle: "",
     strokeStyle: "",
     lineWidth: 1,

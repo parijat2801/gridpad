@@ -13,7 +13,7 @@ export interface CursorLineResult {
 export function findCursorLine(
   cursor: { row: number; col: number },
   lines: PositionedLine[],
-  charWidth: number,
+  measureWidth: (text: string) => number,
   lineHeight: number,
 ): CursorLineResult {
   let targetLine: PositionedLine | null = null;
@@ -28,8 +28,14 @@ export function findCursorLine(
     }
   }
   if (targetLine) {
+    // Calculate how many graphemes into this visual line the cursor is
+    const graphemeOffset = cursor.col - targetLine.sourceCol;
+    // Use Intl.Segmenter to extract exact grapheme substring
+    const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    const graphemes = [...segmenter.segment(targetLine.text)];
+    const prefix = graphemes.slice(0, graphemeOffset).map(g => g.segment).join("");
     return {
-      x: targetLine.x + (cursor.col - targetLine.sourceCol) * charWidth,
+      x: targetLine.x + measureWidth(prefix),
       y: targetLine.y,
     };
   } else if (lastLineBefore) {
