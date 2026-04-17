@@ -270,7 +270,7 @@ export default function DemoV2() {
     for (const frame of framesRef.current) {
       if (frame.y + frame.h >= viewTop && frame.y <= viewBot) renderFrame(ctx, frame, 0, 0, cw, ch);
     }
-    const selectedId = stateRef.current ? getSelectedId(stateRef.current) : null;
+    const selectedId = getSelectedId(stateRef.current);
     if (selectedId) {
       const sel = findFrameById(framesRef.current, selectedId);
       if (sel) renderFrameSelection(ctx, sel.frame, sel.absX, sel.absY);
@@ -554,18 +554,7 @@ export default function DemoV2() {
   }
 
   function onMouseUp() {
-    if (dragRef.current) {
-      // After a move (not resize), re-select the top-level container so resize
-      // handles are accessible. Without this, drill-down selection during
-      // mouseDown leaves a child selected after dragging.
-      if (dragRef.current.hasMoved && !dragRef.current.resizeHandle) {
-        const container = framesRef.current.find(f => f.id === dragRef.current!.frameId || hasDescendant(f, dragRef.current!.frameId));
-        if (container) {
-          stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(container.id) }).state;
-        }
-      }
-      dragRef.current = null; scheduleAutosave();
-    }
+    if (dragRef.current) { dragRef.current = null; scheduleAutosave(); }
     const preview = drawPreviewRef.current;
     if (!preview) return;
     const cw = cwRef.current, ch = chRef.current;
