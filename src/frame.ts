@@ -35,6 +35,7 @@ export interface Frame {
   children: Frame[];
   content: FrameContent | null;
   clip: boolean;
+  dirty: boolean;
 }
 
 export interface Obstacle {
@@ -71,6 +72,7 @@ export function createFrame(params: {
     children: [],
     content: null,
     clip: true,
+    dirty: false,
   };
 }
 
@@ -96,6 +98,7 @@ export function createRectFrame(params: {
     children: [],
     content: { type: "rect", cells, style },
     clip: true,
+    dirty: false,
   };
 }
 
@@ -124,6 +127,7 @@ export function createTextFrame(params: {
     children: [],
     content: { type: "text", cells, text },
     clip: true,
+    dirty: false,
   };
 }
 
@@ -149,6 +153,7 @@ export function createLineFrame(params: {
     children: [],
     content: { type: "line", cells },
     clip: true,
+    dirty: false,
   };
 }
 
@@ -298,7 +303,7 @@ export function framesFromRegions(
         content = { type: "rect", cells: rebasedCells, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" } };
       }
 
-      return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: false };
+      return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: false, dirty: false };
     });
 
     // Re-parent children into their enclosing rect children
@@ -313,6 +318,7 @@ export function framesFromRegions(
       z: 0,
       children,
       content: null,
+      dirty: false,
       clip: true,
     };
 

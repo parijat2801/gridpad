@@ -18,6 +18,7 @@ import {
   applyResizeFrame,
   applyAddFrame,
   applyDeleteFrame,
+  applyClearDirty,
   moveFrameEffect,
   resizeFrameEffect,
   setTool,
@@ -1229,5 +1230,77 @@ describe("Task 5.0.5: rebuildProseParts", () => {
     const parts = rebuildProseParts(state);
     expect(parts).toHaveLength(1);
     expect(parts[0].text).toBe("Just one region");
+  });
+});
+
+// ── Phase 2: Dirty flag ──────────────────────────────────────────────────────
+
+describe("dirty flag on Frame (Phase 2)", () => {
+  it("new frames have dirty = false", () => {
+    const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
+    expect((f).dirty).toBe(false);
+  });
+
+  it("moveFrameEffect sets dirty = true on moved frame", () => {
+    const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
+    const s0 = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    const s1 = applyMoveFrame(s0, f.id, 10, 10);
+    expect((getFrames(s1)[0]).dirty).toBe(true);
+  });
+
+  it("resizeFrameEffect sets dirty = true on resized frame", () => {
+    const f = createFrame({ x: 0, y: 0, w: 100, h: 100 });
+    const s0 = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    const s1 = applyResizeFrame(s0, f.id, 200, 200, 10, 20);
+    expect((getFrames(s1)[0]).dirty).toBe(true);
+  });
+
+  it("moving a child marks both child and top-level container dirty", () => {
+    const child = createFrame({ x: 0, y: 0, w: 30, h: 30 });
+    const container: Frame = {
+      ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
+      children: [child],
+    };
+    const s0 = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    const s1 = applyMoveFrame(s0, child.id, 5, 5);
+    const frames = getFrames(s1);
+    expect((frames[0]).dirty).toBe(true);
+    expect((frames[0].children[0]).dirty).toBe(true);
+  });
+
+  it("undo restores dirty = false (via invertedEffects snapshot)", () => {
+    const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
+    const s0 = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    expect((getFrames(s0)[0]).dirty).toBe(false);
+    const s1 = applyMoveFrame(s0, f.id, 10, 10);
+    expect((getFrames(s1)[0]).dirty).toBe(true);
+    const s2 = editorUndo(s1);
+    expect((getFrames(s2)[0]).dirty).toBe(false);
+  });
+});
+
+describe("applyClearDirty (Phase 2)", () => {
+  it("resets dirty flag on all frames", () => {
+    const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
+    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    state = applyMoveFrame(state, f.id, 10, 10);
+    expect(getFrames(state)[0].dirty).toBe(true);
+    state = applyClearDirty(state);
+    expect(getFrames(state)[0].dirty).toBe(false);
+  });
+
+  it("resets dirty on nested children too", () => {
+    const child = createFrame({ x: 0, y: 0, w: 30, h: 30 });
+    const container: Frame = {
+      ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
+      children: [child],
+    };
+    let state = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    state = applyMoveFrame(state, child.id, 5, 5);
+    expect(getFrames(state)[0].dirty).toBe(true);
+    expect(getFrames(state)[0].children[0].dirty).toBe(true);
+    state = applyClearDirty(state);
+    expect(getFrames(state)[0].dirty).toBe(false);
+    expect(getFrames(state)[0].children[0].dirty).toBe(false);
   });
 });

@@ -9,7 +9,7 @@ import {
   createEditorStateFromText, getDoc, getFrames,
   selectFrameEffect, getSelectedId,
   moveFrameEffect, resizeFrameEffect,
-  applyAddFrame, applyDeleteFrame,
+  applyAddFrame, applyDeleteFrame, applyClearDirty,
   proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
@@ -210,6 +210,8 @@ export default function DemoV2() {
       const w = await (h as WritableHandle).createWritable();
       await w.write(md);
       await w.close();
+      stateRef.current = applyClearDirty(stateRef.current);
+      framesRef.current = getFrames(stateRef.current);
     } catch { /* ignore write errors */ }
   }
   function scheduleAutosave() {

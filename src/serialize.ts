@@ -58,7 +58,7 @@ export function framesToMarkdown(
     // In framesFromRegions, children get x = layer.bbox.col * cw, y = layer.bbox.row * ch.
     // The container's y encodes region.startRow; children are relative to container origin.
     // We detect mutations by checking if the set of occupied cells differs from original.
-    const hasMutations = childrenHaveMoved(frame, charWidth, charHeight);
+    const hasMutations = frame.dirty;
 
     if (!hasMutations) {
       // No edits: pass original text through unchanged (preserves junction chars)
@@ -109,75 +109,3 @@ export function framesToMarkdown(
   return parts.join("\n\n");
 }
 
-/**
- * Detect if any child frame in a container has moved from its canonical
- * position. In `framesFromRegions`, each child is placed at
- * x = layer.bbox.col * charWidth and y = layer.bbox.row * charHeight.
- * The container always starts at x=0 (col 0).
- *
- * We detect mutations by checking if any child's grid position
- * (row, col) would produce cells that don't match the content at that
- * position in the frame.children list order. Since we can't know the
- * "original" position without storing it, we use a simpler heuristic:
- * compare the total set of cells written by all children against the
- * size of the original text. If children extend beyond the original
- * bounds, or if the container's children have non-zero y that wouldn't
- * align with a fresh framesFromRegions call, we consider it mutated.
- *
- * Actually: framesFromRegions always places children starting at y=0
- * for the topmost layer. If any child has y > 0 for its first row of
- * cells, it could have been moved. But we can't know original y.
- *
- * Simplest reliable heuristic: run a "snapshot" of where cells would
- * be if we applied framesFromRegions fresh, compare to current positions.
- * We don't have that snapshot here, so instead: compute the bounding box
- * of all child cells. If the top-most row of any child is > 0 AND the
- * original text starts at row 0, that child was moved down.
- *
- * REAL APPROACH: track mutations explicitly via a flag on the frame.
- * Since we don't have that, use bbox comparison: if any child's y or x
- * doesn't evenly divide to a grid row/col that has content in the original
- * region, it moved.
- *
- * For now, the safest approach that passes all tests: compare the
- * minimum row occupied by any child cell to 0 — if > 0, something moved.
- * Also compare max occupied row to original line count.
- */
-function childrenHaveMoved(
-  container: Frame,
-  charWidth: number,
-  charHeight: number,
-): boolean {
-  // Collect all (row, col) positions that children would write to
-  const writtenPositions = new Set<string>();
-  for (const child of container.children) {
-    if (!child.content) continue;
-    const gridRow = Math.round(child.y / charHeight);
-    const gridCol = Math.round(child.x / charWidth);
-    for (const key of child.content.cells.keys()) {
-      const ci = key.indexOf(",");
-      const r = gridRow + Number(key.slice(0, ci));
-      const c = gridCol + Number(key.slice(ci + 1));
-      writtenPositions.add(`${r},${c}`);
-    }
-  }
-
-  // Find the min and max rows written
-  let minRow = Infinity;
-  let maxRow = -Infinity;
-  for (const pos of writtenPositions) {
-    const ci = pos.indexOf(",");
-    const r = Number(pos.slice(0, ci));
-    if (r < minRow) minRow = r;
-    if (r > maxRow) maxRow = r;
-  }
-
-  if (writtenPositions.size === 0) return false;
-
-  // In a fresh framesFromRegions, the topmost layer always starts at row 0
-  // (because buildLayersForRegion rebases to startRow).
-  // If minRow > 0, then the topmost shape was moved down.
-  if (minRow > 0) return true;
-
-  return false;
-}

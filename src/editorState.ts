@@ -57,9 +57,9 @@ export const setZEffect = StateEffect.define<{ id: string; z: number }>();
 
 const setToolEffect = StateEffect.define<ToolName>();
 
-const setRegionsEffect = StateEffect.define<Region[]>();
+export const setRegionsEffect = StateEffect.define<Region[]>();
 
-const setProsePartsEffect = StateEffect.define<ProsePart[]>();
+export const setProsePartsEffect = StateEffect.define<ProsePart[]>();
 
 export const selectFrameEffect = StateEffect.define<string | null>();
 
@@ -77,6 +77,20 @@ export const setTextAlignEffect = StateEffect.define<{
 
 // Restore effect — used by invertedEffects for undo of frame mutations.
 const restoreFramesEffect = StateEffect.define<Frame[]>();
+const clearDirtyEffect = StateEffect.define<null>();
+
+// Mark a frame dirty by id, propagating up to ancestors.
+function markDirtyById(frames: Frame[], id: string): { frames: Frame[]; found: boolean } {
+  let found = false;
+  const result = frames.map(f => {
+    if (f.id === id) { found = true; return { ...f, dirty: true }; }
+    if (f.children.length === 0) return f;
+    const sub = markDirtyById(f.children, id);
+    if (sub.found) { found = true; return { ...f, children: sub.frames, dirty: true }; }
+    return f;
+  });
+  return { frames: found ? result : frames, found };
+}
 
 // ── StateFields ────────────────────────────────────────────────────────────
 
@@ -87,6 +101,14 @@ const framesField = StateField.define<Frame[]>({
     for (const e of tr.effects) {
       if (e.is(restoreFramesEffect)) {
         return e.value;
+      } else if (e.is(clearDirtyEffect)) {
+        const clearDirty = (fs: Frame[]): Frame[] =>
+          fs.map(f => ({
+            ...f,
+            dirty: false,
+            children: f.children.length > 0 ? clearDirty(f.children) : f.children,
+          }));
+        return clearDirty(result);
       } else if (e.is(moveFrameEffect)) {
         const applyMove = (f: Frame): Frame => {
           if (f.id === e.value.id) return moveFrame(f, { dx: e.value.dx, dy: e.value.dy });
@@ -94,6 +116,7 @@ const framesField = StateField.define<Frame[]>({
           return f;
         };
         result = result.map(applyMove);
+        result = markDirtyById(result, e.value.id).frames;
       } else if (e.is(resizeFrameEffect)) {
         const applyResize = (f: Frame): Frame => {
           if (f.id === e.value.id) return resizeFrame(f, { w: e.value.w, h: e.value.h }, e.value.charWidth, e.value.charHeight);
@@ -101,9 +124,21 @@ const framesField = StateField.define<Frame[]>({
           return f;
         };
         result = result.map(applyResize);
+        result = markDirtyById(result, e.value.id).frames;
       } else if (e.is(addFrameEffect)) {
-        result = [...result, e.value];
+        result = [...result, { ...e.value, dirty: true }];
       } else if (e.is(deleteFrameEffect)) {
+        // Mark parent container dirty before removing
+        const markParentDirty = (frames: Frame[]): Frame[] =>
+          frames.map(f => {
+            if (f.children.some(c => c.id === e.value.id)) return { ...f, dirty: true };
+            if (f.children.length > 0) {
+              const updated = markParentDirty(f.children);
+              if (updated.some((c, i) => c !== f.children[i])) return { ...f, children: updated, dirty: true };
+            }
+            return f;
+          });
+        result = markParentDirty(result);
         const removeById = (frames: Frame[]): Frame[] => {
           const filtered = frames.filter(f => f.id !== e.value.id);
           return filtered.map(f =>
@@ -120,6 +155,7 @@ const framesField = StateField.define<Frame[]>({
           return f;
         };
         result = result.map(applyZ);
+        result = markDirtyById(result, e.value.id).frames;
       } else if (e.is(editTextFrameEffect)) {
         const editFrame = (f: Frame): Frame => {
           if (f.id === e.value.id) {
@@ -138,6 +174,7 @@ const framesField = StateField.define<Frame[]>({
           return f;
         };
         result = result.map(editFrame);
+        result = markDirtyById(result, e.value.id).frames;
       } else if (e.is(setTextAlignEffect)) {
         const cw = e.value.charWidth, ch = e.value.charHeight;
         const applyAlign = (f: Frame): Frame => {
@@ -155,6 +192,7 @@ const framesField = StateField.define<Frame[]>({
           return f;
         };
         result = result.map(applyAlign);
+        result = markDirtyById(result, e.value.id).frames;
       }
     }
     return result;
@@ -523,6 +561,10 @@ export function applyDeleteFrame(state: EditorState, id: string): EditorState {
     effects,
     annotations: Transaction.addToHistory.of(true),
   }).state;
+}
+
+export function applyClearDirty(state: EditorState): EditorState {
+  return state.update({ effects: clearDirtyEffect.of(null) }).state;
 }
 
 export function setTool(state: EditorState, tool: ToolName): EditorState {
