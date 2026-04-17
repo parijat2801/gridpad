@@ -508,7 +508,7 @@ function makeRectWithTextChild(params: {
     z: 0,
     children: [],
     content: { type: "text", cells, text: "x", hAlign, vAlign },
-    clip: false,
+    clip: false, dirty: false,
   };
   return {
     id: "rect-1",
@@ -519,7 +519,7 @@ function makeRectWithTextChild(params: {
     z: 0,
     children: [child],
     content: { type: "rect", cells: new Map() },
-    clip: true,
+    clip: true, dirty: false,
   };
 }
 
@@ -592,7 +592,7 @@ describe("layoutTextChildren", () => {
       x: 0, y: 0, w: 100, h: 50, z: 0,
       children: [],
       content: { type: "text", cells, text: "hi" },
-      clip: false,
+      clip: false, dirty: false,
     };
     const result = layoutTextChildren(frame, CHAR_W, CHAR_H);
     expect(result).toBe(frame);
@@ -622,7 +622,7 @@ function makeFlatChildren(params: {
     z: 0,
     children: [],
     content: { type: "rect", cells: new Map() },
-    clip: false,
+    clip: false, dirty: false,
   };
   const text: Frame = {
     id: "text-flat",
@@ -633,7 +633,7 @@ function makeFlatChildren(params: {
     z: 0,
     children: [],
     content: { type: "text", cells: new Map(), text: "hi" },
-    clip: false,
+    clip: false, dirty: false,
   };
   return [rect, text];
 }
@@ -741,14 +741,14 @@ describe("reparentChildren", () => {
       x: 0, y: 0, w: outerW, h: outerH, z: 0,
       children: [],
       content: { type: "rect", cells: new Map() },
-      clip: false,
+      clip: false, dirty: false,
     };
     const innerRect: Frame = {
       id: "inner-rect",
       x: innerX, y: innerY, w: innerW, h: innerH, z: 0,
       children: [],
       content: { type: "rect", cells: new Map() },
-      clip: false,
+      clip: false, dirty: false,
     };
     const children: Frame[] = [outerRect, innerRect];
 
@@ -771,7 +771,7 @@ describe("reparentChildren", () => {
       x: 0, y: 0, w: 10 * CHAR_W, h: 5 * CHAR_H, z: 0,
       children: [],
       content: { type: "rect", cells: new Map() },
-      clip: false,
+      clip: false, dirty: false,
     };
     const children: Frame[] = [rect];
 
@@ -790,7 +790,7 @@ describe("reparentChildren", () => {
       x: 0, y: 0, w: 20 * CHAR_W, h: 10 * CHAR_H, z: 0,
       children: [],
       content: { type: "rect", cells: new Map() },
-      clip: false,
+      clip: false, dirty: false,
     };
     const middleRect: Frame = {
       id: "middle",
@@ -798,7 +798,7 @@ describe("reparentChildren", () => {
       w: 8 * CHAR_W, h: 6 * CHAR_H, z: 0,
       children: [],
       content: { type: "rect", cells: new Map() },
-      clip: false,
+      clip: false, dirty: false,
     };
     // Text inside middle rect (center of middle)
     const innerW = 8 * CHAR_W - 2 * CHAR_W;
@@ -810,7 +810,7 @@ describe("reparentChildren", () => {
       x: textX, y: textY, w: textW, h: CHAR_H, z: 0,
       children: [],
       content: { type: "text", cells: new Map(), text: "hi" },
-      clip: false,
+      clip: false, dirty: false,
     };
     const children: Frame[] = [outerRect, middleRect, text];
 
@@ -844,7 +844,7 @@ describe("mergeAdjacentTexts", () => {
         z: 0,
         children: [],
         content: { type: "text", cells, text: t.text },
-        clip: false,
+        clip: false, dirty: false,
       };
     });
     return {
@@ -852,7 +852,7 @@ describe("mergeAdjacentTexts", () => {
       x: 0, y: 0, w: 200, h: 200, z: 0,
       children,
       content: { type: "rect", cells: new Map() },
-      clip: true,
+      clip: true, dirty: false,
     };
   }
 

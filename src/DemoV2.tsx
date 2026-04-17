@@ -34,6 +34,10 @@ type ResizeHandle = "tl" | "tm" | "tr" | "ml" | "mr" | "bl" | "bm" | "br";
 interface HandleRect { handle: ResizeHandle; x: number; y: number; w: number; h: number; }
 const HANDLE_HIT = 24;
 const HANDLE_HALF_HIT = HANDLE_HIT / 2;
+const RESIZE_CURSOR_MAP: Record<ResizeHandle, string> = {
+  tl: "nwse-resize", tr: "nesw-resize", bl: "nesw-resize", br: "nwse-resize",
+  tm: "ns-resize", bm: "ns-resize", ml: "ew-resize", mr: "ew-resize",
+};
 
 function computeHandleRects(absX: number, absY: number, fw: number, fh: number): HandleRect[] {
   const pts: [ResizeHandle, number, number][] = [
@@ -516,8 +520,7 @@ export default function DemoV2() {
         if (sel) {
           const handle = hitTestHandle(computeHandleRects(sel.absX, sel.absY, sel.frame.w, sel.frame.h), px, py);
           if (handle) {
-            const cm: Record<ResizeHandle, string> = { tl: "nwse-resize", tr: "nesw-resize", bl: "nesw-resize", br: "nwse-resize", tm: "ns-resize", bm: "ns-resize", ml: "ew-resize", mr: "ew-resize" };
-            setCanvasCursor(cm[handle]);
+            setCanvasCursor(RESIZE_CURSOR_MAP[handle]);
           } else {
             setCanvasCursor(hitTestFrames(framesRef.current, px, py) ? "grab" : "text");
           }
@@ -532,8 +535,7 @@ export default function DemoV2() {
     const isFirstDragStep = !drag.hasMoved;
     drag.hasMoved = true;
     if (drag.resizeHandle) {
-      const cm: Record<ResizeHandle, string> = { tl: "nwse-resize", tr: "nesw-resize", bl: "nesw-resize", br: "nwse-resize", tm: "ns-resize", bm: "ns-resize", ml: "ew-resize", mr: "ew-resize" };
-      setCanvasCursor(cm[drag.resizeHandle]);
+      setCanvasCursor(RESIZE_CURSOR_MAP[drag.resizeHandle]);
     } else { setCanvasCursor("grabbing"); }
     const found = findFrameById(framesRef.current, drag.frameId);
     if (!found) return;

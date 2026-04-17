@@ -137,11 +137,12 @@ const framesField = StateField.define<Frame[]>({
         result = markParentDirty(result);
         const removeById = (frames: Frame[]): Frame[] => {
           const filtered = frames.filter(f => f.id !== e.value.id);
-          return filtered.map(f =>
-            f.children.length > 0
-              ? { ...f, children: removeById(f.children) }
-              : f
-          );
+          if (filtered.length < frames.length) return filtered; // found at this level
+          return frames.map(f => {
+            if (f.children.length === 0) return f;
+            const updated = removeById(f.children);
+            return updated !== f.children ? { ...f, children: updated } : f;
+          });
         };
         result = removeById(result);
       } else if (e.is(setZEffect)) {
