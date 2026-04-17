@@ -11,6 +11,7 @@ import {
   resizeFrame,
   framesFromRegions,
 } from "./frame";
+import { layoutTextChildren, reparentChildren, mergeAdjacentTexts } from "./autoLayout";
 import { scan } from "./scanner";
 import { detectRegions } from "./regions";
 import { LIGHT_RECT_STYLE, buildLayersFromScan } from "./layers";
@@ -482,5 +483,469 @@ describe("framesFromRegions return type", () => {
     expect(result.prose.length).toBeGreaterThan(0);
     expect(result.prose[0]).toHaveProperty("text");
     expect(result.prose[0]).toHaveProperty("startRow");
+  });
+});
+
+// ── layoutTextChildren ────────────────────────────────────────────────────
+
+/** Build a minimal rect frame with one text child for layoutTextChildren tests. */
+function makeRectWithTextChild(params: {
+  rectW: number;
+  rectH: number;
+  childW: number;
+  childH: number;
+  hAlign?: import("./autoLayout").AlignAnchor;
+  vAlign?: import("./autoLayout").VAlignAnchor;
+}): Frame {
+  const { rectW, rectH, childW, childH, hAlign, vAlign } = params;
+  const cells = new Map<string, string>();
+  const child: Frame = {
+    id: "child-1",
+    x: 0,
+    y: 0,
+    w: childW,
+    h: childH,
+    z: 0,
+    children: [],
+    content: { type: "text", cells, text: "x", hAlign, vAlign },
+    clip: false,
+  };
+  return {
+    id: "rect-1",
+    x: 0,
+    y: 0,
+    w: rectW,
+    h: rectH,
+    z: 0,
+    children: [child],
+    content: { type: "rect", cells: new Map() },
+    clip: true,
+  };
+}
+
+describe("layoutTextChildren", () => {
+  it("positions left-aligned text child at charWidth + offset from inner left edge", () => {
+    const offset = 10;
+    const frame = makeRectWithTextChild({
+      rectW: 20 * CHAR_W,
+      rectH: 5 * CHAR_H,
+      childW: 3 * CHAR_W,
+      childH: CHAR_H,
+      hAlign: { anchor: "left", offset },
+      vAlign: { anchor: "top", offset: 0 },
+    });
+    const laid = layoutTextChildren(frame, CHAR_W, CHAR_H);
+    expect(laid.children[0].x).toBeCloseTo(CHAR_W + offset);
+  });
+
+  it("positions center-aligned text child in the horizontal middle", () => {
+    const rectW = 20 * CHAR_W;
+    const childW = 3 * CHAR_W;
+    const innerW = rectW - 2 * CHAR_W;
+    const frame = makeRectWithTextChild({
+      rectW,
+      rectH: 5 * CHAR_H,
+      childW,
+      childH: CHAR_H,
+      hAlign: { anchor: "center", offset: 0 },
+      vAlign: { anchor: "top", offset: 0 },
+    });
+    const laid = layoutTextChildren(frame, CHAR_W, CHAR_H);
+    expect(laid.children[0].x).toBeCloseTo(CHAR_W + (innerW - childW) / 2);
+  });
+
+  it("positions right-aligned text child at offset from right inner edge", () => {
+    const offset = 5;
+    const rectW = 20 * CHAR_W;
+    const childW = 3 * CHAR_W;
+    const innerW = rectW - 2 * CHAR_W;
+    const frame = makeRectWithTextChild({
+      rectW,
+      rectH: 5 * CHAR_H,
+      childW,
+      childH: CHAR_H,
+      hAlign: { anchor: "right", offset },
+      vAlign: { anchor: "top", offset: 0 },
+    });
+    const laid = layoutTextChildren(frame, CHAR_W, CHAR_H);
+    expect(laid.children[0].x).toBeCloseTo(CHAR_W + innerW - childW - offset);
+  });
+
+  it("clamps position to 0 when offset exceeds available space", () => {
+    // Very narrow rect, large offset — should clamp at 0
+    const frame = makeRectWithTextChild({
+      rectW: 3 * CHAR_W,
+      rectH: 3 * CHAR_H,
+      childW: 2 * CHAR_W,
+      childH: CHAR_H,
+      hAlign: { anchor: "left", offset: -9999 },
+      vAlign: { anchor: "top", offset: 0 },
+    });
+    const laid = layoutTextChildren(frame, CHAR_W, CHAR_H);
+    expect(laid.children[0].x).toBeGreaterThanOrEqual(0);
+  });
+
+  it("returns frame unchanged if content is not a rect", () => {
+    const cells = new Map<string, string>();
+    const frame: Frame = {
+      id: "text-frame",
+      x: 0, y: 0, w: 100, h: 50, z: 0,
+      children: [],
+      content: { type: "text", cells, text: "hi" },
+      clip: false,
+    };
+    const result = layoutTextChildren(frame, CHAR_W, CHAR_H);
+    expect(result).toBe(frame);
+  });
+});
+
+// ── reparentChildren ──────────────────────────────────────────────────────
+
+/** Build a flat Frame[] with a rect and a text child inside it. */
+function makeFlatChildren(params: {
+  rectX: number;
+  rectY: number;
+  rectW: number;
+  rectH: number;
+  textX: number;
+  textY: number;
+  textW: number;
+  textH: number;
+}): Frame[] {
+  const { rectX, rectY, rectW, rectH, textX, textY, textW, textH } = params;
+  const rect: Frame = {
+    id: "rect-flat",
+    x: rectX,
+    y: rectY,
+    w: rectW,
+    h: rectH,
+    z: 0,
+    children: [],
+    content: { type: "rect", cells: new Map() },
+    clip: false,
+  };
+  const text: Frame = {
+    id: "text-flat",
+    x: textX,
+    y: textY,
+    w: textW,
+    h: textH,
+    z: 0,
+    children: [],
+    content: { type: "text", cells: new Map(), text: "hi" },
+    clip: false,
+  };
+  return [rect, text];
+}
+
+describe("reparentChildren", () => {
+  it("moves text child inside enclosing rect and removes it from flat list", () => {
+    // Rect: 10 cols × 5 rows at (0,0), text 2 cols at inner offset 1 col, 1 row
+    const rectW = 10 * CHAR_W;
+    const rectH = 5 * CHAR_H;
+    const textX = CHAR_W + CHAR_W; // col 2 = charWidth (border) + charWidth (offset)
+    const textY = CHAR_H;          // row 1 = charHeight (border) + 0 offset
+    const textW = 2 * CHAR_W;
+    const textH = CHAR_H;
+
+    const children = makeFlatChildren({
+      rectX: 0, rectY: 0, rectW, rectH,
+      textX, textY, textW, textH,
+    });
+
+    reparentChildren(children, CHAR_W, CHAR_H);
+
+    // Text should have been removed from top-level list
+    expect(children).toHaveLength(1);
+    expect(children[0].id).toBe("rect-flat");
+
+    // Text should now be a child of the rect
+    const rect = children[0];
+    expect(rect.children).toHaveLength(1);
+    expect(rect.children[0].id).toBe("text-flat");
+  });
+
+  it("infers left alignment for text near the left edge", () => {
+    const rectW = 10 * CHAR_W;
+    const rectH = 5 * CHAR_H;
+    // Text at x = charWidth (border only, at the very left inner edge, clearly left-aligned)
+    // innerW = 8 * CHAR_W; distLeft = 0, distRight = 8*CHAR_W - 2*CHAR_W = 6*CHAR_W
+    // distCenterH = |(0 - (8*CHAR_W - 2*CHAR_W)/2)| = 3*CHAR_W > 2*CHAR_W tolerance → left
+    const textX = CHAR_W;
+    const textY = CHAR_H;
+    const textW = 2 * CHAR_W;
+
+    const children = makeFlatChildren({
+      rectX: 0, rectY: 0, rectW, rectH,
+      textX, textY, textW, textH: CHAR_H,
+    });
+
+    reparentChildren(children, CHAR_W, CHAR_H);
+
+    const reparentedText = children[0].children[0];
+    expect(reparentedText.content?.hAlign?.anchor).toBe("left");
+  });
+
+  it("infers center alignment for text centered in rect", () => {
+    const rectW = 10 * CHAR_W;
+    const rectH = 5 * CHAR_H;
+    const innerW = rectW - 2 * CHAR_W;
+    const textW = 2 * CHAR_W;
+    // Center: x = charWidth (border) + (innerW - textW) / 2
+    const textX = CHAR_W + (innerW - textW) / 2;
+    const textY = CHAR_H;
+
+    const children = makeFlatChildren({
+      rectX: 0, rectY: 0, rectW, rectH,
+      textX, textY, textW, textH: CHAR_H,
+    });
+
+    reparentChildren(children, CHAR_W, CHAR_H);
+
+    const reparentedText = children[0].children[0];
+    expect(reparentedText.content?.hAlign?.anchor).toBe("center");
+  });
+
+  it("does not re-parent text that is outside the rect", () => {
+    const rectW = 5 * CHAR_W;
+    const rectH = 3 * CHAR_H;
+    // Text is outside the rect (far to the right)
+    const textX = 20 * CHAR_W;
+    const textY = 0;
+    const textW = 2 * CHAR_W;
+
+    const children = makeFlatChildren({
+      rectX: 0, rectY: 0, rectW, rectH,
+      textX, textY, textW, textH: CHAR_H,
+    });
+
+    reparentChildren(children, CHAR_W, CHAR_H);
+
+    // Both frames remain in flat list; rect has no children
+    expect(children).toHaveLength(2);
+    expect(children[0].children).toHaveLength(0);
+  });
+
+  it("re-parents rect children into enclosing rects", () => {
+    // Outer rect: 20 cols × 10 rows at (0,0)
+    const outerW = 20 * CHAR_W;
+    const outerH = 10 * CHAR_H;
+    // Inner rect: 6 cols × 4 rows, positioned inside outer rect
+    const innerX = 2 * CHAR_W;
+    const innerY = 2 * CHAR_H;
+    const innerW = 6 * CHAR_W;
+    const innerH = 4 * CHAR_H;
+
+    const outerRect: Frame = {
+      id: "outer-rect",
+      x: 0, y: 0, w: outerW, h: outerH, z: 0,
+      children: [],
+      content: { type: "rect", cells: new Map() },
+      clip: false,
+    };
+    const innerRect: Frame = {
+      id: "inner-rect",
+      x: innerX, y: innerY, w: innerW, h: innerH, z: 0,
+      children: [],
+      content: { type: "rect", cells: new Map() },
+      clip: false,
+    };
+    const children: Frame[] = [outerRect, innerRect];
+
+    reparentChildren(children, CHAR_W, CHAR_H);
+
+    // Inner rect should be a child of outer rect
+    expect(children).toHaveLength(1);
+    expect(children[0].id).toBe("outer-rect");
+    expect(children[0].children).toHaveLength(1);
+    expect(children[0].children[0].id).toBe("inner-rect");
+    // Coordinates should be rebased relative to outer rect
+    expect(children[0].children[0].x).toBeCloseTo(innerX);
+    expect(children[0].children[0].y).toBeCloseTo(innerY);
+  });
+
+  it("does not re-parent a rect into itself", () => {
+    // A single rect with no other frames — must not become its own child
+    const rect: Frame = {
+      id: "solo-rect",
+      x: 0, y: 0, w: 10 * CHAR_W, h: 5 * CHAR_H, z: 0,
+      children: [],
+      content: { type: "rect", cells: new Map() },
+      clip: false,
+    };
+    const children: Frame[] = [rect];
+
+    reparentChildren(children, CHAR_W, CHAR_H);
+
+    // Should still have exactly one element, no children added
+    expect(children).toHaveLength(1);
+    expect(children[0].id).toBe("solo-rect");
+    expect(children[0].children).toHaveLength(0);
+  });
+
+  it("re-parents into smallest enclosing rect", () => {
+    // Outer rect: 20×10, middle rect: 8×6 inside outer, text inside middle
+    const outerRect: Frame = {
+      id: "outer",
+      x: 0, y: 0, w: 20 * CHAR_W, h: 10 * CHAR_H, z: 0,
+      children: [],
+      content: { type: "rect", cells: new Map() },
+      clip: false,
+    };
+    const middleRect: Frame = {
+      id: "middle",
+      x: 2 * CHAR_W, y: 2 * CHAR_H,
+      w: 8 * CHAR_W, h: 6 * CHAR_H, z: 0,
+      children: [],
+      content: { type: "rect", cells: new Map() },
+      clip: false,
+    };
+    // Text inside middle rect (center of middle)
+    const innerW = 8 * CHAR_W - 2 * CHAR_W;
+    const textW = 2 * CHAR_W;
+    const textX = 2 * CHAR_W + CHAR_W + (innerW - textW) / 2; // middle.x + border + center offset
+    const textY = 2 * CHAR_H + CHAR_H; // middle.y + border
+    const text: Frame = {
+      id: "inner-text",
+      x: textX, y: textY, w: textW, h: CHAR_H, z: 0,
+      children: [],
+      content: { type: "text", cells: new Map(), text: "hi" },
+      clip: false,
+    };
+    const children: Frame[] = [outerRect, middleRect, text];
+
+    reparentChildren(children, CHAR_W, CHAR_H);
+
+    // Middle rect should be child of outer (smallest enclosing for middle is outer)
+    // Text should be child of middle (smallest enclosing for text is middle)
+    const outer = children.find(c => c.id === "outer");
+    expect(outer).toBeDefined();
+    const middle = outer!.children.find(c => c.id === "middle");
+    expect(middle).toBeDefined();
+    const innerText = middle!.children.find(c => c.id === "inner-text");
+    expect(innerText).toBeDefined();
+  });
+});
+
+// ── mergeAdjacentTexts ────────────────────────────────────────────────────
+
+describe("mergeAdjacentTexts", () => {
+  function makeParentWithTexts(texts: Array<{ text: string; x: number; y: number }>): Frame {
+    const children: Frame[] = texts.map((t, i) => {
+      const codepoints = [...t.text];
+      const cells = new Map<string, string>();
+      codepoints.forEach((cp, ci) => cells.set(`0,${ci}`, cp));
+      return {
+        id: `text-${i}`,
+        x: t.x,
+        y: t.y,
+        w: codepoints.length * CHAR_W,
+        h: CHAR_H,
+        z: 0,
+        children: [],
+        content: { type: "text", cells, text: t.text },
+        clip: false,
+      };
+    });
+    return {
+      id: "parent",
+      x: 0, y: 0, w: 200, h: 200, z: 0,
+      children,
+      content: { type: "rect", cells: new Map() },
+      clip: true,
+    };
+  }
+
+  it("merges two text frames on the same row separated by a space", () => {
+    // "Create" at x=50, "Account" at x=50 + 6*CHAR_W + 1*CHAR_W (one space gap)
+    const createW = 6 * CHAR_W;
+    const accountX = 50 + createW + CHAR_W; // one char gap = exactly CHAR_W
+    const parent = makeParentWithTexts([
+      { text: "Create", x: 50, y: CHAR_H },
+      { text: "Account", x: accountX, y: CHAR_H },
+    ]);
+
+    mergeAdjacentTexts(parent, CHAR_W, CHAR_H);
+
+    const textChildren = parent.children.filter(c => c.content?.type === "text");
+    expect(textChildren).toHaveLength(1);
+    expect(textChildren[0].content!.text).toBe("Create Account");
+    expect(textChildren[0].x).toBeCloseTo(50);
+    // Width spans from x=50 to end of "Account"
+    const expectedW = accountX + 7 * CHAR_W - 50;
+    expect(textChildren[0].w).toBeCloseTo(expectedW);
+  });
+
+  it("does not merge text frames on different rows", () => {
+    const parent = makeParentWithTexts([
+      { text: "Line1", x: 50, y: CHAR_H },
+      { text: "Line2", x: 50, y: 3 * CHAR_H }, // different row
+    ]);
+
+    mergeAdjacentTexts(parent, CHAR_W, CHAR_H);
+
+    const textChildren = parent.children.filter(c => c.content?.type === "text");
+    expect(textChildren).toHaveLength(2);
+  });
+
+  it("does not merge text frames far apart horizontally", () => {
+    // "Hello" and "World" separated by 5 * CHAR_W (>> 2 * CHAR_W threshold)
+    const helloW = 5 * CHAR_W;
+    const worldX = 50 + helloW + 5 * CHAR_W;
+    const parent = makeParentWithTexts([
+      { text: "Hello", x: 50, y: CHAR_H },
+      { text: "World", x: worldX, y: CHAR_H },
+    ]);
+
+    mergeAdjacentTexts(parent, CHAR_W, CHAR_H);
+
+    const textChildren = parent.children.filter(c => c.content?.type === "text");
+    expect(textChildren).toHaveLength(2);
+  });
+});
+
+// ── center alignment tolerance ────────────────────────────────────────────
+
+describe("center alignment tolerance", () => {
+  it("infers center for text within 2 cells of center", () => {
+    // Rect: 20 cols × 5 rows; innerW = 18 * CHAR_W
+    // Text: 2 cols wide; perfect center x = CHAR_W + (18*CHAR_W - 2*CHAR_W) / 2 = CHAR_W + 8*CHAR_W
+    // Off-by-1-cell from center: x = CHAR_W + 8*CHAR_W + CHAR_W (1 cell right of center)
+    // distCenterH = CHAR_W, which is < 2 * CHAR_W → should be center
+    const rectW = 20 * CHAR_W;
+    const rectH = 5 * CHAR_H;
+    const innerW = rectW - 2 * CHAR_W;
+    const textW = 2 * CHAR_W;
+    const centerX = CHAR_W + (innerW - textW) / 2;
+    const offByOne = centerX + CHAR_W; // 1 cell right of center
+
+    const children = makeFlatChildren({
+      rectX: 0, rectY: 0, rectW, rectH,
+      textX: offByOne, textY: CHAR_H, textW, textH: CHAR_H,
+    });
+
+    reparentChildren(children, CHAR_W, CHAR_H);
+
+    const reparentedText = children[0].children[0];
+    expect(reparentedText.content?.hAlign?.anchor).toBe("center");
+  });
+
+  it("infers left for text clearly near left edge", () => {
+    // Rect: 20 cols × 5 rows; text at col 1 (just inside the border)
+    // innerW = 18 * CHAR_W; distLeft = 0; distCenterH = 8*CHAR_W >> 2*CHAR_W → left
+    const rectW = 20 * CHAR_W;
+    const rectH = 5 * CHAR_H;
+    const textW = 2 * CHAR_W;
+    const textX = CHAR_W; // at the left inner edge (border only), relX = 0
+
+    const children = makeFlatChildren({
+      rectX: 0, rectY: 0, rectW, rectH,
+      textX, textY: CHAR_H, textW, textH: CHAR_H,
+    });
+
+    reparentChildren(children, CHAR_W, CHAR_H);
+
+    const reparentedText = children[0].children[0];
+    expect(reparentedText.content?.hAlign?.anchor).toBe("left");
   });
 });

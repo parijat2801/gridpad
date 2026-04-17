@@ -13,6 +13,7 @@ import {
 import { history, undo, redo, undoDepth, redoDepth, invertedEffects } from "@codemirror/commands";
 import type { Frame } from "./frame";
 import { moveFrame, resizeFrame } from "./frame";
+import { layoutTextChildren } from "./autoLayout";
 import type { Region } from "./regions";
 import { scanToFrames } from "./scanToFrames";
 
@@ -66,6 +67,14 @@ export const setTextEditEffect = StateEffect.define<{ frameId: string; col: numb
 
 export const editTextFrameEffect = StateEffect.define<{ id: string; text: string; charWidth: number }>();
 
+export const setTextAlignEffect = StateEffect.define<{
+  id: string;
+  hAlign?: { anchor: "left" | "center" | "right"; offset: number };
+  vAlign?: { anchor: "top" | "center" | "bottom"; offset: number };
+  charWidth: number;
+  charHeight: number;
+}>();
+
 // Restore effect — used by invertedEffects for undo of frame mutations.
 const restoreFramesEffect = StateEffect.define<Frame[]>();
 
@@ -116,6 +125,23 @@ export const framesField = StateField.define<Frame[]>({
           return f;
         };
         result = result.map(editFrame);
+      } else if (e.is(setTextAlignEffect)) {
+        const cw = e.value.charWidth, ch = e.value.charHeight;
+        const applyAlign = (f: Frame): Frame => {
+          if (f.id === e.value.id && f.content?.type === "text") {
+            const hAlign = e.value.hAlign ?? f.content.hAlign;
+            const vAlign = e.value.vAlign ?? f.content.vAlign;
+            return { ...f, content: { ...f.content, hAlign, vAlign } };
+          }
+          if (f.children.length > 0) {
+            const updated = { ...f, children: f.children.map(applyAlign) };
+            // Relayout parent rect after child alignment change
+            if (f.content?.type === "rect") return layoutTextChildren(updated, cw, ch);
+            return updated;
+          }
+          return f;
+        };
+        result = result.map(applyAlign);
       }
     }
     return result;
@@ -202,7 +228,8 @@ export function createEditorState(init: EditorStateInit): EditorState {
         e.is(addFrameEffect) ||
         e.is(deleteFrameEffect) ||
         e.is(setZEffect) ||
-        e.is(editTextFrameEffect),
+        e.is(editTextFrameEffect) ||
+        e.is(setTextAlignEffect),
     );
     if (!hasFrameEffect) return [];
     // Capture the frames BEFORE this transaction was applied
