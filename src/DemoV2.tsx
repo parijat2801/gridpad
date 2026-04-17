@@ -20,6 +20,7 @@ import {
 import { framesToMarkdown } from "./serialize";
 import { type Frame, framesToObstacles, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
+import { setTextAlignEffect } from "./editorState";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { findCursorLine } from "./cursorFind";
 import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT_FAMILY } from "./grid";
@@ -291,6 +292,26 @@ export default function DemoV2() {
         const charHeight = chRef.current;
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(found.absX + te.col * charWidth, found.absY, 2, charHeight);
+      }
+    }
+    // Ghost overflow for text being edited inside a rect
+    const teGhost = textEditRef.current;
+    if (teGhost) {
+      const found = findFrameById(framesRef.current, teGhost.frameId);
+      if (found && found.frame.content?.type === "text" && found.frame.content.text) {
+        // Measure with correct font before checking overflow
+        ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
+        const textWidth = ctx.measureText(found.frame.content.text).width;
+        // Check against frame width (parent clip handles the rest)
+        if (textWidth > found.frame.w) {
+          ctx.save();
+          ctx.globalAlpha = 0.4;
+          ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
+          ctx.fillStyle = FG_COLOR;
+          ctx.textBaseline = "top";
+          ctx.fillText(found.frame.content.text, found.absX, found.absY);
+          ctx.restore();
+        }
       }
     }
     // Drawing tool preview + text placement
@@ -642,6 +663,59 @@ export default function DemoV2() {
         }
         const text = found.frame.content!.text ?? "";
         const codepoints = [...text];
+        // Alignment shortcuts (only while editing text inside a rect)
+        if (mod && !e.shiftKey) {
+          if (e.key === "l" || e.key === "L") {
+            e.preventDefault();
+            stateRef.current = stateRef.current.update({
+              effects: setTextAlignEffect.of({ id: te.frameId, hAlign: { anchor: "left", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
+            }).state;
+            framesRef.current = getFrames(stateRef.current);
+            blinkRef.current = true; paint(); return;
+          }
+          if (e.key === "e" || e.key === "E") {
+            e.preventDefault();
+            stateRef.current = stateRef.current.update({
+              effects: setTextAlignEffect.of({ id: te.frameId, hAlign: { anchor: "center", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
+            }).state;
+            framesRef.current = getFrames(stateRef.current);
+            blinkRef.current = true; paint(); return;
+          }
+          if (e.key === "r" || e.key === "R") {
+            e.preventDefault();
+            stateRef.current = stateRef.current.update({
+              effects: setTextAlignEffect.of({ id: te.frameId, hAlign: { anchor: "right", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
+            }).state;
+            framesRef.current = getFrames(stateRef.current);
+            blinkRef.current = true; paint(); return;
+          }
+        }
+        if (mod && e.shiftKey) {
+          if (e.key === "t" || e.key === "T") {
+            e.preventDefault();
+            stateRef.current = stateRef.current.update({
+              effects: setTextAlignEffect.of({ id: te.frameId, vAlign: { anchor: "top", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
+            }).state;
+            framesRef.current = getFrames(stateRef.current);
+            blinkRef.current = true; paint(); return;
+          }
+          if (e.key === "m" || e.key === "M") {
+            e.preventDefault();
+            stateRef.current = stateRef.current.update({
+              effects: setTextAlignEffect.of({ id: te.frameId, vAlign: { anchor: "center", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
+            }).state;
+            framesRef.current = getFrames(stateRef.current);
+            blinkRef.current = true; paint(); return;
+          }
+          if (e.key === "b" || e.key === "B") {
+            e.preventDefault();
+            stateRef.current = stateRef.current.update({
+              effects: setTextAlignEffect.of({ id: te.frameId, vAlign: { anchor: "bottom", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
+            }).state;
+            framesRef.current = getFrames(stateRef.current);
+            blinkRef.current = true; paint(); return;
+          }
+        }
         if (e.key === "Escape" || e.key === "Enter") {
           e.preventDefault();
           stateRef.current = stateRef.current.update({ effects: setTextEditEffect.of(null) }).state;

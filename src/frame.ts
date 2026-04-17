@@ -6,6 +6,9 @@ import { regenerateCells, buildLineCells, buildLayersFromScan } from "./layers";
 import type { RectStyle, ScanResult } from "./scanner";
 import type { Region } from "./regions";
 import type { Bbox } from "./types";
+import { layoutTextChildren, reparentChildren } from "./autoLayout";
+import type { AlignAnchor, VAlignAnchor } from "./autoLayout";
+export type { AlignAnchor, VAlignAnchor } from "./autoLayout";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -16,6 +19,10 @@ export interface FrameContent {
   style?: RectStyle;
   /** Present for text frames */
   text?: string;
+  /** Horizontal constraint for text inside a parent rect */
+  hAlign?: AlignAnchor;
+  /** Vertical constraint for text inside a parent rect */
+  vAlign?: VAlignAnchor;
 }
 
 export interface Frame {
@@ -212,7 +219,11 @@ export function resizeFrame(
     content = { ...content, cells };
   }
 
-  return { ...frame, w, h, content };
+  const resized = { ...frame, w, h, content };
+  if (content?.type === "rect" && frame.children.length > 0) {
+    return layoutTextChildren(resized, charWidth, charHeight);
+  }
+  return resized;
 }
 
 // ── framesFromRegions ──────────────────────────────────────
@@ -289,6 +300,9 @@ export function framesFromRegions(
 
       return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: false };
     });
+
+    // Re-parent children into their enclosing rect children
+    reparentChildren(children, charWidth, charHeight);
 
     const container: Frame = {
       id: nextId(),

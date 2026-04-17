@@ -29,11 +29,27 @@ export function renderFrame(
   }
 
   if (frame.content) {
-    renderContent(ctx, frame.content.cells, x, y, charWidth, charHeight);
+    if (frame.content.type === "text" && frame.content.text !== undefined) {
+      // Text frames use direct fillText with truncation support
+      // parentInnerW is not available here — truncation is handled
+      // when rendering children of a rect parent (see below)
+      renderTextFrame(ctx, frame, x, y, charWidth, charHeight);
+    } else {
+      renderContent(ctx, frame.content.cells, x, y, charWidth, charHeight);
+    }
   }
 
+  // Compute parent inner width for text child truncation
+  const parentInnerW = frame.content?.type === "rect" ? frame.w - 2 * charWidth : undefined;
+
   for (const child of frame.children) {
-    renderFrame(ctx, child, x, y, charWidth, charHeight);
+    if (child.content?.type === "text" && child.content.text !== undefined && parentInnerW !== undefined) {
+      const childX = x + child.x;
+      const childY = y + child.y;
+      renderTextFrame(ctx, child, childX, childY, charWidth, charHeight, parentInnerW);
+    } else {
+      renderFrame(ctx, child, x, y, charWidth, charHeight);
+    }
   }
 
   if (frame.clip) {
@@ -62,6 +78,58 @@ function renderContent(
     const py = absY + row * charHeight;
     ctx.fillText(text, px, py);
   }
+}
+
+// ── renderTextFrame ────────────────────────────────────────
+
+/**
+ * Render a text frame with truncation. Uses ctx.fillText directly
+ * instead of cell-map rendering, enabling proportional font truncation.
+ * parentInnerW is the parent rect's inner width (parent.w - 2*charWidth),
+ * or undefined for standalone text frames (no truncation).
+ */
+export function renderTextFrame(
+  ctx: CanvasRenderingContext2D,
+  frame: Frame,
+  absX: number,
+  absY: number,
+  _charWidth: number,
+  _charHeight: number,
+  parentInnerW?: number,
+): void {
+  const text = frame.content?.text;
+  if (!text) return;
+
+  ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
+  ctx.fillStyle = FG_COLOR;
+  ctx.textBaseline = "top";
+
+  if (parentInnerW === undefined || ctx.measureText(text).width <= parentInnerW) {
+    // No truncation needed
+    ctx.fillText(text, absX, absY);
+    return;
+  }
+
+  // Truncate with ellipsis
+  const ellipsis = "…";
+  const ellipsisW = ctx.measureText(ellipsis).width;
+  const availW = parentInnerW - ellipsisW;
+
+  if (availW <= 0) {
+    // Not even room for ellipsis — show nothing or just ellipsis
+    ctx.fillText(ellipsis, absX, absY);
+    return;
+  }
+
+  // Find how many characters fit
+  let truncated = "";
+  for (const char of text) {
+    const testW = ctx.measureText(truncated + char).width;
+    if (testW > availW) break;
+    truncated += char;
+  }
+
+  ctx.fillText(truncated + ellipsis, absX, absY);
 }
 
 // ── renderFrameSelection ───────────────────────────────────

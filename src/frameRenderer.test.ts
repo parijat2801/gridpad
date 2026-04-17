@@ -1,14 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
 
 // These will fail until frameRenderer.ts exists
-import { renderFrame, renderFrameSelection } from "./frameRenderer";
-import { createFrame, createRectFrame } from "./frame";
+import { renderFrame, renderFrameSelection, renderTextFrame } from "./frameRenderer";
+import { createFrame, createRectFrame, createTextFrame } from "./frame";
 import { LIGHT_RECT_STYLE } from "./layers";
 
 const CW = 9.6;
 const CH = 18.4;
 
-function mockCtx() {
+function mockCtx(charWidthPerGlyph = 9.6) {
   return {
     font: "",
     fillStyle: "",
@@ -24,6 +24,7 @@ function mockCtx() {
     rect: vi.fn(),
     clip: vi.fn(),
     clearRect: vi.fn(),
+    measureText: vi.fn((t: string) => ({ width: t.length * charWidthPerGlyph })),
   } as unknown as CanvasRenderingContext2D;
 }
 
@@ -95,5 +96,62 @@ describe("renderFrameSelection", () => {
     // 8 handles = 8 fillRect calls (plus the strokeRect)
     const fillRectCalls = (ctx.fillRect as ReturnType<typeof vi.fn>).mock.calls;
     expect(fillRectCalls.length).toBe(8);
+  });
+});
+
+describe("renderTextFrame truncation", () => {
+  // mockCtx uses 9.6px per character by default
+  // "Hello" = 5 chars * 9.6 = 48px wide
+  // "…"     = 1 char  * 9.6 = 9.6px wide
+
+  it("renders full text when no parentInnerW is given", () => {
+    const ctx = mockCtx();
+    const frame = createTextFrame({ text: "Hello", row: 0, col: 0, charWidth: CW, charHeight: CH });
+
+    renderTextFrame(ctx, frame, 0, 0, CW, CH);
+
+    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBe(1);
+    expect(calls[0][0]).toBe("Hello");
+  });
+
+  it("renders full text when text fits within parentInnerW", () => {
+    const ctx = mockCtx();
+    // "Hello" = 48px, parentInnerW = 100px → fits
+    const frame = createTextFrame({ text: "Hello", row: 0, col: 0, charWidth: CW, charHeight: CH });
+
+    renderTextFrame(ctx, frame, 0, 0, CW, CH, 100);
+
+    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBe(1);
+    expect(calls[0][0]).toBe("Hello");
+  });
+
+  it("truncates with ellipsis when text exceeds parentInnerW", () => {
+    const ctx = mockCtx();
+    // "Hello World" = 11 chars * 9.6 = 105.6px
+    // parentInnerW = 48px (5 chars wide)
+    // ellipsisW = 9.6px, availW = 38.4px → 4 chars fit ("Hell")
+    const frame = createTextFrame({ text: "Hello World", row: 0, col: 0, charWidth: CW, charHeight: CH });
+
+    renderTextFrame(ctx, frame, 0, 0, CW, CH, 48);
+
+    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBe(1);
+    expect(calls[0][0]).toBe("Hell…");
+  });
+
+  it("shows only ellipsis when no characters fit", () => {
+    const ctx = mockCtx();
+    // parentInnerW = 5px, ellipsisW = 9.6px → availW <= 0 → just ellipsis
+    const frame = createTextFrame({ text: "Hi", row: 0, col: 0, charWidth: CW, charHeight: CH });
+
+    renderTextFrame(ctx, frame, 10, 20, CW, CH, 5);
+
+    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBe(1);
+    expect(calls[0][0]).toBe("…");
+    expect(calls[0][1]).toBe(10);
+    expect(calls[0][2]).toBe(20);
   });
 });
