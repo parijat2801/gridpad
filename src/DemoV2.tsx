@@ -8,7 +8,7 @@ import { Transaction } from "@codemirror/state";
 import {
   createEditorStateFromText, getDoc, getFrames,
   selectFrameEffect, getSelectedId,
-  moveFrameEffect, resizeFrameEffect,
+  moveFrameEffect, resizeFrameEffect, setZEffect,
   applyAddFrame, applyDeleteFrame, applyClearDirty,
   proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
@@ -187,6 +187,7 @@ export default function DemoV2() {
   const sizeRef = useRef({ w: window.innerWidth, h: window.innerHeight });
   const activeToolRef = useRef<ToolName>("select");
   const [activeTool, setActiveTool] = useState<ToolName>("select");
+  const [canvasCursor, setCanvasCursor] = useState("default");
   const proseCursorRef = useRef<CursorPos | null>(null);
   const blinkRef = useRef(true);
   const textEditRef = useRef<{ frameId: string; col: number } | null>(null);
@@ -507,11 +508,33 @@ export default function DemoV2() {
     const py = e.clientY - rect.top + (canvas.parentElement?.scrollTop ?? 0);
     if (drawPreviewRef.current) { drawPreviewRef.current = { ...drawPreviewRef.current, curX: px, curY: py }; paint(); return; }
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag) {
+      // Dynamic cursor — hover detection when no drag active
+      const selectedId = getSelectedId(stateRef.current);
+      if (selectedId) {
+        const sel = findFrameById(framesRef.current, selectedId);
+        if (sel) {
+          const handle = hitTestHandle(computeHandleRects(sel.absX, sel.absY, sel.frame.w, sel.frame.h), px, py);
+          if (handle) {
+            const cm: Record<ResizeHandle, string> = { tl: "nwse-resize", tr: "nesw-resize", bl: "nesw-resize", br: "nwse-resize", tm: "ns-resize", bm: "ns-resize", ml: "ew-resize", mr: "ew-resize" };
+            setCanvasCursor(cm[handle]);
+          } else {
+            setCanvasCursor(hitTestFrames(framesRef.current, px, py) ? "grab" : "default");
+          }
+        } else { setCanvasCursor("default"); }
+      } else {
+        setCanvasCursor(hitTestFrames(framesRef.current, px, py) ? "grab" : "text");
+      }
+      return;
+    }
     const dx = px - drag.startX, dy = py - drag.startY;
     if (!drag.hasMoved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
     const isFirstDragStep = !drag.hasMoved;
     drag.hasMoved = true;
+    if (drag.resizeHandle) {
+      const cm: Record<ResizeHandle, string> = { tl: "nwse-resize", tr: "nesw-resize", bl: "nesw-resize", br: "nwse-resize", tm: "ns-resize", bm: "ns-resize", ml: "ew-resize", mr: "ew-resize" };
+      setCanvasCursor(cm[drag.resizeHandle]);
+    } else { setCanvasCursor("grabbing"); }
     const found = findFrameById(framesRef.current, drag.frameId);
     if (!found) return;
     if (drag.resizeHandle) {
@@ -647,6 +670,22 @@ export default function DemoV2() {
           const file = await handle.getFile();
           loadDocument(await file.text()); doLayout(); paint();
         } catch (err) { if (err instanceof DOMException && err.name === "AbortError") { /* cancelled */ } else { console.error("File open failed:", err); throw err; } }
+      }
+      if (mod && e.shiftKey && e.key === "s") {
+        e.preventDefault();
+        if (!("showSaveFilePicker" in window)) return;
+        try {
+          const handle = await window.showSaveFilePicker({
+            types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
+            suggestedName: "document.md",
+          });
+          fileHandleRef.current = handle;
+          await saveToHandle(handle);
+        } catch (err) {
+          if (err instanceof DOMException && err.name === "AbortError") { /* cancelled */ }
+          else { console.error("Save As failed:", err); }
+        }
+        return;
       }
       if (mod && e.key === "s") {
         e.preventDefault();
@@ -871,6 +910,34 @@ export default function DemoV2() {
         framesRef.current = getFrames(stateRef.current);
         doLayout(); paint();
       }
+      // Z-order shortcuts (top-level frames only)
+      const zSelId = getSelectedId(stateRef.current);
+      if (zSelId) {
+        const topFrame = framesRef.current.find(f => f.id === zSelId);
+        if (topFrame) {
+          if (e.key === "]" && !mod) {
+            e.preventDefault();
+            stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: topFrame.z + 1 }), annotations: [Transaction.addToHistory.of(true)] }).state;
+            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+          }
+          if (e.key === "[" && !mod) {
+            e.preventDefault();
+            stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: Math.max(0, topFrame.z - 1) }), annotations: [Transaction.addToHistory.of(true)] }).state;
+            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+          }
+          if (e.key === "]" && mod) {
+            e.preventDefault();
+            const maxZ = Math.max(...framesRef.current.map(f => f.z));
+            stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: maxZ + 1 }), annotations: [Transaction.addToHistory.of(true)] }).state;
+            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+          }
+          if (e.key === "[" && mod) {
+            e.preventDefault();
+            stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: 0 }), annotations: [Transaction.addToHistory.of(true)] }).state;
+            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+          }
+        }
+      }
       if (!mod) {
         if (e.key === "v" || e.key === "V") setTool("select");
         if (e.key === "r" || e.key === "R") setTool("rect");
@@ -898,7 +965,7 @@ export default function DemoV2() {
       <canvas
         ref={canvasRef}
         tabIndex={0}
-        style={{ display: "block", width: "100%", height: "100%", position: "sticky", top: 0, outline: "none", cursor: "default" }}
+        style={{ display: "block", width: "100%", height: "100%", position: "sticky", top: 0, outline: "none", cursor: canvasCursor }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}

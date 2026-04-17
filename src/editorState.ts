@@ -21,8 +21,6 @@ export { undoDepth, redoDepth };
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-type ToolName = "select" | "rect" | "line" | "text";
-
 export interface ProsePart {
   startRow: number;
   text: string;
@@ -54,8 +52,6 @@ const addFrameEffect = StateEffect.define<Frame>();
 const deleteFrameEffect = StateEffect.define<{ id: string }>();
 
 export const setZEffect = StateEffect.define<{ id: string; z: number }>();
-
-const setToolEffect = StateEffect.define<ToolName>();
 
 export const setRegionsEffect = StateEffect.define<Region[]>();
 
@@ -199,16 +195,6 @@ const framesField = StateField.define<Frame[]>({
   },
 });
 
-const toolField = StateField.define<ToolName>({
-  create: () => "select",
-  update(tool, tr: Transaction) {
-    for (const e of tr.effects) {
-      if (e.is(setToolEffect)) return e.value;
-    }
-    return tool;
-  },
-});
-
 const regionsField = StateField.define<Region[]>({
   create: () => [],
   update(regions, tr: Transaction) {
@@ -291,7 +277,6 @@ export function createEditorState(init: EditorStateInit): EditorState {
     history(),
     frameInversion,
     framesField.init(() => frames),
-    toolField,
     selectedIdField,
     textEditField,
     regionsField.init(() => regions),
@@ -321,9 +306,6 @@ export function getFrames(state: EditorState): Frame[] {
   return state.field(framesField);
 }
 
-export function getTool(state: EditorState): ToolName {
-  return state.field(toolField);
-}
 
 export function getRegions(state: EditorState): Region[] {
   return state.field(regionsField);
@@ -567,11 +549,6 @@ export function applyClearDirty(state: EditorState): EditorState {
   return state.update({ effects: clearDirtyEffect.of(null) }).state;
 }
 
-export function setTool(state: EditorState, tool: ToolName): EditorState {
-  return state.update({
-    effects: setToolEffect.of(tool),
-  }).state;
-}
 
 // ── Undo / Redo ────────────────────────────────────────────────────────────
 

@@ -7,7 +7,6 @@ import {
   createEditorState,
   getDoc,
   getFrames,
-  getTool,
   getRegions,
   getProseParts,
   getCursor,
@@ -21,7 +20,6 @@ import {
   applyClearDirty,
   moveFrameEffect,
   resizeFrameEffect,
-  setTool,
   editorUndo,
   editorRedo,
   rowColToPos,
@@ -80,11 +78,6 @@ describe("createEditorState", () => {
     expect(frames[0].id).toBe(frame.id);
     expect(frames[0].x).toBe(10);
     expect(frames[0].y).toBe(20);
-  });
-
-  it("defaults tool to 'select'", () => {
-    const state = emptyState();
-    expect(getTool(state)).toBe("select");
   });
 
   it("cursor starts at (0,0) for empty doc", () => {
@@ -536,26 +529,6 @@ describe("drag undo — history=false then history=true (Phase 1)", () => {
   });
 });
 
-describe("setTool", () => {
-  it("changes the active tool", () => {
-    const s0 = emptyState();
-    const s1 = setTool(s0, "rect");
-    expect(getTool(s1)).toBe("rect");
-  });
-
-  it("can cycle through all tools", () => {
-    let state = emptyState();
-    state = setTool(state, "rect");
-    expect(getTool(state)).toBe("rect");
-    state = setTool(state, "line");
-    expect(getTool(state)).toBe("line");
-    state = setTool(state, "text");
-    expect(getTool(state)).toBe("text");
-    state = setTool(state, "select");
-    expect(getTool(state)).toBe("select");
-  });
-});
-
 // ── Task 4: Unified undo/redo ────────────────────────────────────────────────
 
 describe("undo/redo prose", () => {
@@ -874,43 +847,6 @@ describe("proseParts field", () => {
     const s1 = proseInsert(s0, { row: 0, col: 5 }, "!");
     const s2 = editorUndo(s1);
     expect(getProseParts(s2)).toHaveLength(1);
-  });
-});
-
-describe("tool NOT in undo stack", () => {
-  it("setTool does not create an undo entry", () => {
-    const s0 = emptyState("hello");
-    // setTool should NOT add to undo history (no addToHistory annotation)
-    const s1 = setTool(s0, "rect");
-    const depthAfterTool = undoDepth(s1);
-
-    // Undo should not revert the tool change
-    const s2 = editorUndo(s1);
-    // If tool is not in undo stack, undo has nothing to do
-    expect(undoDepth(s2)).toBe(depthAfterTool);
-  });
-
-  it("tool change is NOT undone by undo (tool is never in undo stack)", () => {
-    const frame = createFrame({ x: 0, y: 0, w: 100, h: 50 });
-    const s0 = createEditorState({ prose: "hi", frames: [frame], regions: [], proseParts: [] });
-
-    // Make a prose change (goes in history)
-    const s1 = proseInsert(s0, { row: 0, col: 2 }, "!");
-    expect(getDoc(s1)).toBe("hi!");
-    const depthAfterInsert = undoDepth(s1);
-
-    // Change tool (should NOT go in history)
-    const s2 = setTool(s1, "rect");
-    expect(getTool(s2)).toBe("rect");
-    // tool change must not affect undoDepth
-    expect(undoDepth(s2)).toBe(depthAfterInsert);
-
-    // Undo the prose insert
-    const s3 = editorUndo(s2);
-    expect(getDoc(s3)).toBe("hi");
-
-    // Tool should NOT have reverted — it was never in history
-    expect(getTool(s3)).toBe("rect");
   });
 });
 

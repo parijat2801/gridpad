@@ -4,4 +4,8 @@ interface Window {
     types?: { description: string; accept: Record<string, string[]> }[];
     multiple?: boolean;
   }): Promise<FileSystemFileHandle[]>;
+  showSaveFilePicker(options?: {
+    types?: { description: string; accept: Record<string, string[]> }[];
+    suggestedName?: string;
+  }): Promise<FileSystemFileHandle>;
 }
