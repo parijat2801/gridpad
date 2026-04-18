@@ -153,6 +153,78 @@ async function dragSelected(page: Page, dx: number, dy: number) {
   await page.waitForTimeout(300);
 }
 
+/** Get the full frame tree from Gridpad */
+async function getFrameTree(page: Page): Promise<Array<{
+  id: string; absX: number; absY: number; w: number; h: number;
+  contentType: string; text: string | null; dirty: boolean;
+  childCount: number; children: any[];
+}>> {
+  return page.evaluate(() => (window as any).__gridpad.getFrameTree());
+}
+
+/** Get the selected frame ID */
+async function getSelectedId(page: Page): Promise<string | null> {
+  return page.evaluate(() => (window as any).__gridpad.getSelectedId());
+}
+
+/** Get rendered prose lines from reflowLayout */
+async function getRenderedLines(page: Page): Promise<Array<{
+  x: number; y: number; text: string; width: number;
+}>> {
+  return page.evaluate(() => (window as any).__gridpad.getRenderedLines());
+}
+
+/** Flatten a frame tree into a flat list with depth */
+function flattenTree(tree: any[], depth = 0): Array<{ depth: number; contentType: string; text: string | null; absX: number; absY: number; w: number; h: number; childCount: number }> {
+  const result: any[] = [];
+  for (const node of tree) {
+    result.push({ depth, contentType: node.contentType, text: node.text, absX: node.absX, absY: node.absY, w: node.w, h: node.h, childCount: node.childCount });
+    if (node.children) result.push(...flattenTree(node.children, depth + 1));
+  }
+  return result;
+}
+
+/** Check if any rendered prose line is INSIDE a frame bbox.
+ * Prose beside a frame (reflowed to the right/left) is fine — only flag
+ * prose whose starting X is within the frame's horizontal span AND
+ * whose Y is within the frame's vertical span. */
+function findProseFrameOverlaps(
+  lines: Array<{ x: number; y: number; text: string; width: number }>,
+  frames: Array<{ absX: number; absY: number; w: number; h: number }>,
+  lineHeight: number,
+): string[] {
+  const overlaps: string[] = [];
+  for (const line of lines) {
+    for (const f of frames) {
+      const ly = line.y;
+      // Prose start X is well inside frame's horizontal range (5px margin)
+      const insideH = line.x >= f.absX + 5 && line.x < f.absX + f.w - 5;
+      // Prose Y is inside frame's vertical range
+      const insideV = ly >= f.absY && ly + lineHeight <= f.absY + f.h;
+      if (insideH && insideV) {
+        overlaps.push(`Prose "${line.text.substring(0, 40)}" at (${Math.round(line.x)},${Math.round(line.y)}) inside frame at (${Math.round(f.absX)},${Math.round(f.absY)}) ${Math.round(f.w)}x${Math.round(f.h)}`);
+      }
+    }
+  }
+  return overlaps;
+}
+
+/** Count blue selection pixels on the canvas */
+async function countSelectionPixels(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const c = document.querySelector("canvas");
+    if (!c) return 0;
+    const ctx = c.getContext("2d");
+    if (!ctx) return 0;
+    const data = ctx.getImageData(0, 0, c.width, c.height).data;
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 2] > 180 && data[i] < 100 && data[i + 1] < 160) count++;
+    }
+    return count;
+  });
+}
+
 /** Click on prose area (above all wireframes) */
 async function clickProse(page: Page, relX: number, relY: number) {
   const canvas = page.locator("canvas");
@@ -771,6 +843,193 @@ test.describe("harness", () => {
           // Has non-wire, non-alpha chars mixed — suspect
         }
       }
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════
+  // STRUCTURAL TESTS — verify the frame tree is correct
+  // ═══════════════════════════════════════════════════════
+
+  test("structure: simple box produces 1 rect frame, 0 containers", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    writeArtifact("struct-simple-box", "tree.json", JSON.stringify(flat, null, 2));
+
+    // 1 top-level rect frame (no container for a single rect)
+    expect(tree).toHaveLength(1);
+    expect(tree[0].contentType).toBe("rect");
+    expect(tree[0].childCount).toBe(0);
+  });
+
+  test("structure: side-by-side boxes produce 1 container with 2 rect children", async ({ page }) => {
+    await load(page, SIDE_BY_SIDE);
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    writeArtifact("struct-side-by-side", "tree.json", JSON.stringify(flat, null, 2));
+
+    // 1 container wrapping 2 rects (same row range → grouped)
+    expect(tree).toHaveLength(1);
+    expect(tree[0].contentType).toBe("container");
+    const rectChildren = tree[0].children.filter((c: any) => c.contentType === "rect");
+    expect(rectChildren.length).toBe(2);
+  });
+
+  test("structure: nested boxes — outer rect contains inner rect", async ({ page }) => {
+    await load(page, NESTED);
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    writeArtifact("struct-nested", "tree.json", JSON.stringify(flat, null, 2));
+
+    // Should have 1 top-level frame (outer rect or container)
+    expect(tree).toHaveLength(1);
+    // The outer rect should have children (inner rect + text labels)
+    expect(tree[0].childCount).toBeGreaterThan(0);
+
+    // Max depth should be reasonable (not deeply nested from over-grouping)
+    const maxDepth = Math.max(...flat.map(f => f.depth));
+    writeArtifact("struct-nested", "summary.txt",
+      `Top-level frames: ${tree.length}\n` +
+      `Total nodes: ${flat.length}\n` +
+      `Max depth: ${maxDepth}\n` +
+      flat.map(f => `${"  ".repeat(f.depth)}${f.contentType} ${f.text ? `"${f.text}"` : ""} at (${Math.round(f.absX)},${Math.round(f.absY)}) ${f.w.toFixed(0)}x${f.h.toFixed(0)}`).join("\n"));
+    expect(maxDepth).toBeLessThanOrEqual(4); // rect → text is depth 1-2, nested → 3-4 max
+  });
+
+  test("structure: two separate wireframes produce 2 top-level frames", async ({ page }) => {
+    await load(page, TWO_SEPARATE);
+    const tree = await getFrameTree(page);
+    writeArtifact("struct-two-separate", "tree.json", JSON.stringify(tree, null, 2));
+
+    // Far apart vertically → should NOT be grouped into one container
+    expect(tree.length).toBe(2);
+  });
+
+  test("structure: junction-char box — single container, multiple rect children", async ({ page }) => {
+    await load(page, JUNCTION);
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    writeArtifact("struct-junction", "tree.json", JSON.stringify(flat, null, 2));
+    writeArtifact("struct-junction", "summary.txt",
+      flat.map(f => `${"  ".repeat(f.depth)}${f.contentType} ${f.text ? `"${f.text}"` : ""} children=${f.childCount}`).join("\n"));
+
+    // Junction box has multiple sub-rects (divided cells) → 1 container
+    expect(tree).toHaveLength(1);
+  });
+
+  test("structure: form layout — reasonable nesting depth", async ({ page }) => {
+    await load(page, FORM);
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    writeArtifact("struct-form", "tree.json", JSON.stringify(flat, null, 2));
+    writeArtifact("struct-form", "summary.txt",
+      `Nodes: ${flat.length}\nMax depth: ${Math.max(...flat.map(f => f.depth))}\n` +
+      flat.map(f => `${"  ".repeat(f.depth)}${f.contentType} ${f.text ? `"${f.text}"` : ""}`).join("\n"));
+
+    const maxDepth = Math.max(...flat.map(f => f.depth));
+    expect(maxDepth).toBeLessThanOrEqual(4);
+  });
+
+  test("structure: default text — frame tree matches expected wireframe count", async ({ page }) => {
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    writeArtifact("struct-default", "tree.json", JSON.stringify(flat, null, 2));
+    writeArtifact("struct-default", "summary.txt",
+      `Top-level: ${tree.length}\nTotal nodes: ${flat.length}\nMax depth: ${Math.max(...flat.map(f => f.depth))}\n\n` +
+      flat.map(f => `${"  ".repeat(f.depth)}${f.contentType} ${f.text ? `"${f.text}"` : ""} at (${Math.round(f.absX)},${Math.round(f.absY)}) ${f.w.toFixed(0)}x${f.h.toFixed(0)} children=${f.childCount}`).join("\n"));
+
+    // Default text has 4 wireframes: dashboard, mobile app, user flow, sign up form
+    expect(tree.length).toBe(4);
+    // None should be excessively deep
+    const maxDepth = Math.max(...flat.map(f => f.depth));
+    expect(maxDepth).toBeLessThanOrEqual(5);
+  });
+
+  // ═══════════════════════════════════════════════════════
+  // VISUAL CORRECTNESS — verify rendering is correct
+  // ═══════════════════════════════════════════════════════
+
+  test("visual: no selection highlights on fresh load", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    await screenshot(page, "visual-no-selection", "1-fresh-load");
+    const blue = await countSelectionPixels(page);
+    expect(blue, "Selection pixels visible on fresh load").toBe(0);
+  });
+
+  test("visual: selection appears on click, disappears on deselect", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    await screenshot(page, "visual-selection-toggle", "1-before");
+
+    // Click wireframe — should show selection
+    await clickFrame(page, 0);
+    await screenshot(page, "visual-selection-toggle", "2-selected");
+    const blueAfterClick = await countSelectionPixels(page);
+    expect(blueAfterClick).toBeGreaterThan(0);
+
+    // Click empty prose area — should deselect
+    await clickProse(page, 5, 5);
+    await screenshot(page, "visual-selection-toggle", "3-deselected");
+    const blueAfterDeselect = await countSelectionPixels(page);
+    expect(blueAfterDeselect).toBe(0);
+  });
+
+  test("visual: prose does not overlap wireframes on fresh load", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    const lines = await getRenderedLines(page);
+    const tree = await getFrameTree(page);
+    const frameBboxes = flattenTree(tree).filter(f => f.contentType !== "container");
+    const overlaps = findProseFrameOverlaps(lines, frameBboxes, 19); // ~PROSE_LINE_HEIGHT
+    writeArtifact("visual-no-overlap", "overlaps.txt",
+      overlaps.length > 0 ? overlaps.join("\n") : "No overlaps");
+    // reflowLayout should prevent overlaps
+    expect(overlaps, "Prose overlaps wireframes:\n" + overlaps.join("\n")).toEqual([]);
+  });
+
+  test("visual: prose reflows correctly after drag", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    await clickFrame(page, 0);
+    await dragSelected(page, 200, 0); // drag right
+    await clickProse(page, 5, 5);
+    await page.waitForTimeout(300);
+
+    const lines = await getRenderedLines(page);
+    const tree = await getFrameTree(page);
+    const frameBboxes = flattenTree(tree).filter(f => f.contentType !== "container");
+    const overlaps = findProseFrameOverlaps(lines, frameBboxes, 19);
+    writeArtifact("visual-reflow-after-drag", "overlaps.txt",
+      overlaps.length > 0 ? overlaps.join("\n") : "No overlaps");
+    await screenshot(page, "visual-reflow-after-drag", "1-dragged");
+    expect(overlaps, "Prose overlaps after drag:\n" + overlaps.join("\n")).toEqual([]);
+  });
+
+  test("visual: default text — no prose overlaps any wireframe", async ({ page }) => {
+    const lines = await getRenderedLines(page);
+    const tree = await getFrameTree(page);
+    const frameBboxes = flattenTree(tree).filter(f => f.contentType !== "container");
+    const overlaps = findProseFrameOverlaps(lines, frameBboxes, 19);
+    writeArtifact("visual-default-no-overlap", "overlaps.txt",
+      `Lines: ${lines.length}\nFrames: ${frameBboxes.length}\nOverlaps: ${overlaps.length}\n` +
+      (overlaps.length > 0 ? overlaps.join("\n") : "None"));
+    await screenshot(page, "visual-default-no-overlap", "1-default");
+    expect(overlaps, "Prose overlaps wireframes in default text:\n" + overlaps.join("\n")).toEqual([]);
+  });
+
+  test("visual: text labels inside wireframes are fully visible (not truncated)", async ({ page }) => {
+    await load(page, LABELED_BOX);
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    const textNodes = flat.filter(f => f.contentType === "text" && f.text);
+    writeArtifact("visual-text-labels", "labels.json", JSON.stringify(textNodes, null, 2));
+
+    for (const t of textNodes) {
+      // Text frame should be inside its parent rect (not extending beyond)
+      const parent = flat.find(f =>
+        f.contentType === "rect" &&
+        t.absX >= f.absX && t.absY >= f.absY &&
+        t.absX + t.w <= f.absX + f.w + 10 && // small tolerance
+        t.absY + t.h <= f.absY + f.h + 10
+      );
+      expect(parent, `Text "${t.text}" at (${Math.round(t.absX)},${Math.round(t.absY)}) is not inside any rect`).toBeDefined();
     }
   });
 });

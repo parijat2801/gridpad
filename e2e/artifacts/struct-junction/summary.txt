@@ -1,0 +1,9 @@
+container  children=4
+  rect  children=2
+    text "Left" children=0
+    text "Bottom L" children=0
+  rect  children=2
+    text "Right" children=0
+    text "Bottom R" children=0
+  rect  children=0
+  rect  children=0

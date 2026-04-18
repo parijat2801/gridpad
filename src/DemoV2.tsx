@@ -680,8 +680,30 @@ export default function DemoV2() {
             contentType: f.content?.type ?? "container",
           }));
         },
+        /** Get full frame tree with all children, positions, and content */
+        getFrameTree: () => {
+          const collect = (fs: Frame[], offX: number, offY: number): unknown[] =>
+            fs.map(f => ({
+              id: f.id,
+              absX: offX + f.x, absY: offY + f.y,
+              w: f.w, h: f.h,
+              contentType: f.content?.type ?? "container",
+              text: f.content?.text ?? null,
+              dirty: f.dirty,
+              childCount: f.children.length,
+              children: collect(f.children, offX + f.x, offY + f.y),
+            }));
+          return collect(framesRef.current, 0, 0);
+        },
         /** Get current prose text from CM doc */
         getProseDoc: () => getDoc(stateRef.current),
+        /** Get the selected frame ID (null if nothing selected) */
+        getSelectedId: () => getSelectedId(stateRef.current),
+        /** Get positioned prose lines from reflowLayout (what's actually rendered) */
+        getRenderedLines: () => linesRef.current.map(l => ({
+          x: l.x, y: l.y, text: l.text, width: l.width,
+          sourceLine: l.sourceLine, sourceCol: l.sourceCol,
+        })),
       };
     }).catch(err => console.error("Init failed:", err));
   }, []);

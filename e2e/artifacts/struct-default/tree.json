@@ -1,0 +1,702 @@
+[
+  {
+    "depth": 0,
+    "contentType": "container",
+    "text": null,
+    "absX": 0,
+    "absY": 160.42499999999998,
+    "w": 549.0703125,
+    "h": 200.53124999999997,
+    "childCount": 4
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 160.42499999999998,
+    "w": 549.0703125,
+    "h": 40.106249999999996,
+    "childCount": 3
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "My App",
+    "absX": 221.5546875,
+    "absY": 173.79375,
+    "w": 57.796875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Main Content",
+    "absX": 144.4921875,
+    "absY": 200.53124999999997,
+    "w": 115.59375,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Details",
+    "absX": 414.2109375,
+    "absY": 200.53124999999997,
+    "w": 67.4296875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 187.16249999999997,
+    "w": 125.2265625,
+    "h": 173.79375,
+    "childCount": 5
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Nav",
+    "absX": 19.265625,
+    "absY": 200.53124999999997,
+    "w": 28.8984375,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Home",
+    "absX": 19.265625,
+    "absY": 227.26874999999998,
+    "w": 38.53125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Search",
+    "absX": 19.265625,
+    "absY": 240.6375,
+    "w": 57.796875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Settings",
+    "absX": 19.265625,
+    "absY": 254.00624999999997,
+    "w": 77.0625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Help",
+    "absX": 19.265625,
+    "absY": 267.375,
+    "w": 38.53125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 115.59375,
+    "absY": 187.16249999999997,
+    "w": 279.3515625,
+    "h": 173.79375,
+    "childCount": 3
+  },
+  {
+    "depth": 2,
+    "contentType": "rect",
+    "text": null,
+    "absX": 144.4921875,
+    "absY": 227.26874999999998,
+    "w": 221.5546875,
+    "h": 53.474999999999994,
+    "childCount": 3
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "Revenue",
+    "absX": 173.390625,
+    "absY": 240.6375,
+    "w": 67.4296875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "Chart",
+    "absX": 250.453125,
+    "absY": 240.6375,
+    "w": 48.1640625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "████▓▓░░",
+    "absX": 173.390625,
+    "absY": 254.00624999999997,
+    "w": 77.0625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "rect",
+    "text": null,
+    "absX": 144.4921875,
+    "absY": 294.11249999999995,
+    "w": 115.59375,
+    "h": 53.474999999999994,
+    "childCount": 2
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "Users",
+    "absX": 163.7578125,
+    "absY": 307.48125,
+    "w": 48.1640625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "1,204",
+    "absX": 163.7578125,
+    "absY": 320.84999999999997,
+    "w": 48.1640625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "rect",
+    "text": null,
+    "absX": 269.71875,
+    "absY": 294.11249999999995,
+    "w": 96.328125,
+    "h": 53.474999999999994,
+    "childCount": 2
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "Tasks",
+    "absX": 288.984375,
+    "absY": 307.48125,
+    "w": 48.1640625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "38",
+    "absX": 288.984375,
+    "absY": 320.84999999999997,
+    "w": 19.265625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 385.3125,
+    "absY": 187.16249999999997,
+    "w": 163.7578125,
+    "h": 173.79375,
+    "childCount": 3
+  },
+  {
+    "depth": 2,
+    "contentType": "rect",
+    "text": null,
+    "absX": 414.2109375,
+    "absY": 267.375,
+    "w": 105.9609375,
+    "h": 66.84375,
+    "childCount": 3
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "Actions",
+    "absX": 433.4765625,
+    "absY": 280.74375,
+    "w": 67.4296875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "Edit",
+    "absX": 433.4765625,
+    "absY": 294.11249999999995,
+    "w": 38.53125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "Delete",
+    "absX": 433.4765625,
+    "absY": 307.48125,
+    "w": 57.796875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "User: Alice",
+    "absX": 414.2109375,
+    "absY": 227.26874999999998,
+    "w": 105.9609375,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Role: Admin",
+    "absX": 414.2109375,
+    "absY": 240.6375,
+    "w": 105.9609375,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 0,
+    "contentType": "container",
+    "text": null,
+    "absX": 0,
+    "absY": 534.75,
+    "w": 192.65625,
+    "h": 213.89999999999998,
+    "childCount": 3
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 534.75,
+    "w": 192.65625,
+    "h": 40.106249999999996,
+    "childCount": 3
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "My App",
+    "absX": 48.1640625,
+    "absY": 548.11875,
+    "w": 57.796875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "≡",
+    "absX": 144.4921875,
+    "absY": 548.11875,
+    "w": 9.6328125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "│",
+    "absX": 192.65625,
+    "absY": 548.11875,
+    "w": 9.6328125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 561.4875,
+    "w": 192.65625,
+    "h": 160.42499999999998,
+    "childCount": 2
+  },
+  {
+    "depth": 2,
+    "contentType": "rect",
+    "text": null,
+    "absX": 28.8984375,
+    "absY": 614.9625,
+    "w": 134.859375,
+    "h": 80.21249999999999,
+    "childCount": 2
+  },
+  {
+    "depth": 3,
+    "contentType": "rect",
+    "text": null,
+    "absX": 57.796875,
+    "absY": 641.6999999999999,
+    "w": 77.0625,
+    "h": 40.106249999999996,
+    "childCount": 1
+  },
+  {
+    "depth": 4,
+    "contentType": "text",
+    "text": "IMG",
+    "absX": 77.0625,
+    "absY": 655.0687499999999,
+    "w": 28.8984375,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "Profile",
+    "absX": 57.796875,
+    "absY": 628.33125,
+    "w": 67.4296875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Welcome back!",
+    "absX": 28.8984375,
+    "absY": 588.2249999999999,
+    "w": 125.2265625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 708.5437499999999,
+    "w": 192.65625,
+    "h": 40.106249999999996,
+    "childCount": 4
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "⌂",
+    "absX": 19.265625,
+    "absY": 721.9124999999999,
+    "w": 9.6328125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "☆",
+    "absX": 67.4296875,
+    "absY": 721.9124999999999,
+    "w": 9.6328125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "✉",
+    "absX": 115.59375,
+    "absY": 721.9124999999999,
+    "w": 9.6328125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "⚙",
+    "absX": 163.7578125,
+    "absY": 721.9124999999999,
+    "w": 9.6328125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 0,
+    "contentType": "container",
+    "text": null,
+    "absX": 0,
+    "absY": 868.9687499999999,
+    "w": 577.96875,
+    "h": 40.106250000000045,
+    "childCount": 7
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 868.9687499999999,
+    "w": 105.9609375,
+    "h": 40.106249999999996,
+    "childCount": 1
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Login",
+    "absX": 28.8984375,
+    "absY": 882.3374999999999,
+    "w": 48.1640625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 144.4921875,
+    "absY": 868.9687499999999,
+    "w": 125.2265625,
+    "h": 40.106249999999996,
+    "childCount": 1
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Dashboard",
+    "absX": 163.7578125,
+    "absY": 882.3374999999999,
+    "w": 86.6953125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 308.25,
+    "absY": 868.9687499999999,
+    "w": 115.59375,
+    "h": 40.106249999999996,
+    "childCount": 1
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Settings",
+    "absX": 327.515625,
+    "absY": 882.3374999999999,
+    "w": 77.0625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 462.375,
+    "absY": 868.9687499999999,
+    "w": 115.59375,
+    "h": 40.106249999999996,
+    "childCount": 1
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Logout",
+    "absX": 491.2734375,
+    "absY": 882.3374999999999,
+    "w": 57.796875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "line",
+    "text": null,
+    "absX": 105.9609375,
+    "absY": 882.3374999999999,
+    "w": 38.53125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "line",
+    "text": null,
+    "absX": 269.71875,
+    "absY": 882.3374999999999,
+    "w": 38.53125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "line",
+    "text": null,
+    "absX": 423.84375,
+    "absY": 882.3374999999999,
+    "w": 38.53125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 0,
+    "contentType": "container",
+    "text": null,
+    "absX": 0,
+    "absY": 1082.8687499999999,
+    "w": 269.71875,
+    "h": 254.0062499999999,
+    "childCount": 2
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 1082.8687499999999,
+    "w": 269.71875,
+    "h": 40.106249999999996,
+    "childCount": 1
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Create Account",
+    "absX": 67.4296875,
+    "absY": 1096.2375,
+    "w": 134.859375,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 1109.6062499999998,
+    "w": 269.71875,
+    "h": 227.26874999999998,
+    "childCount": 7
+  },
+  {
+    "depth": 2,
+    "contentType": "rect",
+    "text": null,
+    "absX": 96.328125,
+    "absY": 1136.3437499999998,
+    "w": 144.4921875,
+    "h": 40.106249999999996,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "rect",
+    "text": null,
+    "absX": 96.328125,
+    "absY": 1176.4499999999998,
+    "w": 144.4921875,
+    "h": 40.106249999999996,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "rect",
+    "text": null,
+    "absX": 96.328125,
+    "absY": 1216.5562499999999,
+    "w": 144.4921875,
+    "h": 40.106249999999996,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "rect",
+    "text": null,
+    "absX": 57.796875,
+    "absY": 1270.0312499999998,
+    "w": 154.125,
+    "h": 40.106249999999996,
+    "childCount": 2
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "Sign",
+    "absX": 96.328125,
+    "absY": 1283.3999999999999,
+    "w": 38.53125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 3,
+    "contentType": "text",
+    "text": "Up",
+    "absX": 144.4921875,
+    "absY": 1283.3999999999999,
+    "w": 19.265625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Name:",
+    "absX": 28.8984375,
+    "absY": 1136.3437499999998,
+    "w": 48.1640625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Email:",
+    "absX": 28.8984375,
+    "absY": 1176.4499999999998,
+    "w": 57.796875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Pass:",
+    "absX": 28.8984375,
+    "absY": 1216.5562499999999,
+    "w": 48.1640625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  }
+]
