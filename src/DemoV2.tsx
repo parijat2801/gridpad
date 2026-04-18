@@ -636,6 +636,21 @@ export default function DemoV2() {
     Promise.all([measureCellSize(), ensureProseFontReady()]).then(() => {
       cwRef.current = getCharWidth(); chRef.current = getCharHeight();
       loadDocument(DEFAULT_TEXT); setReady(true);
+      // Expose test hooks for Playwright round-trip testing
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__gridpad = {
+        loadDocument: (text: string) => { loadDocument(text); doLayout(); paint(); },
+        serializeDocument: () => {
+          const state = stateRef.current;
+          return gridSerialize(
+            getFrames(state), getDoc(state),
+            getProseSegmentMap(state), originalGridRef.current,
+            cwRef.current, chRef.current,
+            getOriginalProseSegments(state),
+            frameBboxSnapshotRef.current,
+          );
+        },
+      };
     }).catch(err => console.error("Init failed:", err));
   }, []);
 
