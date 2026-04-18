@@ -1,0 +1,9 @@
+Test: crit-rogue-pipe
+Input lines: 5
+Output lines: 5
+Markdown match: true
+Visual diff: 0.00%
+Ghosts: 1
+  Ghost '│' at L3:18: This has a rogue │ pipe.
+
+Prose doc after reload: 1 lines

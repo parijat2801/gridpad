@@ -1,0 +1,52 @@
+Test: crit-prose-order-down
+Input lines: 7
+Output lines: 16
+Markdown match: false
+Visual diff: 0.26%
+Ghosts: 3
+  Ghost '┌' at L14:1: ┌──────────────┐
+  Ghost '│' at L15:1: │   Wireframe  │
+  Ghost '└' at L16:1: └──────────────┘
+
+Markdown diff:
+  L3:
+    - "┌──────────────┐"
+    + ""
+  L4:
+    - "│   Wireframe  │"
+    + "Prose B second"
+  L5:
+    - "└──────────────┘"
+    + ""
+  L7:
+    - "Prose B second"
+    + ""
+  L8:
+    - "<missing>"
+    + ""
+  L9:
+    - "<missing>"
+    + ""
+  L10:
+    - "<missing>"
+    + ""
+  L11:
+    - "<missing>"
+    + ""
+  L12:
+    - "<missing>"
+    + ""
+  L13:
+    - "<missing>"
+    + ""
+  L14:
+    - "<missing>"
+    + "┌──────────────┐"
+  L15:
+    - "<missing>"
+    + "│   Wireframe  │"
+  L16:
+    - "<missing>"
+    + "└──────────────┘"
+
+Prose doc after reload: 1 lines

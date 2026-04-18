@@ -88,18 +88,29 @@ async function pixelDiff(page: Page, a: Buffer, b: Buffer): Promise<number> {
   }, { d1: [...a], d2: [...b] });
 }
 
-/** Check for ghost wire characters in prose-only lines */
-function findGhosts(md: string, wireframeSections: { startRow: number; endRow: number }[]): string[] {
+/** Find ghost wire characters using frame-bbox mask.
+ * Any wire char NOT inside a known frame's grid bbox is a ghost.
+ * This replaces the old heuristic section-based approach which
+ * could not detect isolated ghost characters. */
+function findGhosts(
+  md: string,
+  _sections: unknown,
+  frameBboxes?: Array<{ row: number; col: number; w: number; h: number }>,
+): string[] {
   const lines = md.split("\n");
   const ghosts: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    // Skip lines that are within a wireframe section
-    const inWireframe = wireframeSections.some(s => i >= s.startRow && i <= s.endRow);
-    if (inWireframe) continue;
-    // Check if this prose line has wire characters
-    for (const ch of lines[i]) {
-      if (WIRE_CHARS.has(ch)) {
-        ghosts.push(`Line ${i + 1}: ${JSON.stringify(lines[i])}`);
+  const isFrameCell = (row: number, col: number): boolean => {
+    if (!frameBboxes) return false;
+    for (const b of frameBboxes) {
+      if (row >= b.row && row < b.row + b.h && col >= b.col && col < b.col + b.w) return true;
+    }
+    return false;
+  };
+  for (let r = 0; r < lines.length; r++) {
+    const chars = [...lines[r]];
+    for (let c = 0; c < chars.length; c++) {
+      if (WIRE_CHARS.has(chars[c]) && !isFrameCell(r, c)) {
+        ghosts.push(`Ghost '${chars[c]}' at L${r + 1}:${c + 1}: ${lines[r].substring(0, 80)}`);
         break;
       }
     }
@@ -107,7 +118,47 @@ function findGhosts(md: string, wireframeSections: { startRow: number; endRow: n
   return ghosts;
 }
 
-/** Detect wireframe sections in markdown (consecutive lines with wire chars) */
+/** Compute frame grid bboxes from the frame tree for ghost detection */
+function computeFrameGridBboxes(
+  tree: Array<{ absX: number; absY: number; w: number; h: number }>,
+  cw: number, ch: number,
+): Array<{ row: number; col: number; w: number; h: number }> {
+  return tree.map(n => ({
+    row: Math.round(n.absY / ch),
+    col: Math.round(n.absX / cw),
+    w: Math.round(n.w / cw),
+    h: Math.round(n.h / ch),
+  }));
+}
+
+/** Find ghosts using frame tree from the page */
+async function findGhostsFromPage(page: Page, md: string): Promise<string[]> {
+  const tree = await getFrameTree(page);
+  const bboxes = computeFrameGridBboxes(tree, 9.6, 18.4);
+  return findGhosts(md, null, bboxes);
+}
+
+/** Post-condition invariants — run after every interaction */
+function checkInvariants(tree: any[]): string[] {
+  const flat = flattenTree(tree);
+  const failures: string[] = [];
+  // No top-level text frames
+  for (const node of tree) {
+    if (node.contentType === "text") {
+      failures.push(`Top-level text frame "${node.text}" at (${Math.round(node.absX)},${Math.round(node.absY)})`);
+    }
+  }
+  // Max depth limit
+  const maxDepth = flat.length > 0 ? Math.max(...flat.map((f: any) => f.depth)) : 0;
+  if (maxDepth > 5) failures.push(`Excessive nesting depth: ${maxDepth}`);
+  // No zero-dimension frames
+  for (const node of flat) {
+    if (node.w <= 0 || node.h <= 0) failures.push(`Zero/negative dimension: ${node.contentType} ${node.w}x${node.h}`);
+  }
+  return failures;
+}
+
+/** Legacy findWireframeSections — kept for tests that still use it */
 function findWireframeSections(md: string): { startRow: number; endRow: number }[] {
   const lines = md.split("\n");
   const sections: { startRow: number; endRow: number }[] = [];
@@ -1802,5 +1853,126 @@ test.describe("interaction: undo chains", () => {
     const saved = await save(page);
     writeArtifact("ix-undo-chain", "output.md", saved);
     expect(saved).toBe(SIMPLE_BOX);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// CRITICAL — prose teleportation, invariants, edge cases
+// ═══════════════════════════════════════════════════════
+
+test.describe("critical", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  test("prose order preserved when dragging wireframe down", async ({ page }) => {
+    const fixture = `Prose A first\n\n┌──────────────┐\n│   Wireframe  │\n└──────────────┘\n\nProse B second`;
+    const r = await roundTrip(page, "crit-prose-order-down", fixture, async (p) => {
+      await clickFrame(p, 0);
+      await dragSelected(p, 0, 150);
+      await clickProse(p, 5, 5);
+    });
+    const idxA = r.output.indexOf("Prose A");
+    const idxB = r.output.indexOf("Prose B");
+    expect(idxA, "Prose A not found").toBeGreaterThanOrEqual(0);
+    expect(idxB, "Prose B not found").toBeGreaterThanOrEqual(0);
+    expect(idxA, "Prose A should be before Prose B").toBeLessThan(idxB);
+    expect(r.output).toContain("┌");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("prose order preserved when dragging wireframe up", async ({ page }) => {
+    const fixture = `Prose A\n\nProse B\n\n┌──────────────┐\n│   Wireframe  │\n└──────────────┘\n\nProse C`;
+    const r = await roundTrip(page, "crit-prose-order-up", fixture, async (p) => {
+      await clickFrame(p, 0);
+      await dragSelected(p, 0, -80);
+      await clickProse(p, 5, 5);
+    });
+    const idxA = r.output.indexOf("Prose A");
+    const idxB = r.output.indexOf("Prose B");
+    const idxC = r.output.indexOf("Prose C");
+    expect(idxA).toBeGreaterThanOrEqual(0);
+    expect(idxB).toBeGreaterThanOrEqual(0);
+    expect(idxC).toBeGreaterThanOrEqual(0);
+    expect(idxA, "A before B").toBeLessThan(idxB);
+    expect(idxB, "B before C").toBeLessThan(idxC);
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("invariants: default text has no violations", async ({ page }) => {
+    const tree = await getFrameTree(page);
+    const failures = checkInvariants(tree);
+    writeArtifact("crit-invariants", "failures.txt", failures.join("\n") || "None");
+    expect(failures).toEqual([]);
+  });
+
+  test("invariants: after drag+save+reload, no violations", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    await clickFrame(page, 0);
+    await dragSelected(page, 80, 50);
+    await clickProse(page, 5, 5);
+    const md = await save(page);
+    await load(page, md);
+    const tree = await getFrameTree(page);
+    const failures = checkInvariants(tree);
+    expect(failures).toEqual([]);
+  });
+
+  test("rogue │ in prose should not become a wireframe", async ({ page }) => {
+    const fixture = `Normal prose.\n\nThis has a rogue │ pipe.\n\nMore prose.`;
+    const r = await roundTrip(page, "crit-rogue-pipe", fixture);
+    expect(r.output).toContain("rogue │ pipe");
+    const tree = await getFrameTree(page);
+    expect(tree.length, "Rogue │ created a frame").toBe(0);
+  });
+
+  test("resize to minimum: box stays valid", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    await clickFrame(page, 0);
+    await resizeSelected(page, -200, -200);
+    await clickProse(page, 5, 5);
+    const saved = await save(page);
+    writeArtifact("crit-min-resize", "output.md", saved);
+    if (saved.includes("┌")) expect(saved).toContain("└");
+    const ghosts = await findGhostsFromPage(page, saved);
+    expect(ghosts).toEqual([]);
+  });
+
+  test("interleaved undo: move, type, move, undo×2", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    await clickFrame(page, 0);
+    await dragSelected(page, 50, 0);
+    await clickProse(page, 5, 5);
+    await page.keyboard.press("End");
+    await page.keyboard.type(" TYPED");
+    await page.waitForTimeout(200);
+    await clickFrame(page, 0);
+    await dragSelected(page, 30, 0);
+    await clickProse(page, 5, 5);
+    await page.keyboard.press("Meta+z");
+    await page.waitForTimeout(200);
+    await page.keyboard.press("Meta+z");
+    await page.waitForTimeout(300);
+    const saved = await save(page);
+    writeArtifact("crit-interleaved-undo", "output.md", saved);
+    expect(saved).toContain("┌");
+    expect(saved).not.toContain("TYPED");
+    const tree = await getFrameTree(page);
+    expect(checkInvariants(tree)).toEqual([]);
+  });
+
+  test("bbox ghost detection catches isolated ghost │", async ({ page }) => {
+    // Manually construct markdown with an isolated ghost
+    const withGhost = `Prose\n\n┌──────┐\n│      │\n└──────┘\n\nMore │ ghost`;
+    await load(page, withGhost);
+    const tree = await getFrameTree(page);
+    const bboxes = computeFrameGridBboxes(tree, 9.6, 18.4);
+    const ghosts = findGhosts(withGhost, null, bboxes);
+    writeArtifact("crit-ghost-detection", "ghosts.txt", ghosts.join("\n") || "None");
+    // The │ on the "More │ ghost" line should be detected
+    const proseGhosts = ghosts.filter(g => g.includes("More") || g.includes("ghost"));
+    expect(proseGhosts.length, "Rogue │ in prose not detected:\n" + ghosts.join("\n")).toBeGreaterThan(0);
   });
 });

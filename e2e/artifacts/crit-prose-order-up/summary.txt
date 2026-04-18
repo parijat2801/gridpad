@@ -1,0 +1,34 @@
+Test: crit-prose-order-up
+Input lines: 9
+Output lines: 9
+Markdown match: false
+Visual diff: 0.11%
+Ghosts: 3
+  Ghost '┌' at L1:1: ┌──────────────┐
+  Ghost '│' at L2:1: │   Wireframe  │
+  Ghost '└' at L3:1: └──────────────┘
+
+Markdown diff:
+  L1:
+    - "Prose A"
+    + "┌──────────────┐"
+  L2:
+    - ""
+    + "│   Wireframe  │"
+  L3:
+    - "Prose B"
+    + "└──────────────┘"
+  L4:
+    - ""
+    + "Prose A"
+  L5:
+    - "┌──────────────┐"
+    + ""
+  L6:
+    - "│   Wireframe  │"
+    + "Prose B"
+  L7:
+    - "└──────────────┘"
+    + ""
+
+Prose doc after reload: 1 lines
