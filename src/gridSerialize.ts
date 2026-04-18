@@ -56,10 +56,17 @@ export function gridSerialize(
     };
     collectIds(frames);
 
-    // Collect dirty frame IDs (recursively)
+    // Collect dirty frame IDs (recursively).
+    // When a container is dirty (dragged), ALL its descendants are effectively
+    // dirty too — they moved with the container even though their own dirty
+    // flag is false. We must blank their original positions.
     const dirtyIds = new Set<string>();
-    const collectDirty = (fs: Frame[]) => {
-      for (const f of fs) { if (f.dirty) dirtyIds.add(f.id); collectDirty(f.children); }
+    const collectDirty = (fs: Frame[], ancestorDirty = false) => {
+      for (const f of fs) {
+        const isDirty = f.dirty || ancestorDirty;
+        if (isDirty) dirtyIds.add(f.id);
+        collectDirty(f.children, isDirty);
+      }
     };
     collectDirty(frames);
 
@@ -157,11 +164,16 @@ function writeFrameToGrid(
   offY: number,
   cw: number,
   ch: number,
+  ancestorDirty = false,
 ): void {
   const absX = offX + f.x;
   const absY = offY + f.y;
+  // A frame needs rewriting if it's dirty itself OR if an ancestor moved.
+  // When a container is dragged, the container is dirty but children are not.
+  // Children must still be written at the new position.
+  const needsWrite = f.dirty || ancestorDirty;
 
-  if (f.dirty && f.content) {
+  if (needsWrite && f.content) {
     // Blank the frame's CURRENT bounding box
     const startRow = Math.round(absY / ch);
     const startCol = Math.round(absX / cw);
@@ -186,8 +198,8 @@ function writeFrameToGrid(
     }
   }
 
-  // Recurse into children
+  // Recurse into children — propagate dirty state
   for (const child of f.children) {
-    writeFrameToGrid(grid, child, absX, absY, cw, ch);
+    writeFrameToGrid(grid, child, absX, absY, cw, ch, needsWrite);
   }
 }
