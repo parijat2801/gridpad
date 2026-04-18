@@ -133,19 +133,19 @@ async function clickFrame(page: Page, frameIndex: number) {
   await page.waitForTimeout(300);
 }
 
-/** Drag the selected frame by (dx, dy) pixels */
+/** Drag the currently-selected frame by (dx, dy) pixels.
+ * Uses getSelectedId to find the right frame, not hardcoded frames[0]. */
 async function dragSelected(page: Page, dx: number, dy: number) {
   const canvas = page.locator("canvas");
   const box = await canvas.boundingBox();
-  // Use the frame's current position
+  const selId = await getSelectedId(page);
   const frames = await getFrames(page);
-  // Find selected frame by checking for blue pixels... or just use last clicked position
-  // Simpler: get the first frame and assume it's selected
-  const f = frames[0];
+  // Find the selected frame, fall back to frames[0]
+  const f = (selId ? frames.find(fr => fr.id === selId) : null) ?? frames[0];
   const cx = box!.x + f.x + f.w / 2;
   const cy = box!.y + f.y + f.h / 2;
   await page.mouse.down();
-  const steps = Math.max(Math.abs(dx), Math.abs(dy)) / 10;
+  const steps = Math.max(Math.abs(dx), Math.abs(dy)) / 10 || 1;
   for (let i = 1; i <= steps; i++) {
     await page.mouse.move(cx + (dx * i / steps), cy + (dy * i / steps));
   }
@@ -197,11 +197,17 @@ function findProseFrameOverlaps(
   for (const line of lines) {
     for (const f of frames) {
       const ly = line.y;
-      // Prose start X is well inside frame's horizontal range (5px margin)
-      const insideH = line.x >= f.absX + 5 && line.x < f.absX + f.w - 5;
-      // Prose Y is inside frame's vertical range
-      const insideV = ly >= f.absY && ly + lineHeight <= f.absY + f.h;
-      if (insideH && insideV) {
+      // Check if prose text overlaps frame interior (not just edges).
+      // Prose overlaps if its horizontal span intersects the frame's interior
+      // AND its Y is inside the frame's vertical range.
+      const margin = 10; // edge tolerance
+      const textLeft = line.x;
+      const textRight = line.x + line.width;
+      const frameLeft = f.absX + margin;
+      const frameRight = f.absX + f.w - margin;
+      const hOverlap = textLeft < frameRight && textRight > frameLeft;
+      const insideV = ly >= f.absY + margin && ly + lineHeight <= f.absY + f.h - margin;
+      if (hOverlap && insideV) {
         overlaps.push(`Prose "${line.text.substring(0, 40)}" at (${Math.round(line.x)},${Math.round(line.y)}) inside frame at (${Math.round(f.absX)},${Math.round(f.absY)}) ${Math.round(f.w)}x${Math.round(f.h)}`);
       }
     }
@@ -243,12 +249,13 @@ async function dblclickFrame(page: Page, frameIndex: number) {
   await page.waitForTimeout(300);
 }
 
-/** Resize the selected frame by dragging bottom-right handle */
+/** Resize the currently-selected frame by dragging bottom-right handle */
 async function resizeSelected(page: Page, dw: number, dh: number) {
+  const selId = await getSelectedId(page);
   const frames = await getFrames(page);
   const canvas = page.locator("canvas");
   const box = await canvas.boundingBox();
-  const f = frames[0];
+  const f = (selId ? frames.find(fr => fr.id === selId) : null) ?? frames[0];
   // Bottom-right corner of the frame
   const hx = box!.x + f.x + f.w;
   const hy = box!.y + f.y + f.h;
@@ -527,11 +534,10 @@ test.describe("harness", () => {
 
   // ── Drag tests ───────────────────────────────────────────
 
-  test("drag: move box right, no ghosts", async ({ page }) => {
+  test("drag: move box right, position changes in markdown", async ({ page }) => {
     const r = await roundTrip(page, "drag-right", SIMPLE_BOX, async (p) => {
       await clickFrame(p, 0);
       await dragSelected(p, 80, 0);
-      // Deselect
       await clickProse(p, 5, 5);
     });
     expect(r.ghosts).toEqual([]);
@@ -539,7 +545,12 @@ test.describe("harness", () => {
     expect(r.output).toContain("└");
     expect(r.output).toContain("Prose above");
     expect(r.output).toContain("Prose below");
-    expect(r.visualDiff).toBeLessThan(10);
+    // The box should have moved right — its ┌ should be indented
+    const origBoxLine = SIMPLE_BOX.split("\n").find(l => l.includes("┌"))!;
+    const newBoxLine = r.output.split("\n").find(l => l.includes("┌"))!;
+    const origIndent = origBoxLine.length - origBoxLine.trimStart().length;
+    const newIndent = newBoxLine.length - newBoxLine.trimStart().length;
+    expect(newIndent, `Box didn't move right: orig indent=${origIndent}, new=${newIndent}`).toBeGreaterThan(origIndent);
   });
 
   test("drag: move box down, no ghosts", async ({ page }) => {
