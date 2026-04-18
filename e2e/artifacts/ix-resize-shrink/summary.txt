@@ -1,0 +1,28 @@
+Test: ix-resize-shrink
+Input lines: 8
+Output lines: 7
+Markdown match: false
+Visual diff: 0.16%
+Ghosts: 0
+
+Markdown diff:
+  L3:
+    - "┌──────────────┐"
+    + "┌──────────┐"
+  L4:
+    - "│              │"
+    + "│          │"
+  L5:
+    - "│              │"
+    + "└──────────┘"
+  L6:
+    - "└──────────────┘"
+    + ""
+  L7:
+    - ""
+    + "Prose below"
+  L8:
+    - "Prose below"
+    + "<missing>"
+
+Prose doc after reload: 1 lines

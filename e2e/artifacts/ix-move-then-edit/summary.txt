@@ -1,0 +1,25 @@
+Test: ix-move-then-edit
+Input lines: 8
+Output lines: 8
+Markdown match: false
+Visual diff: 0.00%
+Ghosts: 0
+
+Markdown diff:
+  L1:
+    - "Prose above"
+    + " AFTER_MOVEProse above"
+  L3:
+    - "┌──────────────┐"
+    + "        ┌──────────────┐"
+  L4:
+    - "│              │"
+    + "        │              │"
+  L5:
+    - "│              │"
+    + "        │              │"
+  L6:
+    - "└──────────────┘"
+    + "        └──────────────┘"
+
+Prose doc after reload: 1 lines

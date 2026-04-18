@@ -1,0 +1,13 @@
+Top
+
+    ┌────┐
+    │ A  │
+    └────┘
+
+Mid BETWEENdle
+
+┌────┐
+│ B  │
+└────┘
+
+Bottom

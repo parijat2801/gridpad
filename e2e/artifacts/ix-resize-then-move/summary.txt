@@ -1,0 +1,34 @@
+Test: ix-resize-then-move
+Input lines: 8
+Output lines: 10
+Markdown match: false
+Visual diff: 0.14%
+Ghosts: 0
+
+Markdown diff:
+  L3:
+    - "┌──────────────┐"
+    + "    ┌───────────────────┐"
+  L4:
+    - "│              │"
+    + "    │                   │"
+  L5:
+    - "│              │"
+    + "    │                   │"
+  L6:
+    - "└──────────────┘"
+    + "    │                   │"
+  L7:
+    - ""
+    + "    │                   │"
+  L8:
+    - "Prose below"
+    + "    └───────────────────┘"
+  L9:
+    - "<missing>"
+    + ""
+  L10:
+    - "<missing>"
+    + "Prose below"
+
+Prose doc after reload: 1 lines

@@ -1,0 +1,3 @@
+Has Hello!: false
+Has wireframe: true
+Has Title: true

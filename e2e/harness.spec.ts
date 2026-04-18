@@ -225,11 +225,57 @@ async function countSelectionPixels(page: Page): Promise<number> {
   });
 }
 
-/** Click on prose area (above all wireframes) */
+/** Click on prose area at canvas-relative coordinates */
 async function clickProse(page: Page, relX: number, relY: number) {
   const canvas = page.locator("canvas");
   const box = await canvas.boundingBox();
   await page.mouse.click(box!.x + relX, box!.y + relY);
+  await page.waitForTimeout(300);
+}
+
+/** Double-click center of Nth frame to enter text edit mode */
+async function dblclickFrame(page: Page, frameIndex: number) {
+  const frames = await getFrames(page);
+  const canvas = page.locator("canvas");
+  const box = await canvas.boundingBox();
+  const f = frames[frameIndex];
+  await page.mouse.dblclick(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
+  await page.waitForTimeout(300);
+}
+
+/** Resize the selected frame by dragging bottom-right handle */
+async function resizeSelected(page: Page, dw: number, dh: number) {
+  const frames = await getFrames(page);
+  const canvas = page.locator("canvas");
+  const box = await canvas.boundingBox();
+  const f = frames[0];
+  // Bottom-right corner of the frame
+  const hx = box!.x + f.x + f.w;
+  const hy = box!.y + f.y + f.h;
+  await page.mouse.move(hx, hy);
+  await page.waitForTimeout(100);
+  await page.mouse.down();
+  const steps = Math.max(Math.abs(dw), Math.abs(dh)) / 10 || 1;
+  for (let i = 1; i <= steps; i++) {
+    await page.mouse.move(hx + (dw * i / steps), hy + (dh * i / steps));
+  }
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+}
+
+/** Click a child frame inside a container (drill-down: click parent first, then child) */
+async function clickChild(page: Page, parentIndex: number) {
+  const frames = await getFrames(page);
+  const canvas = page.locator("canvas");
+  const box = await canvas.boundingBox();
+  const f = frames[parentIndex];
+  const cx = box!.x + f.x + f.w / 2;
+  const cy = box!.y + f.y + f.h / 2;
+  // First click selects parent
+  await page.mouse.click(cx, cy);
+  await page.waitForTimeout(200);
+  // Second click drills down to child
+  await page.mouse.click(cx, cy);
   await page.waitForTimeout(300);
 }
 
@@ -1282,5 +1328,468 @@ test.describe("ux stress", () => {
     expect(saved).toContain("Prose above");
     const sections = findWireframeSections(saved);
     expect(findGhosts(saved, sections)).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// INTERACTION COMBOS — systematic coverage
+// ═══════════════════════════════════════════════════════
+
+const LABELED_FOR_EDIT = `Title
+
+┌──────────────┐
+│    Hello     │
+└──────────────┘
+
+End`;
+
+const WITH_CHILDREN = `Top
+
+┌────────────────────────┐
+│  Outer                 │
+│  ┌──────────────────┐  │
+│  │  Inner            │  │
+│  └──────────────────┘  │
+└────────────────────────┘
+
+Bottom`;
+
+test.describe("interaction: text edit", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  test("text-edit: drill-down to text label, type, save", async ({ page }) => {
+    await load(page, LABELED_FOR_EDIT);
+    writeArtifact("ix-text-edit", "input.md", LABELED_FOR_EDIT);
+    await screenshot(page, "ix-text-edit", "1-before");
+
+    // Click frame to select container
+    await clickFrame(page, 0);
+    await screenshot(page, "ix-text-edit", "2-selected");
+
+    // Click again to drill down
+    await clickChild(page, 0);
+    await screenshot(page, "ix-text-edit", "3-drilldown");
+
+    // Double-click to enter text edit
+    await dblclickFrame(page, 0);
+    await screenshot(page, "ix-text-edit", "4-text-edit-mode");
+
+    // Type
+    await page.keyboard.press("End");
+    await page.keyboard.type("!");
+    await page.waitForTimeout(300);
+    await screenshot(page, "ix-text-edit", "5-typed");
+
+    // Exit text edit, save
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+    const saved = await save(page);
+    writeArtifact("ix-text-edit", "output.md", saved);
+    await screenshot(page, "ix-text-edit", "6-saved");
+
+    writeArtifact("ix-text-edit", "summary.txt",
+      `Has Hello!: ${saved.includes("Hello!")}\nHas wireframe: ${saved.includes("┌")}\nHas Title: ${saved.includes("Title")}`);
+  });
+
+  test("text-edit: edit prose, then edit text label", async ({ page }) => {
+    await load(page, LABELED_FOR_EDIT);
+    writeArtifact("ix-prose-then-label", "input.md", LABELED_FOR_EDIT);
+
+    // Type in prose first
+    await clickProse(page, 5, 5);
+    await page.keyboard.press("End");
+    await page.keyboard.type(" EDITED");
+    await page.waitForTimeout(200);
+    await screenshot(page, "ix-prose-then-label", "1-prose-edited");
+
+    // Now click wireframe, drill down, edit label
+    await clickFrame(page, 0);
+    await clickChild(page, 0);
+    await dblclickFrame(page, 0);
+    await page.keyboard.press("End");
+    await page.keyboard.type("!");
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+    await screenshot(page, "ix-prose-then-label", "2-label-edited");
+
+    const saved = await save(page);
+    writeArtifact("ix-prose-then-label", "output.md", saved);
+    expect(saved).toContain("EDITED");
+    expect(saved).toContain("┌");
+    const sections = findWireframeSections(saved);
+    expect(findGhosts(saved, sections)).toEqual([]);
+  });
+});
+
+test.describe("interaction: move combos", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  test("move-then-edit: move frame, then type in prose", async ({ page }) => {
+    const r = await roundTrip(page, "ix-move-then-edit", SIMPLE_BOX, async (p) => {
+      await clickFrame(p, 0);
+      await dragSelected(p, 80, 0);
+      await clickProse(p, 5, 5);
+      await p.keyboard.press("End");
+      await p.keyboard.type(" AFTER_MOVE");
+    });
+    expect(r.output).toContain("AFTER_MOVE");
+    expect(r.output).toContain("┌");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("edit-then-move: type in prose, then move frame", async ({ page }) => {
+    const r = await roundTrip(page, "ix-edit-then-move", SIMPLE_BOX, async (p) => {
+      await clickProse(p, 5, 5);
+      await p.keyboard.press("End");
+      await p.keyboard.type(" BEFORE_MOVE");
+      await page.waitForTimeout(200);
+      await clickFrame(p, 0);
+      await dragSelected(p, 80, 0);
+      await clickProse(p, 5, 5);
+    });
+    expect(r.output).toContain("BEFORE_MOVE");
+    expect(r.output).toContain("┌");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("move-then-enter: move frame down, then Enter above it", async ({ page }) => {
+    const r = await roundTrip(page, "ix-move-then-enter", SIMPLE_BOX, async (p) => {
+      await clickFrame(p, 0);
+      await dragSelected(p, 0, 50);
+      await clickProse(p, 5, 5);
+      await p.keyboard.press("End");
+      await p.keyboard.press("Enter");
+      await p.keyboard.press("Enter");
+    });
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("Prose below");
+    expect(r.ghosts).toEqual([]);
+  });
+});
+
+test.describe("interaction: resize", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  test("resize: shrink frame, save", async ({ page }) => {
+    const r = await roundTrip(page, "ix-resize-shrink", SIMPLE_BOX, async (p) => {
+      await clickFrame(p, 0);
+      await resizeSelected(p, -40, -20);
+      await clickProse(p, 5, 5);
+    });
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("└");
+    // Shrunk box should have shorter top border
+    const topBorder = r.output.split("\n").find(l => l.includes("┌"));
+    const origBorder = SIMPLE_BOX.split("\n").find(l => l.includes("┌"));
+    if (topBorder && origBorder) {
+      expect(topBorder.length).toBeLessThanOrEqual(origBorder.length);
+    }
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("resize: expand then move, save", async ({ page }) => {
+    const r = await roundTrip(page, "ix-resize-then-move", SIMPLE_BOX, async (p) => {
+      await clickFrame(p, 0);
+      await resizeSelected(p, 50, 30);
+      await clickProse(p, 5, 5);
+      await clickFrame(p, 0);
+      await dragSelected(p, 40, 0);
+      await clickProse(p, 5, 5);
+    });
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("└");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("resize: shrink then edit prose, save", async ({ page }) => {
+    const r = await roundTrip(page, "ix-resize-then-prose", SIMPLE_BOX, async (p) => {
+      await clickFrame(p, 0);
+      await resizeSelected(p, -30, -10);
+      await clickProse(p, 5, 5);
+      await p.keyboard.press("End");
+      await p.keyboard.type(" RESIZED");
+    });
+    expect(r.output).toContain("RESIZED");
+    expect(r.output).toContain("┌");
+    expect(r.ghosts).toEqual([]);
+  });
+});
+
+test.describe("interaction: children", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  test("child: select child, move it within parent", async ({ page }) => {
+    await load(page, WITH_CHILDREN);
+    writeArtifact("ix-move-child", "input.md", WITH_CHILDREN);
+    await screenshot(page, "ix-move-child", "1-before");
+
+    // Select parent, then drill down to child
+    await clickChild(page, 0);
+    await screenshot(page, "ix-move-child", "2-child-selected");
+
+    // Drag child
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    writeArtifact("ix-move-child", "tree-before.json", JSON.stringify(flat, null, 2));
+
+    // Small drag
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+    const selectedId = await getSelectedId(page);
+    // Find selected frame position
+    const selectedNode = flat.find(f => f.depth > 0); // first child
+    if (selectedNode) {
+      const cx = box!.x + selectedNode.absX + selectedNode.w / 2;
+      const cy = box!.y + selectedNode.absY + selectedNode.h / 2;
+      await page.mouse.down();
+      for (let i = 1; i <= 3; i++) await page.mouse.move(cx + i * 10, cy);
+      await page.mouse.up();
+      await page.waitForTimeout(300);
+    }
+    await screenshot(page, "ix-move-child", "3-child-moved");
+
+    await clickProse(page, 5, 5);
+    const saved = await save(page);
+    writeArtifact("ix-move-child", "output.md", saved);
+    await screenshot(page, "ix-move-child", "4-saved");
+
+    expect(saved).toContain("Outer");
+    expect(saved).toContain("Inner");
+    const sections = findWireframeSections(saved);
+    expect(findGhosts(saved, sections)).toEqual([]);
+  });
+
+  test("child: delete inner box, outer survives", async ({ page }) => {
+    await load(page, WITH_CHILDREN);
+    writeArtifact("ix-delete-child", "input.md", WITH_CHILDREN);
+
+    // Drill down to inner rect
+    await clickChild(page, 0);
+    // Delete
+    await page.keyboard.press("Delete");
+    await page.waitForTimeout(300);
+    await screenshot(page, "ix-delete-child", "1-child-deleted");
+
+    const saved = await save(page);
+    writeArtifact("ix-delete-child", "output.md", saved);
+
+    // Outer should survive, inner should be gone
+    expect(saved).toContain("Outer");
+    expect(saved).toContain("Top");
+    expect(saved).toContain("Bottom");
+  });
+
+  test("child: resize parent, children adjust", async ({ page }) => {
+    await load(page, WITH_CHILDREN);
+    writeArtifact("ix-resize-parent", "input.md", WITH_CHILDREN);
+    await screenshot(page, "ix-resize-parent", "1-before");
+
+    await clickFrame(page, 0);
+    await resizeSelected(page, 50, 30);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "ix-resize-parent", "2-resized");
+
+    const saved = await save(page);
+    writeArtifact("ix-resize-parent", "output.md", saved);
+
+    expect(saved).toContain("┌");
+    expect(saved).toContain("└");
+    expect(saved).toContain("Outer");
+    const sections = findWireframeSections(saved);
+    expect(findGhosts(saved, sections)).toEqual([]);
+  });
+});
+
+test.describe("interaction: alignment", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  test("align: change text alignment to center, save", async ({ page }) => {
+    await load(page, LABELED_FOR_EDIT);
+    writeArtifact("ix-align-center", "input.md", LABELED_FOR_EDIT);
+    await screenshot(page, "ix-align-center", "1-before");
+
+    // Drill down to text label, enter edit mode
+    await clickFrame(page, 0);
+    await clickChild(page, 0);
+    await dblclickFrame(page, 0);
+
+    // Cmd+E for center align
+    await page.keyboard.press("Meta+e");
+    await page.waitForTimeout(200);
+    await page.keyboard.press("Escape");
+    await screenshot(page, "ix-align-center", "2-centered");
+
+    const saved = await save(page);
+    writeArtifact("ix-align-center", "output.md", saved);
+    await screenshot(page, "ix-align-center", "3-saved");
+
+    expect(saved).toContain("Hello");
+    expect(saved).toContain("┌");
+  });
+
+  test("align: change to right align, then move, save", async ({ page }) => {
+    await load(page, LABELED_FOR_EDIT);
+    writeArtifact("ix-align-then-move", "input.md", LABELED_FOR_EDIT);
+
+    await clickFrame(page, 0);
+    await clickChild(page, 0);
+    await dblclickFrame(page, 0);
+    await page.keyboard.press("Meta+r");
+    await page.waitForTimeout(200);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+
+    // Now move the frame
+    await clickFrame(page, 0);
+    await dragSelected(page, 50, 0);
+    await clickProse(page, 5, 5);
+
+    const saved = await save(page);
+    writeArtifact("ix-align-then-move", "output.md", saved);
+
+    expect(saved).toContain("Hello");
+    expect(saved).toContain("┌");
+    const sections = findWireframeSections(saved);
+    expect(findGhosts(saved, sections)).toEqual([]);
+  });
+});
+
+test.describe("interaction: multi-frame", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  test("multi: move two different frames, save", async ({ page }) => {
+    await load(page, TWO_SEPARATE);
+    writeArtifact("ix-move-two", "input.md", TWO_SEPARATE);
+
+    // Move first frame
+    await clickFrame(page, 0);
+    await dragSelected(page, 50, 0);
+    await clickProse(page, 5, 5);
+
+    // Move second frame
+    const frames2 = await getFrames(page);
+    if (frames2.length > 1) {
+      await clickFrame(page, 1);
+      await dragSelected(page, -30, 0);
+      await clickProse(page, 5, 5);
+    }
+
+    const saved = await save(page);
+    writeArtifact("ix-move-two", "output.md", saved);
+
+    expect(saved).toContain("┌");
+    expect(saved).toContain("Top");
+    expect(saved).toContain("Bottom");
+    const sections = findWireframeSections(saved);
+    expect(findGhosts(saved, sections)).toEqual([]);
+  });
+
+  test("multi: move frame, resize another, edit prose between", async ({ page }) => {
+    await load(page, TWO_SEPARATE);
+    writeArtifact("ix-move-resize-edit", "input.md", TWO_SEPARATE);
+
+    // Move first
+    await clickFrame(page, 0);
+    await dragSelected(page, 40, 0);
+    await clickProse(page, 5, 5);
+
+    // Edit prose between
+    const frames = await getFrames(page);
+    const f0 = frames[0];
+    const proseY = f0.y + f0.h + 20;
+    await clickProse(page, 30, proseY);
+    await page.keyboard.press("End");
+    await page.keyboard.type(" BETWEEN");
+    await page.waitForTimeout(200);
+
+    // Resize second
+    const frames3 = await getFrames(page);
+    if (frames3.length > 1) {
+      await clickFrame(page, 1);
+      await resizeSelected(page, 30, 20);
+      await clickProse(page, 5, 5);
+    }
+
+    const saved = await save(page);
+    writeArtifact("ix-move-resize-edit", "output.md", saved);
+
+    expect(saved).toContain("BETWEEN");
+    expect(saved).toContain("┌");
+    const sections = findWireframeSections(saved);
+    expect(findGhosts(saved, sections)).toEqual([]);
+  });
+});
+
+test.describe("interaction: undo chains", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  test("undo: resize then undo, save matches original", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    writeArtifact("ix-undo-resize", "input.md", SIMPLE_BOX);
+
+    await clickFrame(page, 0);
+    await resizeSelected(page, 50, 30);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "ix-undo-resize", "1-resized");
+
+    await page.keyboard.press("Meta+z");
+    await page.waitForTimeout(300);
+    await screenshot(page, "ix-undo-resize", "2-undone");
+
+    const saved = await save(page);
+    writeArtifact("ix-undo-resize", "output.md", saved);
+    expect(saved).toBe(SIMPLE_BOX);
+  });
+
+  test("undo: move-resize-undo-undo, back to original", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    writeArtifact("ix-undo-chain", "input.md", SIMPLE_BOX);
+
+    // Move
+    await clickFrame(page, 0);
+    await dragSelected(page, 50, 0);
+    await clickProse(page, 5, 5);
+    // Resize
+    await clickFrame(page, 0);
+    await resizeSelected(page, 30, 20);
+    await clickProse(page, 5, 5);
+
+    // Undo twice
+    await page.keyboard.press("Meta+z");
+    await page.waitForTimeout(200);
+    await page.keyboard.press("Meta+z");
+    await page.waitForTimeout(300);
+
+    const saved = await save(page);
+    writeArtifact("ix-undo-chain", "output.md", saved);
+    expect(saved).toBe(SIMPLE_BOX);
   });
 });
