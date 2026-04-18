@@ -1,0 +1,67 @@
+Test: large-drag
+Input lines: 13
+Output lines: 27
+Markdown match: false
+Visual diff: 0.08%
+Ghosts: 0
+
+Markdown diff:
+  L3:
+    - "┌────┐"
+    + ""
+  L4:
+    - "│ A  │"
+    + "Middle"
+  L5:
+    - "└────┘"
+    + ""
+  L7:
+    - "Middle"
+    + "Bottom"
+  L13:
+    - "Bottom"
+    + ""
+  L14:
+    - "<missing>"
+    + ""
+  L15:
+    - "<missing>"
+    + ""
+  L16:
+    - "<missing>"
+    + ""
+  L17:
+    - "<missing>"
+    + ""
+  L18:
+    - "<missing>"
+    + ""
+  L19:
+    - "<missing>"
+    + ""
+  L20:
+    - "<missing>"
+    + ""
+  L21:
+    - "<missing>"
+    + ""
+  L22:
+    - "<missing>"
+    + ""
+  L23:
+    - "<missing>"
+    + ""
+  L24:
+    - "<missing>"
+    + ""
+  L25:
+    - "<missing>"
+    + "┌────┐"
+  L26:
+    - "<missing>"
+    + "│ A  │"
+  L27:
+    - "<missing>"
+    + "└────┘"
+
+Prose doc after reload: 1 lines

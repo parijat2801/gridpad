@@ -4,3 +4,5 @@ Output lines: 13
 Markdown match: true
 Visual diff: 0.00%
 Ghosts: 0
+
+Prose doc after reload: 1 lines

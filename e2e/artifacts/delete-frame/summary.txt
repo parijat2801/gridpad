@@ -1,6 +1,22 @@
 Test: delete-frame
 Input lines: 8
-Output lines: 4
+Output lines: 8
 Markdown match: false
-Visual diff: 0.00%
+Visual diff: 0.12%
 Ghosts: 0
+
+Markdown diff:
+  L3:
+    - "┌──────────────┐"
+    + ""
+  L4:
+    - "│              │"
+    + ""
+  L5:
+    - "│              │"
+    + ""
+  L6:
+    - "└──────────────┘"
+    + ""
+
+Prose doc after reload: 1 lines

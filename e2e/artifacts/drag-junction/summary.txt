@@ -4,3 +4,22 @@ Output lines: 9
 Markdown match: false
 Visual diff: 0.39%
 Ghosts: 0
+
+Markdown diff:
+  L3:
+    - "┌───────────┬───────────┐"
+    + "     ┌───────────┌───────────┐"
+  L4:
+    - "│  Left     │  Right    │"
+    + "     │  Left     │  Right    │"
+  L5:
+    - "├───────────┼───────────┤"
+    + "     ┌───────────┌───────────┐"
+  L6:
+    - "│  Bottom L │  Bottom R │"
+    + "     │           │           │"
+  L7:
+    - "└───────────┴───────────┘"
+    + "     └───────────└───────────┘"
+
+Prose doc after reload: 1 lines

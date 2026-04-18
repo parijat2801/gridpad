@@ -4,3 +4,10 @@ Output lines: 8
 Markdown match: false
 Visual diff: 0.01%
 Ghosts: 0
+
+Markdown diff:
+  L1:
+    - "Prose above"
+    + "INSERTED Prose above"
+
+Prose doc after reload: 1 lines

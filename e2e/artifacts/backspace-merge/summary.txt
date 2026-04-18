@@ -4,3 +4,10 @@ Output lines: 8
 Markdown match: false
 Visual diff: 0.00%
 Ghosts: 0
+
+Markdown diff:
+  L1:
+    - "Line one"
+    + "ine one"
+
+Prose doc after reload: 1 lines

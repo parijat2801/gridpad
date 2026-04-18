@@ -4,3 +4,10 @@ Output lines: 13
 Markdown match: false
 Visual diff: 0.00%
 Ghosts: 0
+
+Markdown diff:
+  L7:
+    - "Middle"
+    + " ADDEDMiddle"
+
+Prose doc after reload: 1 lines

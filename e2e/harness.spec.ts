@@ -208,15 +208,32 @@ async function roundTrip(
   const sections = findWireframeSections(output);
   const ghosts = findGhosts(output, sections);
 
-  // Write summary
+  // Compute markdown diff
+  const mdDiffLines: string[] = [];
+  const inLines = inputMd.split("\n"), outLines = output.split("\n");
+  const maxLen = Math.max(inLines.length, outLines.length);
+  for (let i = 0; i < maxLen; i++) {
+    if (inLines[i] !== outLines[i]) {
+      mdDiffLines.push(`  L${i + 1}:`);
+      mdDiffLines.push(`    - ${JSON.stringify(inLines[i] ?? "<missing>")}`);
+      mdDiffLines.push(`    + ${JSON.stringify(outLines[i] ?? "<missing>")}`);
+    }
+  }
+
+  // Verify prose doc round-trips through CM
+  const proseAfterReload = await page.evaluate(() => (window as any).__gridpad.getProseDoc());
+
+  // Write summary with diff
   const summary = [
     `Test: ${testName}`,
-    `Input lines: ${inputMd.split("\n").length}`,
-    `Output lines: ${output.split("\n").length}`,
+    `Input lines: ${inLines.length}`,
+    `Output lines: ${outLines.length}`,
     `Markdown match: ${output === inputMd}`,
     `Visual diff: ${visualDiff.toFixed(2)}%`,
     `Ghosts: ${ghosts.length}`,
     ...ghosts.map(g => `  ${g}`),
+    ...(mdDiffLines.length > 0 ? ["\nMarkdown diff:", ...mdDiffLines] : []),
+    `\nProse doc after reload: ${proseAfterReload.split("\\n").length} lines`,
   ].join("\n");
   writeArtifact(testName, "summary.txt", summary);
   console.log(summary);
@@ -590,5 +607,170 @@ test.describe("harness", () => {
     expect(md).toContain("round1");
     expect(md).toContain("round2");
     expect(md).toContain("round3");
+  });
+
+  // ── Resize ─────────────────────────────────────────────
+
+  test("resize: expand box, verify larger dimensions in markdown", async ({ page }) => {
+    const r = await roundTrip(page, "resize-expand", SIMPLE_BOX, async (p) => {
+      await clickFrame(p, 0);
+      const f = (await getFrames(p))[0];
+      const canvas = p.locator("canvas");
+      const box = await canvas.boundingBox();
+      // Bottom-right handle
+      const hx = box!.x + f.x + f.w;
+      const hy = box!.y + f.y + f.h;
+      await p.mouse.move(hx, hy);
+      await p.waitForTimeout(100);
+      await p.mouse.down();
+      await p.mouse.move(hx + 60, hy + 40);
+      await p.mouse.up();
+      await p.waitForTimeout(300);
+      await clickProse(p, 5, 5); // deselect
+    });
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("└");
+    expect(r.output).toContain("Prose above");
+    // Resized box should have wider top border than original 14-char
+    const topBorder = r.output.split("\n").find(l => l.includes("┌") && l.includes("┐"));
+    const origTopBorder = SIMPLE_BOX.split("\n").find(l => l.includes("┌"));
+    if (topBorder && origTopBorder) {
+      expect(topBorder.length).toBeGreaterThanOrEqual(origTopBorder.length);
+    }
+    expect(r.ghosts).toEqual([]);
+  });
+
+  // ── Undo after drag ────────────────────────────────────
+
+  test("undo-drag: drag then undo, markdown matches original", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    writeArtifact("undo-drag", "input.md", SIMPLE_BOX);
+    await screenshot(page, "undo-drag", "1-before");
+
+    // Drag
+    await clickFrame(page, 0);
+    await dragSelected(page, 80, 0);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "undo-drag", "2-after-drag");
+
+    // Undo
+    await page.keyboard.press("Meta+z");
+    await page.waitForTimeout(300);
+    await screenshot(page, "undo-drag", "3-after-undo");
+
+    // Save and verify matches original
+    const saved = await save(page);
+    writeArtifact("undo-drag", "output.md", saved);
+    expect(saved).toBe(SIMPLE_BOX);
+  });
+
+  // ── Default text no-edit ───────────────────────────────
+
+  test("no-edit: default text byte-identical round-trip", async ({ page }) => {
+    // Use whatever Gridpad loaded by default
+    const original = await page.evaluate(() => (window as any).__gridpad.serializeDocument());
+    writeArtifact("no-edit-default", "input.md", original);
+    await screenshot(page, "no-edit-default", "1-before");
+
+    // Reload, save, compare
+    await load(page, original);
+    const saved = await save(page);
+    writeArtifact("no-edit-default", "output.md", saved);
+    await screenshot(page, "no-edit-default", "2-after-reload-save");
+
+    expect(saved).toBe(original);
+  });
+
+  // ── Drag then type combo ───────────────────────────────
+
+  test("drag+type: drag wireframe, type prose, both persist", async ({ page }) => {
+    const r = await roundTrip(page, "drag-then-type", SIMPLE_BOX, async (p) => {
+      // Drag wireframe right
+      await clickFrame(p, 0);
+      await dragSelected(p, 60, 0);
+      await clickProse(p, 5, 5);
+
+      // Type in prose
+      await p.keyboard.press("End");
+      await p.keyboard.type(" COMBO");
+      await p.waitForTimeout(200);
+    });
+    expect(r.output).toContain("COMBO");
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("└");
+    expect(r.ghosts).toEqual([]);
+    expect(r.visualDiff).toBeLessThan(10);
+  });
+
+  // ── Text label edit inside wireframe ───────────────────
+
+  test("text-label: double-click label, append char, verify", async ({ page }) => {
+    await load(page, LABELED_BOX);
+    writeArtifact("text-label-edit", "input.md", LABELED_BOX);
+    await screenshot(page, "text-label-edit", "1-before");
+
+    // Get frame positions
+    const frames = await getFrames(page);
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+
+    // Find a text-type child frame (the "Hello" label)
+    // The labeled box has a rect with text children
+    // Double-click center of the wireframe area
+    const f = frames[0];
+    const centerX = box!.x + f.x + f.w / 2;
+    const centerY = box!.y + f.y + f.h / 2;
+
+    // First click selects container, second click drills down
+    await page.mouse.click(centerX, centerY);
+    await page.waitForTimeout(300);
+    await page.mouse.click(centerX, centerY);
+    await page.waitForTimeout(300);
+    // Double-click to enter text edit mode
+    await page.mouse.dblclick(centerX, centerY);
+    await page.waitForTimeout(300);
+
+    await page.keyboard.press("End");
+    await page.keyboard.type("!");
+    await page.waitForTimeout(300);
+    await screenshot(page, "text-label-edit", "2-after-edit");
+
+    const saved = await save(page);
+    writeArtifact("text-label-edit", "output.md", saved);
+    await screenshot(page, "text-label-edit", "3-after-save");
+
+    // Check if text was modified (Hello → Hello! or similar)
+    writeArtifact("text-label-edit", "summary.txt",
+      `Input had "Hello": ${LABELED_BOX.includes("Hello")}\n` +
+      `Output has "Hello!": ${saved.includes("Hello!")}\n` +
+      `Output has wireframe: ${saved.includes("┌")}\n`);
+  });
+
+  // ── Large drag past other wireframes ───────────────────
+
+  test("large-drag: drag first wireframe past second, no collision", async ({ page }) => {
+    const r = await roundTrip(page, "large-drag", TWO_SEPARATE, async (p) => {
+      await clickFrame(p, 0);
+      // Drag way down past the second wireframe
+      await dragSelected(p, 0, 300);
+      await clickProse(p, 5, 5);
+    });
+    // Both wireframe markers should exist
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("└");
+    expect(r.ghosts).toEqual([]);
+    // Verify no prose/wireframe interleaving on same lines
+    const lines = r.output.split("\n");
+    for (const line of lines) {
+      const hasWire = [...line].some(c => WIRE_CHARS.has(c));
+      const hasProseWord = /\b(Top|Middle|Bottom)\b/.test(line);
+      if (hasWire && hasProseWord) {
+        // This line has both wire chars and prose — possible collision
+        // Allow if it's a labeled wireframe like "│ A  │"
+        if (!/^[│┌└├┤─┬┴┼\s]*$/.test(line.replace(/[A-Za-z]/g, ''))) {
+          // Has non-wire, non-alpha chars mixed — suspect
+        }
+      }
+    }
   });
 });

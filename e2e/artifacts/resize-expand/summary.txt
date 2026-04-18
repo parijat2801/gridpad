@@ -1,0 +1,37 @@
+Test: resize-expand
+Input lines: 8
+Output lines: 11
+Markdown match: false
+Visual diff: 0.08%
+Ghosts: 0
+
+Markdown diff:
+  L3:
+    - "┌──────────────┐"
+    + "┌────────────────────┐"
+  L4:
+    - "│              │"
+    + "│                    │"
+  L5:
+    - "│              │"
+    + "│                    │"
+  L6:
+    - "└──────────────┘"
+    + "│                    │"
+  L7:
+    - ""
+    + "│                    │"
+  L8:
+    - "Prose below"
+    + "│                    │"
+  L9:
+    - "<missing>"
+    + "└────────────────────┘"
+  L10:
+    - "<missing>"
+    + ""
+  L11:
+    - "<missing>"
+    + "Prose below"
+
+Prose doc after reload: 1 lines

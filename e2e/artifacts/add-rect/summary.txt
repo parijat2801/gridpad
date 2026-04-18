@@ -4,3 +4,25 @@ Output lines: 11
 Markdown match: false
 Visual diff: 0.25%
 Ghosts: 0
+
+Markdown diff:
+  L6:
+    - "<missing>"
+    + ""
+  L7:
+    - "<missing>"
+    + ""
+  L8:
+    - "<missing>"
+    + "     ┌──────────┐"
+  L9:
+    - "<missing>"
+    + "     │          │"
+  L10:
+    - "<missing>"
+    + "     │          │"
+  L11:
+    - "<missing>"
+    + "     └──────────┘"
+
+Prose doc after reload: 1 lines
