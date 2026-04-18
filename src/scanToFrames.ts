@@ -64,8 +64,18 @@ export function scanToFrames(
     frameBboxes.push({ row: minR, col: minC, w: maxC - minC + 1, h: maxR - minR + 1 });
   }
 
-  // Build prose cells from scanner texts (prose chars are textClaimed, not unclaimedCells)
-  const proseCells = buildProseCells(scanResult.texts, scanResult.grid);
+  // Build prose cells from scanner texts — but EXCLUDE text labels inside rects.
+  // Text inside a rect is wireframe content (rendered by frame cells), not prose.
+  const proseTexts = scanResult.texts.filter(t => {
+    for (const bbox of frameBboxes) {
+      if (
+        t.row >= bbox.row && t.row < bbox.row + bbox.h &&
+        t.col >= bbox.col && t.col + t.content.length <= bbox.col + bbox.w
+      ) return false; // inside a frame bbox — not prose
+    }
+    return true;
+  });
+  const proseCells = buildProseCells(proseTexts, scanResult.grid);
 
   const proseSegments = extractProseSegments(
     proseCells,
