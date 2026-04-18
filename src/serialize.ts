@@ -66,17 +66,22 @@ export function framesToMarkdown(
       continue;
     }
 
-    // Expand grid if frames moved beyond original bounds
-    for (const child of frame.children) {
-      if (!child.content) continue;
-      const endRow = Math.round(child.y / charHeight) + Math.round(child.h / charHeight);
-      const endCol = Math.round(child.x / charWidth) + Math.round(child.w / charWidth);
+    // Expand grid if frames moved beyond original bounds (recursive)
+    const expandGrid = (f: Frame, offX: number, offY: number) => {
+      const endRow = Math.round(offY / charHeight) + Math.round(f.h / charHeight);
+      const endCol = Math.round(offX / charWidth) + Math.round(f.w / charWidth);
       while (grid.length < endRow) {
         grid.push(new Array(Math.max(maxCols, endCol)).fill(" "));
       }
       for (const row of grid) {
         while (row.length < endCol) row.push(" ");
       }
+      for (const child of f.children) {
+        expandGrid(child, offX + child.x, offY + child.y);
+      }
+    };
+    for (const child of frame.children) {
+      expandGrid(child, child.x, child.y);
     }
 
     // Compute the "original" cell positions from the frame's children
@@ -89,18 +94,28 @@ export function framesToMarkdown(
       grid[r].fill(" ");
     }
 
-    for (const child of frame.children) {
-      if (!child.content) continue;
-      const gridRow = Math.round(child.y / charHeight);
-      const gridCol = Math.round(child.x / charWidth);
-      for (const [key, ch] of child.content.cells) {
-        const ci = key.indexOf(",");
-        const r = gridRow + Number(key.slice(0, ci));
-        const c = gridCol + Number(key.slice(ci + 1));
-        if (r >= 0 && r < grid.length && c >= 0 && c < grid[r].length) {
-          grid[r][c] = ch;
+    // Recursively write all descendants' cells to the grid.
+    // Each child's position is relative to its parent, so we
+    // accumulate offsets as we recurse.
+    const writeFrameCells = (f: Frame, offsetX: number, offsetY: number) => {
+      if (f.content) {
+        const gridRow = Math.round(offsetY / charHeight);
+        const gridCol = Math.round(offsetX / charWidth);
+        for (const [key, ch] of f.content.cells) {
+          const ci = key.indexOf(",");
+          const r = gridRow + Number(key.slice(0, ci));
+          const c = gridCol + Number(key.slice(ci + 1));
+          if (r >= 0 && r < grid.length && c >= 0 && c < grid[r].length) {
+            grid[r][c] = ch;
+          }
         }
       }
+      for (const child of f.children) {
+        writeFrameCells(child, offsetX + child.x, offsetY + child.y);
+      }
+    };
+    for (const child of frame.children) {
+      writeFrameCells(child, child.x, child.y);
     }
 
     parts.push(grid.map(row => row.join("").trimEnd()).join("\n"));
