@@ -2,5 +2,5 @@ Test: drag-down
 Input lines: 8
 Output lines: 13
 Markdown match: false
-Visual diff: 0.33%
+Visual diff: 0.20%
 Ghosts: 0

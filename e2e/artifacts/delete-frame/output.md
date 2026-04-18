@@ -1,8 +1,4 @@
 Prose above
 
 
-
-
-
-
 Prose below

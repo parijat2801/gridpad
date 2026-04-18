@@ -38,8 +38,8 @@ A phone-sized screen with header, content area, and bottom navigation bar.
 
 
 
-┌──────────────────┐
-│    My App    ≡    │
+
+
 ├──────────────────┤
 │                  │
 │  Welcome back!   │
@@ -54,18 +54,21 @@ A phone-sized screen with header, content area, and bottom navigation bar.
 ├──────────────────┤
 │ ⌂    ☆    ✉    ⚙ │
 └──────────────────┘
+┌──────────────────┐
+│    My App    ≡
+                    │
 
 
 
 ## User Flow
 
 A simple flowchart showing navigation between screens. Drag the boxes to rearrange the flow.
-
-
-
 ┌─────────┐    ┌───────────┐    ┌──────────┐    ┌──────────┐
 │  Login  │────│ Dashboard │────│ Settings │────│  Logout  │
 └─────────┘    └───────────┘    └──────────┘    └──────────┘
+
+
+
 
 
 
@@ -76,9 +79,6 @@ Every element on this page is interactive. Wireframes are detected from plain AS
 ## Sign Up Form
 
 A form wireframe. Double-click the text labels inside frames to edit them inline.
-
-
-
 ┌──────────────────────────┐
 │      Create Account      │
 ├──────────────────────────┤

@@ -1,6 +1,6 @@
 Test: delete-frame
 Input lines: 8
-Output lines: 8
+Output lines: 4
 Markdown match: false
-Visual diff: 0.12%
+Visual diff: 0.00%
 Ghosts: 0

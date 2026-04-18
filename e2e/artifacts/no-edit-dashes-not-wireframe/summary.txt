@@ -1,6 +1,6 @@
 Test: no-edit-dashes-not-wireframe
 Input lines: 9
-Output lines: 9
-Markdown match: true
-Visual diff: 0.00%
+Output lines: 12
+Markdown match: false
+Visual diff: 0.39%
 Ghosts: 0

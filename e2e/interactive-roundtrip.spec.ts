@@ -321,7 +321,49 @@ test.describe("interactive round-trip", () => {
     expect(diff).toBeLessThan(5);
   });
 
-  test("8. save twice without editing = identical output", async ({ page }) => {
+  test("8. drag dashboard down — no ghost │ chars at old position", async ({ page }) => {
+    // This catches the real bug: dragging a complex wireframe down
+    // leaves ghost │ characters at the original column positions
+    await loadMarkdown(page, TEST_DOC);
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+
+    // Select the API Gateway wireframe
+    const wx = box!.x + 150, wy = box!.y + 100;
+    await page.mouse.click(wx, wy);
+    await page.waitForTimeout(300);
+
+    // Drag DOWN by 100px (pushes wireframe below its original position)
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i++) await page.mouse.move(wx, wy + i * 10);
+    await page.mouse.up();
+    await page.waitForTimeout(500);
+
+    // Deselect
+    await page.mouse.click(box!.x + 5, box!.y + 5);
+    await page.waitForTimeout(300);
+
+    const saved = await serializeMarkdown(page);
+
+    // The prose lines between original wireframe position and new position
+    // should NOT contain stray │ or ─ characters
+    const lines = saved.split("\n");
+    const proseLines = lines.filter(l =>
+      l.includes("gateway handles") ||
+      l.includes("Mobile App") ||
+      l.includes("phone-sized")
+    );
+    for (const line of proseLines) {
+      // These prose lines should not have │ in them
+      expect(line, `Ghost │ in prose: ${JSON.stringify(line)}`).not.toContain("│");
+    }
+
+    // Wireframe should still exist somewhere
+    expect(saved).toContain("API Gateway");
+    expect(saved).toContain("┌");
+  });
+
+  test("9. save twice without editing = identical output", async ({ page }) => {
     await loadMarkdown(page, TEST_DOC);
 
     const save1 = await serializeMarkdown(page);

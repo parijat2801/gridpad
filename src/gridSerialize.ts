@@ -87,10 +87,37 @@ export function gridSerialize(
     writeFrameToGrid(grid, f, 0, 0, charWidth, charHeight);
   }
 
-  // Phase C — write prose per CM doc line
+  // Phase C — write prose into rows NOT occupied by frames.
+  // Compute frame-occupied row ranges from CURRENT positions.
+  // Collect rows occupied by top-level frames. Children are inside their
+  // parent's bbox so we only need top-level bboxes.
+  const frameRows = new Set<number>();
+  for (const f of frames) {
+    const startRow = Math.round(f.y / charHeight);
+    const endRow = Math.round((f.y + f.h) / charHeight);
+    for (let r = startRow; r < endRow; r++) frameRows.add(r);
+  }
+
+  // Build list of available rows (not occupied by frames), in order.
+  // Determine total grid height needed.
   const proseLines = prose.split("\n");
-  for (let i = 0; i < proseSegmentMap.length && i < proseLines.length; i++) {
-    const { row, col } = proseSegmentMap[i];
+  let maxRow = grid.length;
+  for (const r of frameRows) if (r >= maxRow) maxRow = r + 1;
+  maxRow = Math.max(maxRow, proseLines.length + frameRows.size);
+
+  const availableRows: number[] = [];
+  for (let r = 0; r < maxRow; r++) {
+    if (!frameRows.has(r)) availableRows.push(r);
+  }
+
+  // Write prose lines into available rows, in order.
+  for (let i = 0; i < proseLines.length; i++) {
+    if (i >= availableRows.length) {
+      // Need more rows — extend beyond current grid
+      availableRows.push(maxRow++);
+    }
+    const row = availableRows[i];
+    const col = proseSegmentMap[i]?.col ?? 0;
     const chars = [...proseLines[i]];
     while (grid.length <= row) grid.push([]);
     while (grid[row].length < col + chars.length) grid[row].push(" ");
