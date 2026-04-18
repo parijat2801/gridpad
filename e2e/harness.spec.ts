@@ -118,17 +118,25 @@ function findGhosts(
   return ghosts;
 }
 
-/** Compute frame grid bboxes from the frame tree for ghost detection */
+/** Compute frame grid bboxes from the full frame tree (all levels) for ghost detection */
 function computeFrameGridBboxes(
-  tree: Array<{ absX: number; absY: number; w: number; h: number }>,
+  tree: Array<{ absX: number; absY: number; w: number; h: number; children?: any[] }>,
   cw: number, ch: number,
 ): Array<{ row: number; col: number; w: number; h: number }> {
-  return tree.map(n => ({
-    row: Math.round(n.absY / ch),
-    col: Math.round(n.absX / cw),
-    w: Math.round(n.w / cw),
-    h: Math.round(n.h / ch),
-  }));
+  const bboxes: Array<{ row: number; col: number; w: number; h: number }> = [];
+  const collect = (nodes: any[]) => {
+    for (const n of nodes) {
+      bboxes.push({
+        row: Math.round(n.absY / ch),
+        col: Math.round(n.absX / cw),
+        w: Math.max(1, Math.round(n.w / cw)),
+        h: Math.max(1, Math.round(n.h / ch)),
+      });
+      if (n.children) collect(n.children);
+    }
+  };
+  collect(tree);
+  return bboxes;
 }
 
 /** Find ghosts using frame tree from the page */
@@ -359,8 +367,10 @@ async function roundTrip(
   // Write input
   writeArtifact(testName, "input.md", inputMd);
 
-  // Load
+  // Load and capture initial frame tree
   await load(page, inputMd);
+  const treeBefore = await getFrameTree(page);
+  writeArtifact(testName, "tree-before.json", JSON.stringify(flattenTree(treeBefore), null, 2));
   const beforeShot = await screenshot(page, testName, "1-before");
 
   // Action
@@ -372,8 +382,10 @@ async function roundTrip(
   writeArtifact(testName, "output.md", output);
   const afterShot = await screenshot(page, testName, "3-after-save");
 
-  // Reload saved output
+  // Reload saved output and capture final frame tree
   await load(page, output);
+  const treeAfter = await getFrameTree(page);
+  writeArtifact(testName, "tree-after.json", JSON.stringify(flattenTree(treeAfter), null, 2));
   const reloadedShot = await screenshot(page, testName, "4-reloaded");
 
   // Compute diffs
@@ -381,8 +393,13 @@ async function roundTrip(
   const visualDiff = await pixelDiff(page, refShot, reloadedShot);
 
   // Ghost detection
-  const sections = findWireframeSections(output);
-  const ghosts = findGhosts(output, sections);
+  let ghosts: string[] = [];
+  if (action) {
+    // After edits: use frame-bbox mask from the RELOADED tree
+    const bboxes = computeFrameGridBboxes(treeAfter, 9.6, 18.4);
+    ghosts = findGhosts(output, null, bboxes);
+  }
+  // For no-edit tests, skip ghost check — if output === input, there are no ghosts by definition
 
   // Compute markdown diff
   const mdDiffLines: string[] = [];
@@ -396,10 +413,32 @@ async function roundTrip(
     }
   }
 
+  // Frame tree diff (for no-edit tests, trees should match)
+  const flatBefore = flattenTree(treeBefore);
+  const flatAfter = flattenTree(treeAfter);
+  const treeDiffs: string[] = [];
+  if (!action) {
+    // No-edit: frame count and types should be identical
+    if (flatBefore.length !== flatAfter.length) {
+      treeDiffs.push(`Frame count: ${flatBefore.length} → ${flatAfter.length}`);
+    }
+    for (let i = 0; i < Math.min(flatBefore.length, flatAfter.length); i++) {
+      const b = flatBefore[i], a = flatAfter[i];
+      if (b.contentType !== a.contentType) treeDiffs.push(`Node ${i}: type ${b.contentType} → ${a.contentType}`);
+      if (b.text !== a.text) treeDiffs.push(`Node ${i}: text ${JSON.stringify(b.text)} → ${JSON.stringify(a.text)}`);
+      if (Math.abs(b.absX - a.absX) > 1 || Math.abs(b.absY - a.absY) > 1) {
+        treeDiffs.push(`Node ${i}: pos (${Math.round(b.absX)},${Math.round(b.absY)}) → (${Math.round(a.absX)},${Math.round(a.absY)})`);
+      }
+    }
+  }
+
+  // Post-condition invariants
+  const invariantFailures = checkInvariants(treeAfter);
+
   // Verify prose doc round-trips through CM
   const proseAfterReload = await page.evaluate(() => (window as any).__gridpad.getProseDoc());
 
-  // Write summary with diff
+  // Write summary with all diffs
   const summary = [
     `Test: ${testName}`,
     `Input lines: ${inLines.length}`,
@@ -408,8 +447,13 @@ async function roundTrip(
     `Visual diff: ${visualDiff.toFixed(2)}%`,
     `Ghosts: ${ghosts.length}`,
     ...ghosts.map(g => `  ${g}`),
+    `Frame tree diffs: ${treeDiffs.length}`,
+    ...treeDiffs.map(d => `  ${d}`),
+    `Invariant failures: ${invariantFailures.length}`,
+    ...invariantFailures.map(f => `  ${f}`),
     ...(mdDiffLines.length > 0 ? ["\nMarkdown diff:", ...mdDiffLines] : []),
     `\nProse doc after reload: ${proseAfterReload.split("\\n").length} lines`,
+    `Frames before: ${flatBefore.length}  Frames after: ${flatAfter.length}`,
   ].join("\n");
   writeArtifact(testName, "summary.txt", summary);
   console.log(summary);
