@@ -13,7 +13,7 @@ import {
   proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
-  rebuildProseParts, getRegions,
+  rebuildProseParts, getRegions, setRegionsEffect,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
   type CursorPos,
 } from "./editorState";
@@ -203,6 +203,7 @@ export default function DemoV2() {
 
   type WritableHandle = FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> };
   async function saveToHandle(h: FileSystemFileHandle) {
+    console.log("saveToHandle called, handle:", h.name);
     try {
       const state = stateRef.current;
       const md = framesToMarkdown(
@@ -217,7 +218,7 @@ export default function DemoV2() {
       await w.close();
       stateRef.current = applyClearDirty(stateRef.current);
       framesRef.current = getFrames(stateRef.current);
-    } catch { /* ignore write errors */ }
+    } catch (err) { console.error("saveToHandle failed:", err); }
   }
   function scheduleAutosave() {
     if (!fileHandleRef.current) return;
@@ -863,13 +864,27 @@ export default function DemoV2() {
         if (e.key === "Backspace") {
           e.preventDefault();
           const beforeCursor = getCursor(stateRef.current)!;
+          const isLineMerge = beforeCursor.col === 0 && beforeCursor.row > 0;
           stateRef.current = proseDeleteBefore(stateRef.current, beforeCursor);
           proseRef.current = getDoc(stateRef.current);
           framesRef.current = getFrames(stateRef.current);
           const afterCursor = getCursor(stateRef.current)!;
-          if (beforeCursor.col === 0 && beforeCursor.row > 0) {
-            // Backspace at line start — merge with previous line
+          if (isLineMerge) {
             mergeLines(preparedRef.current, beforeCursor.row, stateRef.current.doc.line(afterCursor.row + 1).text);
+            // Shift region boundaries: the prose region shrinks by 1,
+            // all subsequent regions shift up by 1.
+            const mergedRow = beforeCursor.row;
+            const regions = getRegions(stateRef.current);
+            const updated = regions.map(r => {
+              if (r.type === "prose" && r.startRow <= mergedRow && r.endRow >= mergedRow) {
+                return { ...r, endRow: r.endRow - 1 };
+              }
+              if (r.startRow > mergedRow) {
+                return { ...r, startRow: r.startRow - 1, endRow: r.endRow - 1 };
+              }
+              return r;
+            });
+            stateRef.current = stateRef.current.update({ effects: setRegionsEffect.of(updated) }).state;
           } else {
             invalidateLine(preparedRef.current, afterCursor.row, stateRef.current.doc.line(afterCursor.row + 1).text);
           }
@@ -886,6 +901,19 @@ export default function DemoV2() {
           const firstText = stateRef.current.doc.line(beforeRow + 1).text;
           const secondText = stateRef.current.doc.line(beforeRow + 2).text;
           splitLine(preparedRef.current, beforeRow, firstText, secondText);
+          // Shift region boundaries: the prose region containing the cursor
+          // grows by 1 line, all subsequent regions shift down by 1.
+          const regions = getRegions(stateRef.current);
+          const updated = regions.map(r => {
+            if (r.type === "prose" && r.startRow <= beforeRow && r.endRow >= beforeRow) {
+              return { ...r, endRow: r.endRow + 1 };
+            }
+            if (r.startRow > beforeRow) {
+              return { ...r, startRow: r.startRow + 1, endRow: r.endRow + 1 };
+            }
+            return r;
+          });
+          stateRef.current = stateRef.current.update({ effects: setRegionsEffect.of(updated) }).state;
           proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }

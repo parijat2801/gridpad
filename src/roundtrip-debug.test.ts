@@ -5,8 +5,7 @@ import { framesToMarkdown } from "./serialize";
 import {
   createEditorState, getFrames, getRegions, rebuildProseParts,
   applyMoveFrame, applyResizeFrame, applyDeleteFrame, applyAddFrame,
-  proseInsert, getCursor, editTextFrameEffect, getSelectedId,
-  selectFrameEffect, setTextEditEffect, getTextEdit,
+  proseInsert, editTextFrameEffect, setRegionsEffect, getDoc,
 } from "./editorState";
 import { Transaction } from "@codemirror/state";
 import { createRectFrame, createTextFrame } from "./frame";
@@ -231,22 +230,44 @@ describe("round-trip: prose editing", () => {
     L(`Output: ${JSON.stringify(result)}`);
   });
 
-  it("insert newline in prose (Enter)", () => {
-    const { state: s0, regions } = makeState(SIMPLE);
-    const s1 = proseInsert(s0, { row: 0, col: 5 }, "\n");
-    const result = serialize(s1, regions);
-    L("\n=== PROSE: insert newline ===");
+  it("insert newline in prose (Enter) — with region shift", () => {
+    const { state: s0, regions: origRegions } = makeState(SIMPLE);
+    const beforeRow = 0;
+    const s1 = proseInsert(s0, { row: beforeRow, col: 5 }, "\n");
+    // Simulate DemoV2's region shift after Enter
+    const updatedRegions = origRegions.map(r => {
+      if (r.type === "prose" && r.startRow <= beforeRow && r.endRow >= beforeRow) {
+        return { ...r, endRow: r.endRow + 1 };
+      }
+      if (r.startRow > beforeRow) {
+        return { ...r, startRow: r.startRow + 1, endRow: r.endRow + 1 };
+      }
+      return r;
+    });
+    const s2 = s1.update({ effects: setRegionsEffect.of(updatedRegions) }).state;
+    const result = serialize(s2, getRegions(s2));
+    L("\n=== PROSE: insert newline (with region shift) ===");
+    L(`Has Prose: ${result.includes("Prose")} Has End: ${result.includes("End")}`);
+    L(`Has ┌: ${result.includes("┌")}`);
     L(`Output: ${JSON.stringify(result)}`);
   });
 
   it("multi-region prose edit", () => {
     const { state: s0, regions } = makeState(MULTI_WIRE);
-    // Edit "Middle" prose
+    L("\n=== PROSE: multi-region edit (debug) ===");
+    L(`CM doc before: ${JSON.stringify(getDoc(s0))}`);
+    L(`Regions:`);
+    for (const r of regions) L(`  ${r.type} [${r.startRow}-${r.endRow}] text=${JSON.stringify(r.text)}`);
+    L(`rebuildProseParts before:`);
+    for (const p of rebuildProseParts(s0)) L(`  startRow=${p.startRow} text=${JSON.stringify(p.text)}`);
+
     const s1 = proseInsert(s0, { row: 2, col: 6 }, " text");
+    L(`CM doc after: ${JSON.stringify(getDoc(s1))}`);
+    L(`rebuildProseParts after:`);
+    for (const p of rebuildProseParts(s1)) L(`  startRow=${p.startRow} text=${JSON.stringify(p.text)}`);
+
     const result = serialize(s1, regions);
-    L("\n=== PROSE: multi-region edit ===");
     L(`Has 'Middle text': ${result.includes("Middle text")}`);
-    L(`Has Top: ${result.includes("Top")} Has Bottom: ${result.includes("Bottom")}`);
     L(`Output: ${JSON.stringify(result)}`);
   });
 });

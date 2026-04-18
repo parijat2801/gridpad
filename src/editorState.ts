@@ -334,7 +334,7 @@ export function rebuildProseParts(state: EditorState): { startRow: number; text:
 
   for (let i = 0; i < proseRegions.length; i++) {
     const region = proseRegions[i];
-    const regionLines = region.text.split("\n").length;
+    const regionLines = region.endRow - region.startRow + 1;
     const slice = lines.slice(lineOffset, lineOffset + regionLines).join("\n");
     parts.push({ startRow: region.startRow, text: slice });
     lineOffset += regionLines;
