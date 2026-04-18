@@ -1,0 +1,32 @@
+[
+  {
+    "depth": 0,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 0,
+    "w": 154.125,
+    "h": 40.106249999999996,
+    "childCount": 2
+  },
+  {
+    "depth": 1,
+    "contentType": "text",
+    "text": "Wireframe",
+    "absX": 38.53125,
+    "absY": 13.368749999999999,
+    "w": 86.6953125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "text",
+    "text": "Prose A",
+    "absX": 0,
+    "absY": 40.106249999999996,
+    "w": 67.4296875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  }
+]

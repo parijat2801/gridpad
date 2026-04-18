@@ -8,6 +8,8 @@ Ghosts: 4
   Ghost '│' at L14:1: │              │
   Ghost '│' at L15:1: │              │
   Ghost '└' at L16:1: └──────────────┘
+Frame tree diffs: 0
+Invariant failures: 0
 
 Markdown diff:
   L1:
@@ -60,3 +62,4 @@ Markdown diff:
     + "Prose below"
 
 Prose doc after reload: 1 lines
+Frames before: 1  Frames after: 1

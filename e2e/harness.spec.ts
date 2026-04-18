@@ -963,11 +963,12 @@ test.describe("harness", () => {
     writeArtifact("text-label-edit", "output.md", saved);
     await screenshot(page, "text-label-edit", "3-after-save");
 
-    // Check if text was modified (Hello → Hello! or similar)
-    writeArtifact("text-label-edit", "summary.txt",
-      `Input had "Hello": ${LABELED_BOX.includes("Hello")}\n` +
-      `Output has "Hello!": ${saved.includes("Hello!")}\n` +
-      `Output has wireframe: ${saved.includes("┌")}\n`);
+    // MUST assert — no silent pass
+    expect(saved, "Text label edit should produce Hello!").toContain("Hello!");
+    expect(saved, "Wireframe should survive text edit").toContain("┌");
+    expect(saved, "Surrounding prose should survive").toContain("Title");
+    const labelGhosts = await findGhostsFromPage(page, saved);
+    expect(labelGhosts, "Text edit should not create ghosts").toEqual([]);
   });
 
   // ── Large drag past other wireframes ───────────────────
@@ -2209,6 +2210,33 @@ test.describe("critical", () => {
     expect(saved).toContain("# Gridpad");
     const ghosts = await findGhostsFromPage(page, saved);
     writeArtifact("crit-move-all", "ghosts.txt", ghosts.join("\n") || "None");
+  });
+
+  test("prose stability: sub-char frame move should not scramble distant prose", async ({ page }) => {
+    const fixture = `Prose Line 1\n\nProse Line 2\n\n┌────┐\n│ A  │\n└────┘\n\nProse Line 3\n\nProse Line 4\n\n┌────┐\n│ B  │\n└────┘\n\nProse Line 5 bottom`;
+    const r = await roundTrip(page, "crit-prose-stability", fixture, async (p) => {
+      // Move frame A by 2px — less than half a char width (9.6px)
+      // This sets dirty flag but should NOT change grid position
+      await clickFrame(p, 0);
+      await dragSelected(p, 2, 0);
+      await clickProse(p, 5, 5);
+    });
+
+    // All prose lines must be present
+    expect(r.output).toContain("Prose Line 1");
+    expect(r.output).toContain("Prose Line 2");
+    expect(r.output).toContain("Prose Line 3");
+    expect(r.output).toContain("Prose Line 4");
+    expect(r.output).toContain("Prose Line 5 bottom");
+
+    // Distant prose (Line 5) should NOT have moved in the output
+    const inLines = fixture.split("\n");
+    const outLines = r.output.split("\n");
+    const inIdx5 = inLines.findIndex(l => l.includes("Prose Line 5"));
+    const outIdx5 = outLines.findIndex(l => l.includes("Prose Line 5"));
+    expect(outIdx5, "Distant prose line number should not change for sub-char move").toBe(inIdx5);
+
+    expect(r.ghosts).toEqual([]);
   });
 
   test("delete child → undo → move parent", async ({ page }) => {

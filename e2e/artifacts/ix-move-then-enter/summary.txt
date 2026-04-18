@@ -3,7 +3,12 @@ Input lines: 8
 Output lines: 12
 Markdown match: false
 Visual diff: 0.00%
-Ghosts: 0
+Ghosts: 3
+  Ghost '│' at L10:1: │              │
+  Ghost '│' at L11:1: │              │
+  Ghost '└' at L12:1: └──────────────┘
+Frame tree diffs: 0
+Invariant failures: 0
 
 Markdown diff:
   L1:
@@ -38,3 +43,4 @@ Markdown diff:
     + "└──────────────┘"
 
 Prose doc after reload: 1 lines
+Frames before: 1  Frames after: 1

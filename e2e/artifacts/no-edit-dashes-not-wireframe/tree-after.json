@@ -1,0 +1,72 @@
+[
+  {
+    "depth": 0,
+    "contentType": "container",
+    "text": null,
+    "absX": 0,
+    "absY": 26.737499999999997,
+    "w": 134.859375,
+    "h": 66.84374999999999,
+    "childCount": 6
+  },
+  {
+    "depth": 1,
+    "contentType": "line",
+    "text": null,
+    "absX": 9.6328125,
+    "absY": 40.106249999999996,
+    "w": 57.796875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "line",
+    "text": null,
+    "absX": 77.0625,
+    "absY": 40.106249999999996,
+    "w": 48.1640625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "line",
+    "text": null,
+    "absX": 0,
+    "absY": 80.21249999999999,
+    "w": 28.8984375,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "line",
+    "text": null,
+    "absX": 0,
+    "absY": 26.737499999999997,
+    "w": 9.6328125,
+    "h": 40.106249999999996,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "line",
+    "text": null,
+    "absX": 67.4296875,
+    "absY": 26.737499999999997,
+    "w": 9.6328125,
+    "h": 40.106249999999996,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "line",
+    "text": null,
+    "absX": 125.2265625,
+    "absY": 26.737499999999997,
+    "w": 9.6328125,
+    "h": 40.106249999999996,
+    "childCount": 0
+  }
+]

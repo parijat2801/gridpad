@@ -3,18 +3,13 @@ Input lines: 8
 Output lines: 15
 Markdown match: false
 Visual diff: 0.08%
-Ghosts: 11
-  Ghost '┌' at L3:1: ┌───────────────────────────────────┐
-  Ghost '│' at L4:1: │                                   │
-  Ghost '│' at L5:1: │                                   │
-  Ghost '│' at L6:1: │                                   │
-  Ghost '│' at L7:1: │                                   │
-  Ghost '│' at L8:1: │                                   │
-  Ghost '│' at L9:1: │                                   │
+Ghosts: 4
   Ghost '│' at L10:1: │                                   │
   Ghost '│' at L11:1: │                                   │
   Ghost '│' at L12:1: │                                   │
   Ghost '└' at L13:1: └───────────────────────────────────┘
+Frame tree diffs: 0
+Invariant failures: 0
 
 Markdown diff:
   L3:
@@ -58,3 +53,4 @@ Markdown diff:
     + "Prose below"
 
 Prose doc after reload: 1 lines
+Frames before: 1  Frames after: 1

@@ -4,6 +4,8 @@ Output lines: 8
 Markdown match: false
 Visual diff: 0.12%
 Ghosts: 0
+Frame tree diffs: 0
+Invariant failures: 0
 
 Markdown diff:
   L3:
@@ -20,3 +22,4 @@ Markdown diff:
     + ""
 
 Prose doc after reload: 1 lines
+Frames before: 1  Frames after: 0
