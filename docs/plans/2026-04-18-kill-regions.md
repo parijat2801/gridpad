@@ -18,7 +18,7 @@
 
 **Prose position tracking via CM transactions.** `proseSegmentMap` updates from CodeMirror's transaction `changes` object — not just Enter/Backspace keyboard events. Any transaction that changes line count (paste, multi-line delete, undo/redo, replace-selection) correctly shifts subsequent segment rows.
 
-**Wireframes are page-anchored.** Pressing Enter above a wireframe does NOT push the wireframe down. Wireframes stay at their absolute grid positions. Prose flows around them.
+**Wireframes shift with prose edits (Word model).** Pressing Enter above a wireframe pushes it down by one row; Backspace-merge pulls it up. This prevents prose/wireframe overlap in the saved file. The canvas already handles the visual side — `reflowLayout` reflows prose around wireframes in real time. The shift is just updating frame y-positions when prose line count changes above them.
 
 ## Steps (in execution order)
 
@@ -30,7 +30,9 @@
 
 4. **`proseSegmentMapField` — CM StateField for prose line → grid position mapping.** Define as `StateField<Array<{ row: number; col: number }>>` in `editorState.ts`. Index is CM doc line number, value is the grid position for that line. Initialized from `proseSegments` at `createEditorState` time. The field's `update` function inspects `tr.changes` on every transaction: iterate `tr.changes.iterChangedRanges()` to detect inserted/deleted newlines, splice the array accordingly (insert → add entry with row = previous + 1, col = 0, shift subsequent rows; delete → remove entry, shift subsequent rows down). This is reactive — every edit path (Enter, Backspace, paste, multi-line delete, undo/redo, replace-selection, drag/drop) goes through CM transactions, so the map stays in sync automatically. Export `getProseSegmentMap(state)` accessor.
 
-5. **DemoV2 simplifications.** Add `originalGridRef` — stored by `loadDocument` from `scanToFrames`. Remove all region-related imports and dispatching. Delete Enter/Backspace region-shift logic entirely — `proseSegmentMapField` handles it reactively via CM transactions. `saveToHandle` reads `getProseSegmentMap(stateRef.current)` and calls `gridSerialize`. `applyClearDirty` stays. Rewrite `loadDocument` to use new `scanToFrames` return shape — no more `regions` or `proseParts`.
+5. **Frame positions shift with prose line changes (Word model).** When a prose edit changes line count, all frames below the edit point shift vertically. In DemoV2's Enter handler: after `proseInsert`, compute which grid row the newline was added at (from `proseSegmentMap`); dispatch `moveFrameEffect` with `dy = charHeight` on every top-level frame whose `y >= editRow * charHeight`. In Backspace-merge handler: same but `dy = -charHeight`. For paste/multi-line operations: compute net line delta from the CM transaction, shift frames below the edit point by `delta * charHeight`. This keeps wireframes spatially separated from prose in the saved file. The canvas already reflows prose around frames, so the visual result is correct immediately.
+
+6. **DemoV2 simplifications.** Add `originalGridRef` — stored by `loadDocument` from `scanToFrames`. Remove all region-related imports and dispatching. Replace Enter/Backspace region-shift logic with frame-shift logic (step 5). `saveToHandle` reads `getProseSegmentMap(stateRef.current)` and calls `gridSerialize`. `applyClearDirty` stays. Rewrite `loadDocument` to use new `scanToFrames` return shape — no more `regions` or `proseParts`.
 
 6. **`gridSerialize(frames, prose, proseSegmentMap, originalGrid, cw, ch)` replaces `framesToMarkdown`.** Four phases:
 
@@ -42,11 +44,11 @@
 
    **Phase D — Flatten.** Join each row's characters, `trimEnd` each line, join with `\n`, strip trailing empty lines.
 
-7. **Delete cascade for empty containers.** In `deleteFrameEffect` handler: after removing a child, check if parent container's `children.length === 0`; if so, remove the parent too (recursive). Single transaction, so undo restores everything via `invertedEffects` snapshot.
+8. **Delete cascade for empty containers.** In `deleteFrameEffect` handler: after removing a child, check if parent container's `children.length === 0`; if so, remove the parent too (recursive). Single transaction, so undo restores everything via `invertedEffects` snapshot.
 
-8. **New frames serialize naturally.** `applyAddFrame` adds frames at absolute pixel positions with `dirty=true`. Phase B writes their cells. No region needed.
+9. **New frames serialize naturally.** `applyAddFrame` adds frames at absolute pixel positions with `dirty=true`. Phase B writes their cells. No region needed.
 
-9. **Refs update after save.** After `gridSerialize` produces output text: rebuild `originalGrid` from output (`text.split("\n").map(line => [...line])`). Snapshot current frame bboxes for next save's delete detection. Keep `proseSegmentMap` as-is (it's already correct). `applyClearDirty` + refs refresh = "save twice without editing = no-op."
+10. **Refs update after save.** After `gridSerialize` produces output text: rebuild `originalGrid` from output (`text.split("\n").map(line => [...line])`). Snapshot current frame bboxes for next save's delete detection. Keep `proseSegmentMap` as-is (it's already correct). `applyClearDirty` + refs refresh = "save twice without editing = no-op."
 
 | File | Changes |
 |------|---------|
@@ -54,7 +56,7 @@
 | `src/frame.ts` | Add `framesFromScan` (replaces `framesFromRegions`); delete `framesFromRegions` |
 | `src/editorState.ts` | Remove `regionsField`, `prosePartsField`, `setRegionsEffect`, `setProsePartsEffect`, `rebuildProseParts`, `getRegions`, `getProseParts`; add `proseSegmentMapField` + `getProseSegmentMap`; simplify `createEditorState` and rewrite `createEditorStateFromText` |
 | `src/serialize.ts` | Replace `framesToMarkdown` with `gridSerialize` |
-| `src/DemoV2.tsx` | Add `originalGridRef` + `frameBboxSnapshotRef`; remove region imports/dispatching; delete Enter/Backspace region-shift logic; simplify `saveToHandle` and rewrite `loadDocument` |
+| `src/DemoV2.tsx` | Add `originalGridRef` + `frameBboxSnapshotRef`; remove region imports/dispatching; replace Enter/Backspace region-shift with frame-shift (moveFrameEffect on frames below edit point); simplify `saveToHandle` and rewrite `loadDocument` |
 | `src/roundtrip.test.ts` | Update tests; add side-by-side wireframe + inline annotation tests |
 | `src/harness.test.ts` | Rewrite tests that use `detectRegions`/`framesFromRegions` to use `framesFromScan`/`gridSerialize` |
 | `src/editorState.test.ts` | Remove region/proseParts tests |
