@@ -36,6 +36,7 @@ import {
   getTextEdit,
   getProseSegmentMap,
   getOriginalProseSegments,
+  applySetOriginalProseSegments,
   type CursorPos,
 } from "./editorState";
 import { createFrame, createTextFrame, type Frame } from "./frame";
@@ -339,7 +340,7 @@ describe("applyDeleteFrame — recursive (Phase 1)", () => {
     expect(frames[0].children[0].id).toBe(child2.id);
   });
 
-  it("deletes a deeply nested child", () => {
+  it("deletes a deeply nested child (cascade removes empty ancestors)", () => {
     const grandchild = createFrame({ x: 0, y: 0, w: 10, h: 10 });
     const child: Frame = {
       ...createFrame({ x: 0, y: 0, w: 50, h: 50 }),
@@ -351,10 +352,8 @@ describe("applyDeleteFrame — recursive (Phase 1)", () => {
     };
     const s0 = createEditorState({ prose: "", frames: [container], proseSegmentMap: [] });
     const s1 = applyDeleteFrame(s0, grandchild.id);
-    const frames = getFrames(s1);
-    expect(frames).toHaveLength(1);
-    expect(frames[0].children).toHaveLength(1);
-    expect(frames[0].children[0].children).toHaveLength(0);
+    // cascade: child becomes empty → removed; container becomes empty → removed
+    expect(getFrames(s1)).toHaveLength(0);
   });
 
   it("still deletes top-level frames (regression)", () => {
@@ -364,7 +363,7 @@ describe("applyDeleteFrame — recursive (Phase 1)", () => {
     expect(getFrames(s1)).toHaveLength(0);
   });
 
-  it("undo restores deleted child", () => {
+  it("undo restores deleted child (and cascaded parent)", () => {
     const child = createFrame({ x: 0, y: 0, w: 30, h: 30 });
     const container: Frame = {
       ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
@@ -372,7 +371,8 @@ describe("applyDeleteFrame — recursive (Phase 1)", () => {
     };
     const s0 = createEditorState({ prose: "", frames: [container], proseSegmentMap: [] });
     const s1 = applyDeleteFrame(s0, child.id);
-    expect(getFrames(s1)[0].children).toHaveLength(0);
+    // cascade removes both child and the now-empty container
+    expect(getFrames(s1)).toHaveLength(0);
     const s2 = editorUndo(s1);
     expect(getFrames(s2)[0].children).toHaveLength(1);
     expect(getFrames(s2)[0].children[0].id).toBe(child.id);
@@ -1156,5 +1156,62 @@ describe("createEditorStateFromText (grid-based)", () => {
     const origSegs = getOriginalProseSegments(state);
     expect(origSegs.length).toBeGreaterThan(0);
     expect(origSegs.some(s => s.text === "Hello")).toBe(true);
+  });
+});
+
+describe("delete cascade", () => {
+  it("deleting last child also removes empty parent container", () => {
+    const child: Frame = {
+      id: "child1", x: 0, y: 0, w: 100, h: 50,
+      z: 0, children: [], content: { type: "rect", cells: new Map(), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" } },
+      clip: false, dirty: false,
+    };
+    const parent: Frame = {
+      id: "parent1", x: 0, y: 0, w: 200, h: 100,
+      z: 0, children: [child], content: null,
+      clip: true, dirty: false,
+    };
+    const state = createEditorState({
+      prose: "", frames: [parent], proseSegmentMap: [],
+    });
+    const updated = applyDeleteFrame(state, "child1");
+    expect(getFrames(updated)).toHaveLength(0);
+  });
+
+  it("deleting one of two children keeps parent", () => {
+    const child1: Frame = {
+      id: "c1", x: 0, y: 0, w: 50, h: 50, z: 0, children: [],
+      content: { type: "rect", cells: new Map(), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" } },
+      clip: false, dirty: false,
+    };
+    const child2: Frame = {
+      id: "c2", x: 60, y: 0, w: 50, h: 50, z: 0, children: [],
+      content: { type: "rect", cells: new Map(), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" } },
+      clip: false, dirty: false,
+    };
+    const parent: Frame = {
+      id: "p1", x: 0, y: 0, w: 200, h: 100, z: 0,
+      children: [child1, child2], content: null, clip: true, dirty: false,
+    };
+    const state = createEditorState({ prose: "", frames: [parent], proseSegmentMap: [] });
+    const updated = applyDeleteFrame(state, "c1");
+    const frames = getFrames(updated);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].children).toHaveLength(1);
+    expect(frames[0].children[0].id).toBe("c2");
+  });
+});
+
+describe("originalProseSegments refresh", () => {
+  it("setOriginalProseSegments updates the stored segments", () => {
+    const state = createEditorState({
+      prose: "Hello",
+      frames: [],
+      proseSegmentMap: [{ row: 0, col: 0 }],
+      originalProseSegments: [{ row: 0, col: 0, text: "Hello" }],
+    });
+    const newSegs = [{ row: 0, col: 0, text: "Updated" }];
+    const updated = applySetOriginalProseSegments(state, newSegs);
+    expect(getOriginalProseSegments(updated)).toEqual(newSegs);
   });
 });

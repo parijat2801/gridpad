@@ -65,6 +65,7 @@ export const setTextAlignEffect = StateEffect.define<{
 // Restore effect — used by invertedEffects for undo of frame mutations.
 const restoreFramesEffect = StateEffect.define<Frame[]>();
 const clearDirtyEffect = StateEffect.define<null>();
+const setOriginalProseSegmentsEffect = StateEffect.define<ProseSegment[]>();
 
 // Mark a frame dirty by id, propagating up to ancestors.
 function markDirtyById(frames: Frame[], id: string): { frames: Frame[]; found: boolean } {
@@ -136,6 +137,17 @@ const framesField = StateField.define<Frame[]>({
           });
         };
         result = removeById(result);
+        // Cascade: remove empty container parents (content === null, no children left after deletion)
+        const cascadeEmpty = (frames: Frame[]): Frame[] => {
+          return frames
+            .map(f => {
+              if (f.children.length === 0) return f;
+              const updated = cascadeEmpty(f.children);
+              return { ...f, children: updated };
+            })
+            .filter(f => !(f.content === null && f.children.length === 0 && f.dirty));
+        };
+        result = cascadeEmpty(result);
       } else if (e.is(setZEffect)) {
         const applyZ = (f: Frame): Frame => {
           if (f.id === e.value.id) return { ...f, z: e.value.z };
@@ -257,7 +269,12 @@ export function getProseSegmentMap(state: EditorState): { row: number; col: numb
 
 const originalProseSegmentsField = StateField.define<ProseSegment[]>({
   create: () => [],
-  update(segs) { return segs; },
+  update(segs, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setOriginalProseSegmentsEffect)) return e.value;
+    }
+    return segs;
+  },
 });
 
 export function getOriginalProseSegments(state: EditorState): ProseSegment[] {
@@ -571,6 +588,16 @@ export function applyDeleteFrame(state: EditorState, id: string): EditorState {
 export function applyClearDirty(state: EditorState): EditorState {
   return state.update({
     effects: clearDirtyEffect.of(null),
+    annotations: Transaction.addToHistory.of(false),
+  }).state;
+}
+
+export function applySetOriginalProseSegments(
+  state: EditorState,
+  segments: ProseSegment[],
+): EditorState {
+  return state.update({
+    effects: setOriginalProseSegmentsEffect.of(segments),
     annotations: Transaction.addToHistory.of(false),
   }).state;
 }

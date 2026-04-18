@@ -9,7 +9,7 @@ import {
   createEditorStateFromText, getDoc, getFrames,
   selectFrameEffect, getSelectedId,
   moveFrameEffect, resizeFrameEffect, setZEffect,
-  applyAddFrame, applyDeleteFrame, applyClearDirty,
+  applyAddFrame, applyDeleteFrame, applyClearDirty, applySetOriginalProseSegments,
   proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
@@ -220,6 +220,9 @@ export default function DemoV2() {
       await w.write(md);
       await w.close();
       stateRef.current = applyClearDirty(stateRef.current);
+      // Rebuild originalProseSegments from saved output
+      const { proseSegments: newSegs } = scanToFrames(md, cwRef.current, chRef.current);
+      stateRef.current = applySetOriginalProseSegments(stateRef.current, newSegs);
       framesRef.current = getFrames(stateRef.current);
       originalGridRef.current = rebuildOriginalGrid(md);
       frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current), cwRef.current, chRef.current);
