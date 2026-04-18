@@ -1,0 +1,60 @@
+Test: crit-resize-large
+Input lines: 8
+Output lines: 15
+Markdown match: false
+Visual diff: 0.08%
+Ghosts: 11
+  Ghost '┌' at L3:1: ┌───────────────────────────────────┐
+  Ghost '│' at L4:1: │                                   │
+  Ghost '│' at L5:1: │                                   │
+  Ghost '│' at L6:1: │                                   │
+  Ghost '│' at L7:1: │                                   │
+  Ghost '│' at L8:1: │                                   │
+  Ghost '│' at L9:1: │                                   │
+  Ghost '│' at L10:1: │                                   │
+  Ghost '│' at L11:1: │                                   │
+  Ghost '│' at L12:1: │                                   │
+  Ghost '└' at L13:1: └───────────────────────────────────┘
+
+Markdown diff:
+  L3:
+    - "┌──────────────┐"
+    + "┌───────────────────────────────────┐"
+  L4:
+    - "│              │"
+    + "│                                   │"
+  L5:
+    - "│              │"
+    + "│                                   │"
+  L6:
+    - "└──────────────┘"
+    + "│                                   │"
+  L7:
+    - ""
+    + "│                                   │"
+  L8:
+    - "Prose below"
+    + "│                                   │"
+  L9:
+    - "<missing>"
+    + "│                                   │"
+  L10:
+    - "<missing>"
+    + "│                                   │"
+  L11:
+    - "<missing>"
+    + "│                                   │"
+  L12:
+    - "<missing>"
+    + "│                                   │"
+  L13:
+    - "<missing>"
+    + "└───────────────────────────────────┘"
+  L14:
+    - "<missing>"
+    + ""
+  L15:
+    - "<missing>"
+    + "Prose below"
+
+Prose doc after reload: 1 lines

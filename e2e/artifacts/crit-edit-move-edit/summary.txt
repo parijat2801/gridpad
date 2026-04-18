@@ -1,0 +1,20 @@
+Test: crit-edit-move-edit
+Input lines: 8
+Output lines: 8
+Markdown match: false
+Visual diff: 0.00%
+Ghosts: 4
+  Ghost '┌' at L3:1: ┌──────────────┐
+  Ghost '│' at L4:1: │              │
+  Ghost '│' at L5:1: │              │
+  Ghost '└' at L6:1: └──────────────┘
+
+Markdown diff:
+  L1:
+    - "Prose above"
+    + " FIRSTProse above"
+  L8:
+    - "Prose below"
+    + " SECONDProse below"
+
+Prose doc after reload: 1 lines

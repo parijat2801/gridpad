@@ -1,0 +1,38 @@
+Test: crit-long-prose
+Input lines: 8
+Output lines: 9
+Markdown match: false
+Visual diff: 0.00%
+Ghosts: 4
+  Ghost '┌' at L4:1: ┌──────────────┐
+  Ghost '│' at L5:1: │              │
+  Ghost '│' at L6:1: │              │
+  Ghost '└' at L7:1: └──────────────┘
+
+Markdown diff:
+  L1:
+    - "Prose above"
+    + ""
+  L2:
+    - ""
+    + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAProse above"
+  L3:
+    - "┌──────────────┐"
+    + ""
+  L4:
+    - "│              │"
+    + "┌──────────────┐"
+  L6:
+    - "└──────────────┘"
+    + "│              │"
+  L7:
+    - ""
+    + "└──────────────┘"
+  L8:
+    - "Prose below"
+    + ""
+  L9:
+    - "<missing>"
+    + "Prose below"
+
+Prose doc after reload: 1 lines

@@ -1975,4 +1975,224 @@ test.describe("critical", () => {
     const proseGhosts = ghosts.filter(g => g.includes("More") || g.includes("ghost"));
     expect(proseGhosts.length, "Rogue │ in prose not detected:\n" + ghosts.join("\n")).toBeGreaterThan(0);
   });
+
+  test("multiple Enter pushes ALL frames down", async ({ page }) => {
+    await load(page, TWO_SEPARATE);
+    const framesBefore = await getFrames(page);
+    const y0 = framesBefore[0]?.y ?? 0;
+    const y1 = framesBefore[1]?.y ?? 0;
+
+    await clickProse(page, 5, 5);
+    await page.keyboard.press("End");
+    for (let i = 0; i < 5; i++) await page.keyboard.press("Enter");
+    await page.waitForTimeout(300);
+
+    const framesAfter = await getFrames(page);
+    // Both frames should have moved down
+    expect(framesAfter[0]?.y).toBeGreaterThan(y0);
+    if (framesAfter.length > 1) expect(framesAfter[1]?.y).toBeGreaterThan(y1);
+
+    const saved = await save(page);
+    writeArtifact("crit-multi-enter-shift", "output.md", saved);
+    expect(saved).toContain("│ A  │");
+    expect(saved).toContain("│ B  │");
+  });
+
+  test("Backspace merges line above wireframe, frame shifts up", async ({ page }) => {
+    const fixture = `Line one\n\nLine two\n\n┌────┐\n│ A  │\n└────┘\n\nEnd`;
+    await load(page, fixture);
+    const yBefore = (await getFrames(page))[0]?.y ?? 0;
+
+    // Click "Line two", go to start, backspace to merge with blank line
+    await clickProse(page, 5, 55);
+    await page.keyboard.press("Home");
+    await page.keyboard.press("Backspace");
+    await page.waitForTimeout(300);
+
+    const yAfter = (await getFrames(page))[0]?.y ?? 0;
+    expect(yAfter).toBeLessThan(yBefore);
+
+    const saved = await save(page);
+    expect(saved).toContain("│ A  │");
+    expect(saved).toContain("End");
+  });
+
+  test("drag frame to negative X clamps at 0", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    await clickFrame(page, 0);
+    await dragSelected(page, -500, 0);
+    await clickProse(page, 300, 5);
+    await screenshot(page, "crit-negative-drag", "1-after");
+    const saved = await save(page);
+    writeArtifact("crit-negative-drag", "output.md", saved);
+    expect(saved).toContain("┌");
+    expect(saved).toContain("Prose above");
+    const ghosts = await findGhostsFromPage(page, saved);
+    expect(ghosts).toEqual([]);
+  });
+
+  test("resize to very large", async ({ page }) => {
+    const r = await roundTrip(page, "crit-resize-large", SIMPLE_BOX, async (p) => {
+      await clickFrame(p, 0);
+      await resizeSelected(p, 200, 100);
+      await clickProse(p, 5, 5);
+    });
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("└");
+    // Box should be wider
+    const topLine = r.output.split("\n").find(l => l.includes("┌") && l.includes("┐"));
+    expect(topLine!.length).toBeGreaterThan(20);
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("type 100 chars of prose, wireframe survives", async ({ page }) => {
+    const r = await roundTrip(page, "crit-long-prose", SIMPLE_BOX, async (p) => {
+      await clickProse(p, 5, 5);
+      await p.keyboard.press("End");
+      await p.keyboard.press("Enter");
+      await p.keyboard.type("A".repeat(100));
+    });
+    expect(r.output).toContain("A".repeat(50)); // at least 50 survived
+    expect(r.output).toContain("┌");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("Enter 10 times, wireframe still below", async ({ page }) => {
+    const r = await roundTrip(page, "crit-10-enters", SIMPLE_BOX, async (p) => {
+      await clickProse(p, 5, 5);
+      await p.keyboard.press("End");
+      for (let i = 0; i < 10; i++) await p.keyboard.press("Enter");
+    });
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("Prose below");
+    const origLines = SIMPLE_BOX.split("\n").length;
+    expect(r.output.split("\n").length).toBe(origLines + 10);
+  });
+
+  test("drag same frame 10 times in sequence", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    writeArtifact("crit-10-drags", "input.md", SIMPLE_BOX);
+
+    for (let i = 0; i < 10; i++) {
+      await clickFrame(page, 0);
+      await dragSelected(page, 5, 0);
+      await clickProse(page, 300, 5);
+    }
+
+    await screenshot(page, "crit-10-drags", "1-after");
+    const saved = await save(page);
+    writeArtifact("crit-10-drags", "output.md", saved);
+    expect(saved).toContain("┌");
+    // Frame should have moved right by ~50px total (10 * 5)
+    const boxLine = saved.split("\n").find(l => l.includes("┌"))!;
+    const indent = boxLine.length - boxLine.trimStart().length;
+    expect(indent).toBeGreaterThan(3);
+    const ghosts = await findGhostsFromPage(page, saved);
+    expect(ghosts).toEqual([]);
+  });
+
+  test("edit prose → move frame → edit prose again", async ({ page }) => {
+    const r = await roundTrip(page, "crit-edit-move-edit", SIMPLE_BOX, async (p) => {
+      // First edit
+      await clickProse(p, 5, 5);
+      await p.keyboard.press("End");
+      await p.keyboard.type(" FIRST");
+      await p.waitForTimeout(200);
+
+      // Move frame
+      await clickFrame(p, 0);
+      await dragSelected(p, 50, 0);
+      await clickProse(p, 5, 5);
+
+      // Second edit — below the frame
+      const frames = await getFrames(p);
+      const belowY = frames[0].y + frames[0].h + 30;
+      await clickProse(p, 5, belowY);
+      await p.keyboard.press("End");
+      await p.keyboard.type(" SECOND");
+    });
+    expect(r.output).toContain("FIRST");
+    expect(r.output).toContain("SECOND");
+    expect(r.output).toContain("┌");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("add rect → move it → save", async ({ page }) => {
+    await load(page, PURE_PROSE);
+    writeArtifact("crit-add-then-move", "input.md", PURE_PROSE);
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+
+    // Draw rect
+    await page.keyboard.press("r");
+    await page.waitForTimeout(200);
+    const sx = box!.x + 50, sy = box!.y + 100;
+    await page.mouse.move(sx, sy);
+    await page.mouse.down();
+    await page.mouse.move(sx + 100, sy + 50);
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+
+    // Move it
+    await clickFrame(page, 0);
+    await dragSelected(page, 80, 0);
+    await clickProse(page, 5, 5);
+
+    await screenshot(page, "crit-add-then-move", "1-after");
+    const saved = await save(page);
+    writeArtifact("crit-add-then-move", "output.md", saved);
+    expect(saved).toContain("┌");
+    expect(saved).toContain("Just some prose");
+    const ghosts = await findGhostsFromPage(page, saved);
+    expect(ghosts).toEqual([]);
+  });
+
+  test("move all 4 frames in default doc, save", async ({ page }) => {
+    // Use default text
+    const frames = await getFrames(page);
+    writeArtifact("crit-move-all", "frame-count.txt", `Frames: ${frames.length}`);
+
+    for (let i = 0; i < Math.min(frames.length, 4); i++) {
+      await clickFrame(page, i);
+      await dragSelected(page, 20, 0);
+      await clickProse(page, 5, 5);
+    }
+
+    await screenshot(page, "crit-move-all", "1-all-moved");
+    const saved = await save(page);
+    writeArtifact("crit-move-all", "output.md", saved);
+    expect(saved).toContain("┌");
+    expect(saved).toContain("# Gridpad");
+    const ghosts = await findGhostsFromPage(page, saved);
+    writeArtifact("crit-move-all", "ghosts.txt", ghosts.join("\n") || "None");
+  });
+
+  test("delete child → undo → move parent", async ({ page }) => {
+    await load(page, WITH_CHILDREN);
+    writeArtifact("crit-del-undo-move", "input.md", WITH_CHILDREN);
+
+    // Drill down and delete inner
+    await clickChild(page, 0);
+    await page.keyboard.press("Delete");
+    await page.waitForTimeout(300);
+
+    // Undo
+    await page.keyboard.press("Meta+z");
+    await page.waitForTimeout(300);
+
+    // Move parent
+    await clickFrame(page, 0);
+    await dragSelected(page, 50, 0);
+    await clickProse(page, 5, 5);
+
+    await screenshot(page, "crit-del-undo-move", "1-after");
+    const saved = await save(page);
+    writeArtifact("crit-del-undo-move", "output.md", saved);
+
+    expect(saved).toContain("Outer");
+    expect(saved).toContain("Inner");
+    expect(saved).toContain("┌");
+    const tree = await getFrameTree(page);
+    expect(checkInvariants(tree)).toEqual([]);
+  });
 });
