@@ -1033,3 +1033,254 @@ test.describe("harness", () => {
     }
   });
 });
+
+test.describe("bugs to fix", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  test("bug: no wire chars as text nodes in frame tree", async ({ page }) => {
+    // Load default text — known to have "│" as a text node
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    const wireTextNodes = flat.filter(f =>
+      f.contentType === "text" && f.text && WIRE_CHARS.has(f.text)
+    );
+    writeArtifact("bug-wire-text-nodes", "found.json", JSON.stringify(wireTextNodes, null, 2));
+    expect(wireTextNodes, "Wire chars found as text nodes:\n" +
+      wireTextNodes.map(n => `"${n.text}" at (${Math.round(n.absX)},${Math.round(n.absY)})`).join("\n")
+    ).toEqual([]);
+  });
+
+  test("bug: text labels are not split by spaces", async ({ page }) => {
+    const LABELED = `┌──────────────────┐\n│  Revenue Chart  │\n└──────────────────┘`;
+    await load(page, LABELED);
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    const textNodes = flat.filter(f => f.contentType === "text" && f.text);
+    writeArtifact("bug-split-labels", "labels.json", JSON.stringify(textNodes, null, 2));
+    // "Revenue Chart" should be ONE text node, not two
+    const hasRevenue = textNodes.some(t => t.text === "Revenue Chart");
+    const hasSplitRevenue = textNodes.some(t => t.text === "Revenue") && textNodes.some(t => t.text === "Chart");
+    expect(hasRevenue || !hasSplitRevenue, "Revenue Chart split into separate nodes").toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// UX STRESS TESTS — things real users do
+// ═══════════════════════════════════════════════════════
+
+test.describe("ux stress", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  test("ux: drag save drag save — position accumulates correctly", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    writeArtifact("ux-drag-save-drag", "input.md", SIMPLE_BOX);
+
+    // Drag right 50px, save
+    await clickFrame(page, 0);
+    await dragSelected(page, 50, 0);
+    await clickProse(page, 5, 5);
+    const save1 = await save(page);
+    writeArtifact("ux-drag-save-drag", "save1.md", save1);
+    await screenshot(page, "ux-drag-save-drag", "1-after-first-drag");
+
+    // Drag right another 50px, save
+    await clickFrame(page, 0);
+    await dragSelected(page, 50, 0);
+    await clickProse(page, 5, 5);
+    const save2 = await save(page);
+    writeArtifact("ux-drag-save-drag", "save2.md", save2);
+    await screenshot(page, "ux-drag-save-drag", "2-after-second-drag");
+
+    // Reload save2 — frame should be at accumulated position
+    await load(page, save2);
+    await screenshot(page, "ux-drag-save-drag", "3-reloaded");
+    const finalFrames = await getFrames(page);
+    // Frame should have moved right from its original position
+    expect(finalFrames[0].x).toBeGreaterThan(50);
+    expect(save2).toContain("┌");
+    const sections = findWireframeSections(save2);
+    expect(findGhosts(save2, sections)).toEqual([]);
+  });
+
+  test("ux: tiny 2x2 wireframe round-trips", async ({ page }) => {
+    const tiny = `Text\n\n┌┐\n└┘\n\nEnd`;
+    const r = await roundTrip(page, "ux-tiny-box", tiny);
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("└");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("ux: wide wireframe (50+ cols) round-trips", async ({ page }) => {
+    const wide = `Title\n\n┌${"─".repeat(60)}┐\n│${" ".repeat(60)}│\n└${"─".repeat(60)}┘\n\nEnd`;
+    const r = await roundTrip(page, "ux-wide-box", wide);
+    expect(r.markdownMatch).toBe(true);
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("ux: indented wireframe preserves column offset", async ({ page }) => {
+    const indented = `Title\n\n     ┌──────┐\n     │ Box  │\n     └──────┘\n\nEnd`;
+    const r = await roundTrip(page, "ux-indented", indented);
+    // Box should still be indented in output
+    const boxLine = r.output.split("\n").find(l => l.includes("┌"));
+    expect(boxLine).toBeDefined();
+    expect(boxLine!.startsWith("     ┌")).toBe(true);
+  });
+
+  test("ux: delete all wireframes leaves clean prose", async ({ page }) => {
+    await load(page, TWO_SEPARATE);
+    writeArtifact("ux-delete-all", "input.md", TWO_SEPARATE);
+
+    // Delete first wireframe
+    await clickFrame(page, 0);
+    await page.keyboard.press("Delete");
+    await page.waitForTimeout(300);
+
+    // Delete second wireframe (now index 0)
+    const frames2 = await getFrames(page);
+    if (frames2.length > 0) {
+      await clickFrame(page, 0);
+      await page.keyboard.press("Delete");
+      await page.waitForTimeout(300);
+    }
+
+    await screenshot(page, "ux-delete-all", "1-all-deleted");
+    const saved = await save(page);
+    writeArtifact("ux-delete-all", "output.md", saved);
+
+    // No wire chars should remain
+    const hasWire = [...saved].some(c => WIRE_CHARS.has(c));
+    expect(hasWire, "Wire chars remain after deleting all:\n" + saved).toBe(false);
+    expect(saved).toContain("Top");
+    expect(saved).toContain("Bottom");
+  });
+
+  test("ux: add wireframe to empty doc", async ({ page }) => {
+    await load(page, "");
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+
+    // Draw a rect
+    await page.keyboard.press("r");
+    await page.waitForTimeout(200);
+    const sx = box!.x + 50, sy = box!.y + 50;
+    await page.mouse.move(sx, sy);
+    await page.mouse.down();
+    await page.mouse.move(sx + 100, sy + 60);
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+
+    await screenshot(page, "ux-add-to-empty", "1-drawn");
+    const saved = await save(page);
+    writeArtifact("ux-add-to-empty", "output.md", saved);
+
+    expect(saved).toContain("┌");
+    expect(saved).toContain("└");
+  });
+
+  test("ux: prose with markdown syntax survives", async ({ page }) => {
+    const mdProse = `# Heading\n\n**Bold text** and *italic*\n\n- list item 1\n- list item 2\n\n> blockquote\n\n┌────┐\n│ OK │\n└────┘\n\n\`code\` and [link](url)`;
+    const r = await roundTrip(page, "ux-markdown-syntax", mdProse);
+    expect(r.output).toContain("# Heading");
+    expect(r.output).toContain("**Bold text**");
+    expect(r.output).toContain("- list item");
+    expect(r.output).toContain("> blockquote");
+    expect(r.output).toContain("`code`");
+    expect(r.output).toContain("┌────┐");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("ux: 0 blank lines between prose and wireframe", async ({ page }) => {
+    const tight = `Prose\n┌──┐\n│  │\n└──┘\nMore`;
+    const r = await roundTrip(page, "ux-zero-blank-lines", tight);
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("Prose");
+    expect(r.output).toContain("More");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("ux: 3 blank lines between prose and wireframe", async ({ page }) => {
+    const spaced = `Prose\n\n\n\n┌──┐\n│  │\n└──┘\n\n\n\nMore`;
+    const r = await roundTrip(page, "ux-three-blank-lines", spaced);
+    expect(r.markdownMatch).toBe(true);
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("ux: adjacent wireframes sharing a wall", async ({ page }) => {
+    const adjacent = `Text\n\n┌────┬────┐\n│ L  │ R  │\n└────┴────┘\n\nEnd`;
+    const r = await roundTrip(page, "ux-adjacent-wall", adjacent);
+    expect(r.output).toContain("┬");
+    expect(r.output).toContain("┴");
+    expect(r.markdownMatch).toBe(true);
+  });
+
+  test("ux: multiple undo/redo cycle", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    writeArtifact("ux-multi-undo", "input.md", SIMPLE_BOX);
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+
+    // Type 3 chars
+    await page.mouse.click(box!.x + 5, box!.y + 5);
+    await page.waitForTimeout(200);
+    await page.keyboard.press("End");
+    await page.keyboard.type("ABC");
+    await page.waitForTimeout(200);
+
+    // Undo 3 times
+    for (let i = 0; i < 3; i++) {
+      await page.keyboard.press("Meta+z");
+      await page.waitForTimeout(100);
+    }
+
+    // Redo 2 times
+    for (let i = 0; i < 2; i++) {
+      await page.keyboard.press("Meta+Shift+z");
+      await page.waitForTimeout(100);
+    }
+    await page.waitForTimeout(200);
+
+    await screenshot(page, "ux-multi-undo", "1-after-undo-redo");
+    const saved = await save(page);
+    writeArtifact("ux-multi-undo", "output.md", saved);
+
+    // Should have "AB" (typed 3, undo 3, redo 2)
+    expect(saved).toContain("AB");
+    expect(saved).not.toContain("ABC");
+    expect(saved).toContain("┌");
+  });
+
+  test("ux: rapid click between wireframe and prose", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+    const frames = await getFrames(page);
+    const f = frames[0];
+
+    // Rapid alternating clicks
+    for (let i = 0; i < 5; i++) {
+      // Click wireframe
+      await page.mouse.click(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
+      await page.waitForTimeout(50);
+      // Click prose
+      await page.mouse.click(box!.x + 5, box!.y + 5);
+      await page.waitForTimeout(50);
+    }
+    await page.waitForTimeout(300);
+
+    // Should still be functional — no crash, content intact
+    await screenshot(page, "ux-rapid-click", "1-after");
+    const saved = await save(page);
+    expect(saved).toContain("┌");
+    expect(saved).toContain("Prose above");
+    const sections = findWireframeSections(saved);
+    expect(findGhosts(saved, sections)).toEqual([]);
+  });
+});

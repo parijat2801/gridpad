@@ -1,5 +1,5 @@
 Top-level: 4
-Total nodes: 70
+Total nodes: 69
 Max depth: 4
 
 container  at (0,160) 549x201 children=4
@@ -32,10 +32,9 @@ container  at (0,160) 549x201 children=4
     text "User: Alice" at (414,227) 106x13 children=0
     text "Role: Admin" at (414,241) 106x13 children=0
 container  at (0,535) 193x214 children=3
-  rect  at (0,535) 193x40 children=3
+  rect  at (0,535) 193x40 children=2
     text "My App" at (48,548) 58x13 children=0
     text "≡" at (144,548) 10x13 children=0
-    text "│" at (193,548) 10x13 children=0
   rect  at (0,561) 193x160 children=2
     rect  at (29,615) 135x80 children=2
       rect  at (58,642) 77x40 children=1

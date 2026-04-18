@@ -1,9 +1,7 @@
 Top-level frames: 1
-Total nodes: 6
+Total nodes: 4
 Max depth: 2
 rect  at (0,27) 250x80
   rect  at (29,53) 193x40
     text "Inner" at (58,67) 48x13
-    text "│" at (222,67) 10x13
   text "Outer" at (29,40) 48x13
-  text "│" at (250,67) 10x13

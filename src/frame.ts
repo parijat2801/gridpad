@@ -273,9 +273,23 @@ export function framesFromScan(
 
   reparentChildren(frames, charWidth, charHeight);
 
+  // Filter out text frames that are just wire/border characters.
+  // The scanner's detectTexts sometimes claims border chars (│, ─, etc.)
+  // as text labels. Remove them at every level of the tree.
+  const WIRE_CHARS = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"]);
+  const isWireText = (f: Frame): boolean =>
+    f.content?.type === "text" &&
+    typeof f.content.text === "string" &&
+    [...f.content.text].every(ch => WIRE_CHARS.has(ch) || ch === " ");
+  const filterWireText = (fs: Frame[]): Frame[] =>
+    fs.filter(f => !isWireText(f)).map(f =>
+      f.children.length > 0 ? { ...f, children: filterWireText(f.children) } : f
+    );
+  const cleaned = filterWireText(frames);
+
   // After reparenting, top-level text frames are bare prose — discard them.
   // Text frames that belong inside rects have already been moved to children.
-  const shaped = frames.filter((f) => f.content?.type !== "text");
+  const shaped = cleaned.filter((f) => f.content?.type !== "text");
 
   // Group overlapping/adjacent top-level frames into container frames.
   // This restores the "click container → drag whole wireframe" UX that
