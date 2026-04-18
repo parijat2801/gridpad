@@ -42,7 +42,7 @@ beforeAll(() => {
 describe("drag: incremental moves", () => {
   it("3 sequential move deltas land frame at correct position", () => {
     const f = createFrame({ x: 100, y: 200, w: 80, h: 40 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     const startX = 100, startY = 200;
 
     // Simulate 3 mousemove events, each 5px further
@@ -60,7 +60,7 @@ describe("drag: incremental moves", () => {
 
   it("drag to negative coordinates clamps at 0", () => {
     const f = createFrame({ x: 5, y: 5, w: 80, h: 40 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     // Move far left/up
     state = applyMoveFrame(state, f.id, -100, -100);
     const final = getFrames(state)[0];
@@ -73,7 +73,7 @@ describe("drag: incremental moves", () => {
 describe("editTextFrameEffect on child frames", () => {
   it("top-level text frame updates correctly", () => {
     const f = createTextFrame({ text: "Hi", row: 0, col: 0, charWidth: 10, charHeight: 20 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     state = state.update({
       effects: editTextFrameEffect.of({ id: f.id, text: "Hello", charWidth: 10 }),
       annotations: [Transaction.addToHistory.of(true)],
@@ -106,8 +106,7 @@ describe("prose cursor placement", () => {
     let state = createEditorState({
       prose: "hello\nworld\nfoo",
       frames: [],
-      regions: [],
-      proseParts: [],
+      proseSegmentMap: [],
     });
     state = moveCursorTo(state, { row: 1, col: 3 });
     expect(getCursor(state)).toEqual({ row: 1, col: 3 });
@@ -117,8 +116,7 @@ describe("prose cursor placement", () => {
     let state = createEditorState({
       prose: "hello\nworld",
       frames: [],
-      regions: [],
-      proseParts: [],
+      proseSegmentMap: [],
     });
     state = proseInsert(state, { row: 1, col: 5 }, "!");
     expect(getDoc(state)).toBe("hello\nworld!");

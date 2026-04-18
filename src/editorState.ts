@@ -1,6 +1,6 @@
 // src/editorState.ts
 // Single CM EditorState backing all of Gridpad's state.
-// Prose in doc, frames/regions/proseParts as StateFields.
+// Prose in doc, frames/proseSegmentMap as StateFields.
 // One history stack for everything — no zustand, no zundo.
 
 import {
@@ -14,18 +14,12 @@ import { history, undo, redo, undoDepth, redoDepth, invertedEffects } from "@cod
 import type { Frame } from "./frame";
 import { moveFrame, resizeFrame } from "./frame";
 import { layoutTextChildren } from "./autoLayout";
-import type { Region } from "./regions";
 import { scanToFrames } from "./scanToFrames";
 import type { ProseSegment } from "./proseSegments";
 
 export { undoDepth, redoDepth };
 
 // ── Types ──────────────────────────────────────────────────────────────────
-
-export interface ProsePart {
-  startRow: number;
-  text: string;
-}
 
 export interface CursorPos {
   row: number;  // 0-indexed line number
@@ -53,10 +47,6 @@ const addFrameEffect = StateEffect.define<Frame>();
 const deleteFrameEffect = StateEffect.define<{ id: string }>();
 
 export const setZEffect = StateEffect.define<{ id: string; z: number }>();
-
-export const setRegionsEffect = StateEffect.define<Region[]>();
-
-export const setProsePartsEffect = StateEffect.define<ProsePart[]>();
 
 export const selectFrameEffect = StateEffect.define<string | null>();
 
@@ -197,26 +187,6 @@ const framesField = StateField.define<Frame[]>({
   },
 });
 
-const regionsField = StateField.define<Region[]>({
-  create: () => [],
-  update(regions, tr: Transaction) {
-    for (const e of tr.effects) {
-      if (e.is(setRegionsEffect)) return e.value;
-    }
-    return regions;
-  },
-});
-
-const prosePartsField = StateField.define<ProsePart[]>({
-  create: () => [],
-  update(parts, tr: Transaction) {
-    for (const e of tr.effects) {
-      if (e.is(setProsePartsEffect)) return e.value;
-    }
-    return parts;
-  },
-});
-
 const selectedIdField = StateField.define<string | null>({
   create: () => null,
   update(val, tr) {
@@ -299,14 +269,12 @@ export function getOriginalProseSegments(state: EditorState): ProseSegment[] {
 interface EditorStateInit {
   prose: string;
   frames: Frame[];
-  regions?: Region[];
-  proseParts?: ProsePart[];
   proseSegmentMap?: { row: number; col: number }[];
   originalProseSegments?: ProseSegment[];
 }
 
 export function createEditorState(init: EditorStateInit): EditorState {
-  const { prose, frames, regions, proseParts } = init;
+  const { prose, frames } = init;
   // invertedEffects tells CM history how to undo frame mutations:
   // snapshot the frames array before the transaction and emit a
   // restoreFramesEffect that replays it on undo.
@@ -332,8 +300,6 @@ export function createEditorState(init: EditorStateInit): EditorState {
     framesField.init(() => frames),
     selectedIdField,
     textEditField,
-    regionsField.init(() => regions ?? []),
-    prosePartsField.init(() => proseParts ?? []),
   ];
 
   if (init.proseSegmentMap) {
@@ -392,40 +358,12 @@ export function getFrames(state: EditorState): Frame[] {
 }
 
 
-export function getRegions(state: EditorState): Region[] {
-  return state.field(regionsField);
-}
-
-export function getProseParts(state: EditorState): ProsePart[] {
-  return state.field(prosePartsField);
-}
-
 // getCursor returns the cursor as grapheme {row, col}.
 // Returns null if the selection is a range (not a collapsed cursor).
 export function getCursor(state: EditorState): CursorPos | null {
   const sel = state.selection.main;
   if (!sel.empty) return null;
   return posToRowCol(state, sel.from);
-}
-
-export function rebuildProseParts(state: EditorState): { startRow: number; text: string }[] {
-  const regions = getRegions(state);
-  const doc = getDoc(state);
-  const lines = doc.split("\n");
-  const proseRegions = regions.filter(r => r.type === "prose");
-  const parts: { startRow: number; text: string }[] = [];
-  let lineOffset = 0;
-
-  for (let i = 0; i < proseRegions.length; i++) {
-    const region = proseRegions[i];
-    const regionLines = region.endRow - region.startRow + 1;
-    const slice = lines.slice(lineOffset, lineOffset + regionLines).join("\n");
-    parts.push({ startRow: region.startRow, text: slice });
-    lineOffset += regionLines;
-    // Skip the \n\n separator between prose parts (adds 1 empty line in the doc)
-    if (i < proseRegions.length - 1) lineOffset += 1;
-  }
-  return parts;
 }
 
 // ── Position converters ────────────────────────────────────────────────────

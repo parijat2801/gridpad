@@ -8,8 +8,6 @@ import {
   createEditorStateFromText,
   getDoc,
   getFrames,
-  getRegions,
-  getProseParts,
   getCursor,
   proseInsert,
   proseDeleteBefore,
@@ -36,23 +34,16 @@ import {
   setTextEditEffect,
   editTextFrameEffect,
   getTextEdit,
-  rebuildProseParts,
   getProseSegmentMap,
   getOriginalProseSegments,
   type CursorPos,
-  type ProsePart,
 } from "./editorState";
 import { createFrame, createTextFrame, type Frame } from "./frame";
-import type { Region } from "./regions";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function emptyState(prose = "") {
-  return createEditorState({ prose, frames: [], regions: [], proseParts: [] });
-}
-
-function makeRegion(type: "prose" | "wireframe", startRow: number, endRow: number, text = ""): Region {
-  return { type, startRow, endRow, text };
+  return createEditorState({ prose, frames: [], proseSegmentMap: [] });
 }
 
 // ── Task 1: createEditorState ────────────────────────────────────────────────
@@ -62,8 +53,7 @@ describe("createEditorState", () => {
     const state = createEditorState({
       prose: "Hello world",
       frames: [],
-      regions: [],
-      proseParts: [],
+      proseSegmentMap: [],
     });
     expect(getDoc(state)).toBe("Hello world");
   });
@@ -73,8 +63,7 @@ describe("createEditorState", () => {
     const state = createEditorState({
       prose: "",
       frames: [frame],
-      regions: [],
-      proseParts: [],
+      proseSegmentMap: [],
     });
     const frames = getFrames(state);
     expect(frames).toHaveLength(1);
@@ -97,34 +86,6 @@ describe("createEditorState", () => {
     expect(cursor).not.toBeNull();
     expect(cursor!.row).toBe(0);
     expect(cursor!.col).toBe(0);
-  });
-
-  it("stores regions", () => {
-    const region = makeRegion("prose", 0, 2, "hello");
-    const state = createEditorState({
-      prose: "hello",
-      frames: [],
-      regions: [region],
-      proseParts: [],
-    });
-    const regions = getRegions(state);
-    expect(regions).toHaveLength(1);
-    expect(regions[0].type).toBe("prose");
-    expect(regions[0].startRow).toBe(0);
-  });
-
-  it("stores proseParts", () => {
-    const parts: ProsePart[] = [{ startRow: 0, text: "hello" }];
-    const state = createEditorState({
-      prose: "hello",
-      frames: [],
-      regions: [],
-      proseParts: parts,
-    });
-    const stored = getProseParts(state);
-    expect(stored).toHaveLength(1);
-    expect(stored[0].startRow).toBe(0);
-    expect(stored[0].text).toBe("hello");
   });
 
   it("empty doc has empty string", () => {
@@ -267,7 +228,7 @@ describe("moveCursorTo", () => {
 describe("applyMoveFrame", () => {
   it("moves a frame by delta", () => {
     const frame = createFrame({ x: 10, y: 20, w: 100, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
     const s1 = applyMoveFrame(s0, frame.id, 5, 10);
     const frames = getFrames(s1);
     expect(frames[0].x).toBe(15);
@@ -277,7 +238,7 @@ describe("applyMoveFrame", () => {
   it("does not affect other frames", () => {
     const f1 = createFrame({ x: 0, y: 0, w: 50, h: 50 });
     const f2 = createFrame({ x: 100, y: 100, w: 50, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [f1, f2], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [f1, f2], proseSegmentMap: [] });
     const s1 = applyMoveFrame(s0, f1.id, 5, 5);
     const frames = getFrames(s1);
     const moved = frames.find((f) => f.id === f1.id)!;
@@ -288,7 +249,7 @@ describe("applyMoveFrame", () => {
 
   it("negative delta moves frame left/up", () => {
     const frame = createFrame({ x: 50, y: 50, w: 100, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
     const s1 = applyMoveFrame(s0, frame.id, -10, -20);
     const frames = getFrames(s1);
     expect(frames[0].x).toBe(40);
@@ -299,7 +260,7 @@ describe("applyMoveFrame", () => {
 describe("applyResizeFrame", () => {
   it("resizes a frame to new dimensions", () => {
     const frame = createFrame({ x: 0, y: 0, w: 100, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
     const s1 = applyResizeFrame(s0, frame.id, 200, 100, 10, 20);
     const frames = getFrames(s1);
     expect(frames[0].w).toBe(200);
@@ -308,7 +269,7 @@ describe("applyResizeFrame", () => {
 
   it("enforces minimum size", () => {
     const frame = createFrame({ x: 0, y: 0, w: 100, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
     // charWidth=10, charHeight=20 → minW=20, minH=40
     const s1 = applyResizeFrame(s0, frame.id, 1, 1, 10, 20);
     const frames = getFrames(s1);
@@ -329,7 +290,7 @@ describe("applyAddFrame", () => {
 
   it("appends to existing frames", () => {
     const f1 = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [f1], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [f1], proseSegmentMap: [] });
     const f2 = createFrame({ x: 100, y: 0, w: 50, h: 50 });
     const s1 = applyAddFrame(s0, f2);
     expect(getFrames(s1)).toHaveLength(2);
@@ -339,7 +300,7 @@ describe("applyAddFrame", () => {
 describe("applyDeleteFrame", () => {
   it("removes the frame with the given id", () => {
     const frame = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
     const s1 = applyDeleteFrame(s0, frame.id);
     expect(getFrames(s1)).toHaveLength(0);
   });
@@ -347,7 +308,7 @@ describe("applyDeleteFrame", () => {
   it("does not remove other frames", () => {
     const f1 = createFrame({ x: 0, y: 0, w: 50, h: 50 });
     const f2 = createFrame({ x: 100, y: 0, w: 50, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [f1, f2], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [f1, f2], proseSegmentMap: [] });
     const s1 = applyDeleteFrame(s0, f1.id);
     const frames = getFrames(s1);
     expect(frames).toHaveLength(1);
@@ -356,7 +317,7 @@ describe("applyDeleteFrame", () => {
 
   it("is a no-op when id does not exist", () => {
     const frame = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
     const s1 = applyDeleteFrame(s0, "nonexistent-id");
     expect(getFrames(s1)).toHaveLength(1);
   });
@@ -370,7 +331,7 @@ describe("applyDeleteFrame — recursive (Phase 1)", () => {
       ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
       children: [child1, child2],
     };
-    const s0 = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [container], proseSegmentMap: [] });
     const s1 = applyDeleteFrame(s0, child1.id);
     const frames = getFrames(s1);
     expect(frames).toHaveLength(1);
@@ -388,7 +349,7 @@ describe("applyDeleteFrame — recursive (Phase 1)", () => {
       ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
       children: [child],
     };
-    const s0 = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [container], proseSegmentMap: [] });
     const s1 = applyDeleteFrame(s0, grandchild.id);
     const frames = getFrames(s1);
     expect(frames).toHaveLength(1);
@@ -398,7 +359,7 @@ describe("applyDeleteFrame — recursive (Phase 1)", () => {
 
   it("still deletes top-level frames (regression)", () => {
     const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     const s1 = applyDeleteFrame(s0, f.id);
     expect(getFrames(s1)).toHaveLength(0);
   });
@@ -409,7 +370,7 @@ describe("applyDeleteFrame — recursive (Phase 1)", () => {
       ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
       children: [child],
     };
-    const s0 = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [container], proseSegmentMap: [] });
     const s1 = applyDeleteFrame(s0, child.id);
     expect(getFrames(s1)[0].children).toHaveLength(0);
     const s2 = editorUndo(s1);
@@ -421,7 +382,7 @@ describe("applyDeleteFrame — recursive (Phase 1)", () => {
 describe("delete clears selection and textEdit (Phase 1)", () => {
   it("deleting selected frame clears selectedId", () => {
     const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     state = state.update({ effects: selectFrameEffect.of(f.id) }).state;
     expect(getSelectedId(state)).toBe(f.id);
     state = applyDeleteFrame(state, f.id);
@@ -430,7 +391,7 @@ describe("delete clears selection and textEdit (Phase 1)", () => {
 
   it("deleting frame being text-edited clears textEdit", () => {
     const f = createTextFrame({ text: "hi", row: 0, col: 0, charWidth: 10, charHeight: 20 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     state = state.update({
       effects: [selectFrameEffect.of(f.id), setTextEditEffect.of({ frameId: f.id, col: 0 })],
     }).state;
@@ -443,7 +404,7 @@ describe("delete clears selection and textEdit (Phase 1)", () => {
   it("deleting unrelated frame does not clear selection", () => {
     const f1 = createFrame({ x: 0, y: 0, w: 50, h: 50 });
     const f2 = createFrame({ x: 100, y: 0, w: 50, h: 50 });
-    let state = createEditorState({ prose: "", frames: [f1, f2], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f1, f2], proseSegmentMap: [] });
     state = state.update({ effects: selectFrameEffect.of(f1.id) }).state;
     state = applyDeleteFrame(state, f2.id);
     expect(getSelectedId(state)).toBe(f1.id);
@@ -455,7 +416,7 @@ describe("delete clears selection and textEdit (Phase 1)", () => {
       ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
       children: [child],
     };
-    let state = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [container], proseSegmentMap: [] });
     state = state.update({ effects: selectFrameEffect.of(child.id) }).state;
     expect(getSelectedId(state)).toBe(child.id);
     state = applyDeleteFrame(state, container.id);
@@ -468,7 +429,7 @@ describe("delete clears selection and textEdit (Phase 1)", () => {
       ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
       children: [child],
     };
-    let state = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [container], proseSegmentMap: [] });
     state = state.update({
       effects: [selectFrameEffect.of(child.id), setTextEditEffect.of({ frameId: child.id, col: 0 })],
     }).state;
@@ -481,7 +442,7 @@ describe("delete clears selection and textEdit (Phase 1)", () => {
 describe("drag undo — history=false then history=true (Phase 1)", () => {
   it("move: first step with history=true captures pre-drag state for undo", () => {
     const frame = createFrame({ x: 10, y: 20, w: 100, h: 50 });
-    let state = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
 
     // First drag step — history=true (captures pre-drag snapshot)
     state = state.update({
@@ -511,7 +472,7 @@ describe("drag undo — history=false then history=true (Phase 1)", () => {
 
   it("resize: first step with history=true captures pre-drag state for undo", () => {
     const frame = createFrame({ x: 0, y: 0, w: 100, h: 100 });
-    let state = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
 
     // First resize step — history=true
     state = state.update({
@@ -581,7 +542,7 @@ describe("undo/redo frame operations", () => {
 
   it("applyMoveFrame: frame is updated immediately", () => {
     const frame = createFrame({ x: 10, y: 20, w: 100, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
     const s1 = applyMoveFrame(s0, frame.id, 5, 10);
     expect(getFrames(s1)[0].x).toBe(15);
     expect(getFrames(s1)[0].y).toBe(30);
@@ -596,21 +557,21 @@ describe("undo/redo frame operations", () => {
 
   it("applyDeleteFrame: frame is removed from state", () => {
     const frame = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
     const s1 = applyDeleteFrame(s0, frame.id);
     expect(getFrames(s1)).toHaveLength(0);
   });
 
   it("frame move is recorded in undo stack via invertedEffects", () => {
     const frame = createFrame({ x: 10, y: 20, w: 100, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
     const s1 = applyMoveFrame(s0, frame.id, 5, 10);
     expect(undoDepth(s1)).toBeGreaterThan(0);
   });
 
   it("editorUndo reverts frame move", () => {
     const frame = createFrame({ x: 10, y: 20, w: 100, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [frame], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
     const s1 = applyMoveFrame(s0, frame.id, 5, 10);
     expect(getFrames(s1)[0].x).toBe(15);
     const s2 = editorUndo(s1);
@@ -621,7 +582,7 @@ describe("undo/redo frame operations", () => {
 describe("interleaved undo — type then move frame", () => {
   it("undo reverts most recent operation (frame move), then text", () => {
     const frame = createFrame({ x: 0, y: 0, w: 100, h: 50 });
-    const s0 = createEditorState({ prose: "hello", frames: [frame], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "hello", frames: [frame], proseSegmentMap: [] });
 
     // Step 1: type "!"
     const s1 = proseInsert(s0, { row: 0, col: 5 }, "!");
@@ -774,85 +735,6 @@ describe("rowColToPos / posToRowCol round-trips", () => {
   });
 });
 
-// ── Task 6: Tool/regions/proseParts fields ────────────────────────────────────
-
-describe("regions field", () => {
-  it("getRegions returns the initial regions", () => {
-    const r1 = makeRegion("prose", 0, 2, "line1\nline2");
-    const r2 = makeRegion("wireframe", 3, 6, "+--+");
-    const state = createEditorState({
-      prose: "line1\nline2",
-      frames: [],
-      regions: [r1, r2],
-      proseParts: [],
-    });
-    const regions = getRegions(state);
-    expect(regions).toHaveLength(2);
-    expect(regions[0].type).toBe("prose");
-    expect(regions[1].type).toBe("wireframe");
-  });
-
-  it("regions persist across prose edits", () => {
-    const region = makeRegion("prose", 0, 1, "hello");
-    const s0 = createEditorState({
-      prose: "hello",
-      frames: [],
-      regions: [region],
-      proseParts: [],
-    });
-    const s1 = proseInsert(s0, { row: 0, col: 5 }, "!");
-    // regions are not auto-updated by prose edits — they persist
-    expect(getRegions(s1)).toHaveLength(1);
-    expect(getRegions(s1)[0].type).toBe("prose");
-  });
-
-  it("regions persist across undo", () => {
-    const region = makeRegion("prose", 0, 1, "hello");
-    const s0 = createEditorState({
-      prose: "hello",
-      frames: [],
-      regions: [region],
-      proseParts: [],
-    });
-    const s1 = proseInsert(s0, { row: 0, col: 5 }, "!");
-    const s2 = editorUndo(s1);
-    // After undo, prose reverts but regions should still be present
-    expect(getRegions(s2)).toHaveLength(1);
-  });
-});
-
-describe("proseParts field", () => {
-  it("getProseParts returns the initial proseParts", () => {
-    const parts: ProsePart[] = [
-      { startRow: 0, text: "paragraph one" },
-      { startRow: 5, text: "paragraph two" },
-    ];
-    const state = createEditorState({
-      prose: "paragraph one\n\nparagraph two",
-      frames: [],
-      regions: [],
-      proseParts: parts,
-    });
-    const stored = getProseParts(state);
-    expect(stored).toHaveLength(2);
-    expect(stored[0].startRow).toBe(0);
-    expect(stored[1].startRow).toBe(5);
-  });
-
-  it("proseParts persist across undo", () => {
-    const parts: ProsePart[] = [{ startRow: 0, text: "hello" }];
-    const s0 = createEditorState({
-      prose: "hello",
-      frames: [],
-      regions: [],
-      proseParts: parts,
-    });
-    const s1 = proseInsert(s0, { row: 0, col: 5 }, "!");
-    const s2 = editorUndo(s1);
-    expect(getProseParts(s2)).toHaveLength(1);
-  });
-});
-
 // ── Equivalence with proseCursor.ts (Task 2 addendum) ────────────────────────
 
 describe("proseCursor.ts equivalence", () => {
@@ -941,21 +823,21 @@ describe("proseCursor.ts equivalence", () => {
 describe("Task 5.0.1: Arrow-key cursor movement", () => {
   describe("proseMoveLeft", () => {
     it("moves cursor left by one column", () => {
-      let state = createEditorState({ prose: "hello", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "hello", frames: [], proseSegmentMap: [] });
       state = moveCursorTo(state, { row: 0, col: 3 });
       state = proseMoveLeft(state);
       expect(getCursor(state)).toEqual({ row: 0, col: 2 });
     });
 
     it("wraps to end of previous line at col 0", () => {
-      let state = createEditorState({ prose: "abc\ndef", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "abc\ndef", frames: [], proseSegmentMap: [] });
       state = moveCursorTo(state, { row: 1, col: 0 });
       state = proseMoveLeft(state);
       expect(getCursor(state)).toEqual({ row: 0, col: 3 });
     });
 
     it("is a no-op at (0,0)", () => {
-      let state = createEditorState({ prose: "hello", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "hello", frames: [], proseSegmentMap: [] });
       state = proseMoveLeft(state);
       expect(getCursor(state)).toEqual({ row: 0, col: 0 });
     });
@@ -963,21 +845,21 @@ describe("Task 5.0.1: Arrow-key cursor movement", () => {
 
   describe("proseMoveRight", () => {
     it("moves cursor right by one column", () => {
-      let state = createEditorState({ prose: "hello", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "hello", frames: [], proseSegmentMap: [] });
       state = moveCursorTo(state, { row: 0, col: 2 });
       state = proseMoveRight(state);
       expect(getCursor(state)).toEqual({ row: 0, col: 3 });
     });
 
     it("wraps to start of next line at end of line", () => {
-      let state = createEditorState({ prose: "abc\ndef", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "abc\ndef", frames: [], proseSegmentMap: [] });
       state = moveCursorTo(state, { row: 0, col: 3 });
       state = proseMoveRight(state);
       expect(getCursor(state)).toEqual({ row: 1, col: 0 });
     });
 
     it("is a no-op at end of last line", () => {
-      let state = createEditorState({ prose: "abc", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "abc", frames: [], proseSegmentMap: [] });
       state = moveCursorTo(state, { row: 0, col: 3 });
       state = proseMoveRight(state);
       expect(getCursor(state)).toEqual({ row: 0, col: 3 });
@@ -986,21 +868,21 @@ describe("Task 5.0.1: Arrow-key cursor movement", () => {
 
   describe("proseMoveUp", () => {
     it("moves to previous line preserving column", () => {
-      let state = createEditorState({ prose: "hello\nworld", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "hello\nworld", frames: [], proseSegmentMap: [] });
       state = moveCursorTo(state, { row: 1, col: 3 });
       state = proseMoveUp(state);
       expect(getCursor(state)).toEqual({ row: 0, col: 3 });
     });
 
     it("clamps column to shorter line above", () => {
-      let state = createEditorState({ prose: "ab\nhello", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "ab\nhello", frames: [], proseSegmentMap: [] });
       state = moveCursorTo(state, { row: 1, col: 4 });
       state = proseMoveUp(state);
       expect(getCursor(state)).toEqual({ row: 0, col: 2 });
     });
 
     it("is a no-op at row 0", () => {
-      let state = createEditorState({ prose: "hello\nworld", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "hello\nworld", frames: [], proseSegmentMap: [] });
       state = moveCursorTo(state, { row: 0, col: 2 });
       state = proseMoveUp(state);
       expect(getCursor(state)).toEqual({ row: 0, col: 2 });
@@ -1009,21 +891,21 @@ describe("Task 5.0.1: Arrow-key cursor movement", () => {
 
   describe("proseMoveDown", () => {
     it("moves to next line preserving column", () => {
-      let state = createEditorState({ prose: "hello\nworld", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "hello\nworld", frames: [], proseSegmentMap: [] });
       state = moveCursorTo(state, { row: 0, col: 3 });
       state = proseMoveDown(state);
       expect(getCursor(state)).toEqual({ row: 1, col: 3 });
     });
 
     it("clamps column to shorter line below", () => {
-      let state = createEditorState({ prose: "hello\nab", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "hello\nab", frames: [], proseSegmentMap: [] });
       state = moveCursorTo(state, { row: 0, col: 4 });
       state = proseMoveDown(state);
       expect(getCursor(state)).toEqual({ row: 1, col: 2 });
     });
 
     it("is a no-op at last line", () => {
-      let state = createEditorState({ prose: "hello\nworld", frames: [], regions: [], proseParts: [] });
+      let state = createEditorState({ prose: "hello\nworld", frames: [], proseSegmentMap: [] });
       state = moveCursorTo(state, { row: 1, col: 2 });
       state = proseMoveDown(state);
       expect(getCursor(state)).toEqual({ row: 1, col: 2 });
@@ -1033,20 +915,20 @@ describe("Task 5.0.1: Arrow-key cursor movement", () => {
 
 describe("Task 5.0.2: selectedIdField", () => {
   it("default selectedId is null", () => {
-    const state = createEditorState({ prose: "", frames: [], regions: [], proseParts: [] });
+    const state = createEditorState({ prose: "", frames: [], proseSegmentMap: [] });
     expect(getSelectedId(state)).toBeNull();
   });
 
   it("selectFrameEffect sets selectedId", () => {
     const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     state = state.update({ effects: selectFrameEffect.of(f.id) }).state;
     expect(getSelectedId(state)).toBe(f.id);
   });
 
   it("selectFrameEffect(null) clears selection", () => {
     const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     state = state.update({ effects: selectFrameEffect.of(f.id) }).state;
     state = state.update({ effects: selectFrameEffect.of(null) }).state;
     expect(getSelectedId(state)).toBeNull();
@@ -1054,7 +936,7 @@ describe("Task 5.0.2: selectedIdField", () => {
 
   it("selection is NOT in the undo stack", () => {
     const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    let state = createEditorState({ prose: "a", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "a", frames: [f], proseSegmentMap: [] });
     state = proseInsert(state, { row: 0, col: 1 }, "b");
     state = state.update({ effects: selectFrameEffect.of(f.id) }).state;
     state = editorUndo(state);
@@ -1065,18 +947,18 @@ describe("Task 5.0.2: selectedIdField", () => {
 
 describe("Task 5.0.3: textEditField + editTextFrameEffect", () => {
   it("default textEdit is null", () => {
-    const state = createEditorState({ prose: "", frames: [], regions: [], proseParts: [] });
+    const state = createEditorState({ prose: "", frames: [], proseSegmentMap: [] });
     expect(getTextEdit(state)).toBeNull();
   });
 
   it("setTextEditEffect enters text edit mode", () => {
-    let state = createEditorState({ prose: "", frames: [], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [], proseSegmentMap: [] });
     state = state.update({ effects: setTextEditEffect.of({ frameId: "abc", col: 3 }) }).state;
     expect(getTextEdit(state)).toEqual({ frameId: "abc", col: 3 });
   });
 
   it("setTextEditEffect(null) exits text edit mode", () => {
-    let state = createEditorState({ prose: "", frames: [], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [], proseSegmentMap: [] });
     state = state.update({ effects: setTextEditEffect.of({ frameId: "abc", col: 0 }) }).state;
     state = state.update({ effects: setTextEditEffect.of(null) }).state;
     expect(getTextEdit(state)).toBeNull();
@@ -1084,7 +966,7 @@ describe("Task 5.0.3: textEditField + editTextFrameEffect", () => {
 
   it("editTextFrameEffect updates text frame content", () => {
     const f = createTextFrame({ text: "hi", row: 0, col: 0, charWidth: 10, charHeight: 20 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     state = state.update({
       effects: editTextFrameEffect.of({ id: f.id, text: "hello", charWidth: 10 }),
       annotations: Transaction.addToHistory.of(true),
@@ -1096,79 +978,13 @@ describe("Task 5.0.3: textEditField + editTextFrameEffect", () => {
 
   it("editTextFrameEffect is undoable", () => {
     const f = createTextFrame({ text: "hi", row: 0, col: 0, charWidth: 10, charHeight: 20 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     state = state.update({
       effects: editTextFrameEffect.of({ id: f.id, text: "hello", charWidth: 10 }),
       annotations: Transaction.addToHistory.of(true),
     }).state;
     state = editorUndo(state);
     expect(getFrames(state)[0].content?.text).toBe("hi");
-  });
-});
-
-describe("Task 5.0.5: rebuildProseParts", () => {
-  it("returns prose parts matching region layout", () => {
-    const state = createEditorState({
-      prose: "hello\nworld",
-      frames: [],
-      regions: [
-        { type: "prose" as const, startRow: 0, endRow: 1, text: "hello\nworld" },
-      ],
-      proseParts: [{ startRow: 0, text: "hello\nworld" }],
-    });
-    const parts = rebuildProseParts(state);
-    expect(parts).toHaveLength(1);
-    expect(parts[0].text).toBe("hello\nworld");
-    expect(parts[0].startRow).toBe(0);
-  });
-
-  it("reflects prose edits in rebuilt parts", () => {
-    let state = createEditorState({
-      prose: "hello",
-      frames: [],
-      regions: [
-        { type: "prose" as const, startRow: 0, endRow: 0, text: "hello" },
-      ],
-      proseParts: [{ startRow: 0, text: "hello" }],
-    });
-    state = proseInsert(state, { row: 0, col: 5 }, " world");
-    const parts = rebuildProseParts(state);
-    expect(parts[0].text).toBe("hello world");
-  });
-
-  it("multi-region: second prose part reflects edits after \\n\\n join", () => {
-    let state = createEditorState({
-      prose: "Hello\n\nWorld",
-      frames: [],
-      regions: [
-        { type: "prose" as const, startRow: 0, endRow: 0, text: "Hello" },
-        { type: "wireframe" as const, startRow: 1, endRow: 3, text: "┌─┐\n│ │\n└─┘" },
-        { type: "prose" as const, startRow: 4, endRow: 4, text: "World" },
-      ],
-      proseParts: [
-        { startRow: 0, text: "Hello" },
-        { startRow: 4, text: "World" },
-      ],
-    });
-    state = proseInsert(state, { row: 2, col: 5 }, "!");
-    const parts = rebuildProseParts(state);
-    expect(parts).toHaveLength(2);
-    expect(parts[0].text).toBe("Hello");
-    expect(parts[1].text).toBe("World!");
-  });
-
-  it("single prose region: no separator skip needed", () => {
-    const state = createEditorState({
-      prose: "Just one region",
-      frames: [],
-      regions: [
-        { type: "prose" as const, startRow: 0, endRow: 0, text: "Just one region" },
-      ],
-      proseParts: [{ startRow: 0, text: "Just one region" }],
-    });
-    const parts = rebuildProseParts(state);
-    expect(parts).toHaveLength(1);
-    expect(parts[0].text).toBe("Just one region");
   });
 });
 
@@ -1182,14 +998,14 @@ describe("dirty flag on Frame (Phase 2)", () => {
 
   it("moveFrameEffect sets dirty = true on moved frame", () => {
     const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     const s1 = applyMoveFrame(s0, f.id, 10, 10);
     expect((getFrames(s1)[0]).dirty).toBe(true);
   });
 
   it("resizeFrameEffect sets dirty = true on resized frame", () => {
     const f = createFrame({ x: 0, y: 0, w: 100, h: 100 });
-    const s0 = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     const s1 = applyResizeFrame(s0, f.id, 200, 200, 10, 20);
     expect((getFrames(s1)[0]).dirty).toBe(true);
   });
@@ -1200,7 +1016,7 @@ describe("dirty flag on Frame (Phase 2)", () => {
       ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
       children: [child],
     };
-    const s0 = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [container], proseSegmentMap: [] });
     const s1 = applyMoveFrame(s0, child.id, 5, 5);
     const frames = getFrames(s1);
     expect((frames[0]).dirty).toBe(true);
@@ -1209,7 +1025,7 @@ describe("dirty flag on Frame (Phase 2)", () => {
 
   it("undo restores dirty = false (via invertedEffects snapshot)", () => {
     const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    const s0 = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    const s0 = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     expect((getFrames(s0)[0]).dirty).toBe(false);
     const s1 = applyMoveFrame(s0, f.id, 10, 10);
     expect((getFrames(s1)[0]).dirty).toBe(true);
@@ -1221,7 +1037,7 @@ describe("dirty flag on Frame (Phase 2)", () => {
 describe("applyClearDirty (Phase 2)", () => {
   it("resets dirty flag on all frames", () => {
     const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     state = applyMoveFrame(state, f.id, 10, 10);
     expect(getFrames(state)[0].dirty).toBe(true);
     state = applyClearDirty(state);
@@ -1234,7 +1050,7 @@ describe("applyClearDirty (Phase 2)", () => {
       ...createFrame({ x: 0, y: 0, w: 100, h: 100 }),
       children: [child],
     };
-    let state = createEditorState({ prose: "", frames: [container], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [container], proseSegmentMap: [] });
     state = applyMoveFrame(state, child.id, 5, 5);
     expect(getFrames(state)[0].dirty).toBe(true);
     expect(getFrames(state)[0].children[0].dirty).toBe(true);

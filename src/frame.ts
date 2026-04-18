@@ -4,7 +4,6 @@
 
 import { regenerateCells, buildLineCells, buildLayersFromScan } from "./layers";
 import type { RectStyle, ScanResult } from "./scanner";
-import type { Region } from "./regions";
 import type { Bbox } from "./types";
 import { layoutTextChildren, reparentChildren } from "./autoLayout";
 import type { AlignAnchor, VAlignAnchor } from "./autoLayout";
@@ -229,103 +228,6 @@ export function resizeFrame(
     return layoutTextChildren(resized, charWidth, charHeight);
   }
   return resized;
-}
-
-// ── framesFromRegions ──────────────────────────────────────
-
-export function framesFromRegions(
-  regions: Region[],
-  charWidth: number,
-  charHeight: number,
-  scanResult?: ScanResult,
-): { frames: Frame[]; prose: { startRow: number; text: string }[] } {
-  const frames: Frame[] = [];
-  const prose: { startRow: number; text: string }[] = [];
-  const allLayers = scanResult ? buildLayersFromScan(scanResult) : [];
-
-  for (const region of regions) {
-    if (region.type === "prose") {
-      prose.push({ startRow: region.startRow, text: region.text });
-      continue;
-    }
-
-    // wireframe region → container + child frames per layer
-    const layers = allLayers.filter(l => {
-      const layerEndRow = l.bbox.row + l.bbox.h - 1;
-      return l.bbox.row >= region.startRow && layerEndRow <= region.endRow;
-    });
-    if (layers.length === 0) continue;
-
-    // Compute bbox of all layers for container sizing (relative to region)
-    let minRow = Infinity;
-    let minCol = Infinity;
-    let maxRow = 0;
-    let maxCol = 0;
-    for (const layer of layers) {
-      if (layer.bbox.row < minRow) minRow = layer.bbox.row;
-      if (layer.bbox.col < minCol) minCol = layer.bbox.col;
-      const r = layer.bbox.row + layer.bbox.h;
-      const c = layer.bbox.col + layer.bbox.w;
-      if (r > maxRow) maxRow = r;
-      if (c > maxCol) maxCol = c;
-    }
-
-    const containerW = (maxCol - minCol) * charWidth;
-    const containerH = (maxRow - minRow) * charHeight;
-    const containerX = minCol * charWidth;
-    const containerY = minRow * charHeight;
-
-    const children: Frame[] = layers.map((layer) => {
-      const x = (layer.bbox.col - minCol) * charWidth;
-      const y = (layer.bbox.row - minRow) * charHeight;
-      const w = layer.bbox.w * charWidth;
-      const h = layer.bbox.h * charHeight;
-
-      // Rebase cells to origin (0,0) — the frame's pixel position handles the offset
-      const rebasedCells = new Map<string, string>();
-      const baseRow = layer.bbox.row;
-      const baseCol = layer.bbox.col;
-      for (const [key, val] of layer.cells) {
-        const ci = key.indexOf(",");
-        const r = Number(key.slice(0, ci)) - baseRow;
-        const c = Number(key.slice(ci + 1)) - baseCol;
-        rebasedCells.set(`${r},${c}`, val);
-      }
-
-      let content: FrameContent | null = null;
-      if (layer.type === "rect" && layer.style) {
-        content = { type: "rect", cells: rebasedCells, style: layer.style };
-      } else if (layer.type === "line") {
-        content = { type: "line", cells: rebasedCells };
-      } else if (layer.type === "text") {
-        content = { type: "text", cells: rebasedCells, text: layer.content ?? "" };
-      } else {
-        content = { type: "rect", cells: rebasedCells, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" } };
-      }
-
-      return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: false, dirty: false };
-    });
-
-    // Re-parent children into their enclosing rect children
-    reparentChildren(children, charWidth, charHeight);
-
-    const container: Frame = {
-      id: nextId(),
-      x: containerX,
-      y: containerY,
-      w: containerW,
-      h: containerH,
-      z: 0,
-      children,
-      content: null,
-      dirty: false,
-      clip: true,
-    };
-
-    frames.push(container);
-  }
-
-  return { frames, prose };
 }
 
 // ── framesFromScan ─────────────────────────────────────────

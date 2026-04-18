@@ -1,6 +1,6 @@
 // src/proseSegments.test.ts
 import { describe, it, expect } from "vitest";
-import { extractProseSegments, type ProseSegment } from "./proseSegments";
+import { extractProseSegments } from "./proseSegments";
 
 describe("extractProseSegments", () => {
   it("extracts a single full-row prose segment", () => {

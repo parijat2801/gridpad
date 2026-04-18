@@ -34,8 +34,6 @@ describe("z-order", () => {
     let state = createEditorState({
       prose: "",
       frames: [frame],
-      regions: [],
-      proseParts: [],
     });
 
     state = state.update({
@@ -52,8 +50,6 @@ describe("z-order", () => {
     let state = createEditorState({
       prose: "",
       frames: [frame],
-      regions: [],
-      proseParts: [],
     });
 
     // Apply setZEffect
@@ -101,8 +97,6 @@ describe("setZEffect — recursive (Phase 1)", () => {
     let state = createEditorState({
       prose: "",
       frames: [container],
-      regions: [],
-      proseParts: [],
     });
     state = state.update({
       effects: setZEffect.of({ id: child.id, z: 7 }),
@@ -115,7 +109,7 @@ describe("setZEffect — recursive (Phase 1)", () => {
 describe("z-order keyboard shortcut logic (Phase 3)", () => {
   it("] increments z by 1", () => {
     const f = createFrame({ x: 0, y: 0, w: 100, h: 50 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     const z0 = getFrames(state)[0].z;
     state = state.update({
       effects: setZEffect.of({ id: f.id, z: z0 + 1 }),
@@ -126,7 +120,7 @@ describe("z-order keyboard shortcut logic (Phase 3)", () => {
 
   it("[ decrements z, clamped to 0", () => {
     const f = createFrame({ x: 0, y: 0, w: 100, h: 50 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     // z starts at 0, decrement should stay at 0
     state = state.update({
       effects: setZEffect.of({ id: f.id, z: Math.max(0, 0 - 1) }),
@@ -138,7 +132,7 @@ describe("z-order keyboard shortcut logic (Phase 3)", () => {
   it("Cmd+] brings to front (max z + 1)", () => {
     const f1 = { ...createFrame({ x: 0, y: 0, w: 100, h: 50 }), z: 0 };
     const f2 = { ...createFrame({ x: 10, y: 10, w: 100, h: 50 }), z: 5 };
-    let state = createEditorState({ prose: "", frames: [f1, f2], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f1, f2], proseSegmentMap: [] });
     const maxZ = Math.max(...getFrames(state).map(f => f.z));
     state = state.update({
       effects: setZEffect.of({ id: f1.id, z: maxZ + 1 }),
@@ -149,7 +143,7 @@ describe("z-order keyboard shortcut logic (Phase 3)", () => {
 
   it("Cmd+[ sends to back (z = 0)", () => {
     const f = { ...createFrame({ x: 0, y: 0, w: 100, h: 50 }), z: 5 };
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     state = state.update({
       effects: setZEffect.of({ id: f.id, z: 0 }),
       annotations: Transaction.addToHistory.of(true),
