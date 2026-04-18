@@ -16,6 +16,7 @@ import { moveFrame, resizeFrame } from "./frame";
 import { layoutTextChildren } from "./autoLayout";
 import type { Region } from "./regions";
 import { scanToFrames } from "./scanToFrames";
+import type { ProseSegment } from "./proseSegments";
 
 export { undoDepth, redoDepth };
 
@@ -244,13 +245,64 @@ export function getTextEdit(state: EditorState): { frameId: string; col: number 
   return state.field(textEditField);
 }
 
+const proseSegmentMapField = StateField.define<{ row: number; col: number }[]>({
+  create: () => [],
+  update(map, tr: Transaction) {
+    if (!tr.docChanged) return map;
+    const oldLines = tr.startState.doc.lines;
+    const newLines = tr.state.doc.lines;
+    const delta = newLines - oldLines;
+    if (delta === 0) return map;
+    let changeLine = 0;
+    tr.changes.iterChangedRanges((fromA) => {
+      changeLine = tr.startState.doc.lineAt(fromA).number - 1;
+    });
+    const result = [...map];
+    if (delta > 0) {
+      const insertAt = changeLine + 1;
+      const newEntries: { row: number; col: number }[] = [];
+      const baseRow = result[changeLine]?.row ?? changeLine;
+      for (let i = 0; i < delta; i++) {
+        newEntries.push({ row: baseRow + 1 + i, col: 0 });
+      }
+      result.splice(insertAt, 0, ...newEntries);
+      for (let i = insertAt + delta; i < result.length; i++) {
+        result[i] = { ...result[i], row: result[i].row + delta };
+      }
+    } else {
+      const removeAt = changeLine + 1;
+      const removeCount = Math.min(-delta, result.length - removeAt);
+      result.splice(removeAt, removeCount);
+      for (let i = removeAt; i < result.length; i++) {
+        result[i] = { ...result[i], row: result[i].row + delta };
+      }
+    }
+    return result;
+  },
+});
+
+export function getProseSegmentMap(state: EditorState): { row: number; col: number }[] {
+  return state.field(proseSegmentMapField);
+}
+
+const originalProseSegmentsField = StateField.define<ProseSegment[]>({
+  create: () => [],
+  update(segs) { return segs; },
+});
+
+export function getOriginalProseSegments(state: EditorState): ProseSegment[] {
+  return state.field(originalProseSegmentsField);
+}
+
 // ── Factory ────────────────────────────────────────────────────────────────
 
 interface EditorStateInit {
   prose: string;
   frames: Frame[];
-  regions: Region[];
-  proseParts: ProsePart[];
+  regions?: Region[];
+  proseParts?: ProsePart[];
+  proseSegmentMap?: { row: number; col: number }[];
+  originalProseSegments?: ProseSegment[];
 }
 
 export function createEditorState(init: EditorStateInit): EditorState {
@@ -280,9 +332,22 @@ export function createEditorState(init: EditorStateInit): EditorState {
     framesField.init(() => frames),
     selectedIdField,
     textEditField,
-    regionsField.init(() => regions),
-    prosePartsField.init(() => proseParts),
+    regionsField.init(() => regions ?? []),
+    prosePartsField.init(() => proseParts ?? []),
   ];
+
+  if (init.proseSegmentMap) {
+    extensions.push(proseSegmentMapField.init(() => init.proseSegmentMap!));
+  } else {
+    extensions.push(proseSegmentMapField);
+  }
+
+  if (init.originalProseSegments) {
+    extensions.push(originalProseSegmentsField.init(() => init.originalProseSegments!));
+  } else {
+    extensions.push(originalProseSegmentsField);
+  }
+
   return EditorState.create({ doc: prose, extensions });
 }
 
@@ -292,9 +357,28 @@ export function createEditorStateFromText(
   charWidth: number,
   charHeight: number,
 ): EditorState {
-  const { frames, prose, regions } = scanToFrames(text, charWidth, charHeight);
-  const proseText = prose.map((p) => p.text).join("\n\n");
-  return createEditorState({ prose: proseText, frames, regions, proseParts: prose });
+  const { frames, proseSegments } = scanToFrames(text, charWidth, charHeight);
+  const byRow = new Map<number, string>();
+  for (const seg of proseSegments) {
+    const existing = byRow.get(seg.row) ?? "";
+    if (existing && seg.col > existing.length) {
+      byRow.set(seg.row, existing + " ".repeat(seg.col - existing.length) + seg.text);
+    } else {
+      byRow.set(seg.row, existing + seg.text);
+    }
+  }
+  const sortedRows = [...byRow.keys()].sort((a, b) => a - b);
+  const proseText = sortedRows.map(r => byRow.get(r)!).join("\n");
+  const proseSegmentMap = sortedRows.map(r => {
+    const seg = proseSegments.find(s => s.row === r);
+    return { row: r, col: seg?.col ?? 0 };
+  });
+  return createEditorState({
+    prose: proseText,
+    frames,
+    proseSegmentMap,
+    originalProseSegments: proseSegments,
+  });
 }
 
 // ── Accessors ──────────────────────────────────────────────────────────────

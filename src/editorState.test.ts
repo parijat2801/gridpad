@@ -5,6 +5,7 @@ import { describe, it, expect } from "vitest";
 import { Transaction } from "@codemirror/state";
 import {
   createEditorState,
+  createEditorStateFromText,
   getDoc,
   getFrames,
   getRegions,
@@ -36,6 +37,8 @@ import {
   editTextFrameEffect,
   getTextEdit,
   rebuildProseParts,
+  getProseSegmentMap,
+  getOriginalProseSegments,
   type CursorPos,
   type ProsePart,
 } from "./editorState";
@@ -1238,5 +1241,104 @@ describe("applyClearDirty (Phase 2)", () => {
     state = applyClearDirty(state);
     expect(getFrames(state)[0].dirty).toBe(false);
     expect(getFrames(state)[0].children[0].dirty).toBe(false);
+  });
+});
+
+describe("proseSegmentMapField", () => {
+  it("initializes from prose segments", () => {
+    const state = createEditorState({
+      prose: "Hello\n\nWorld",
+      frames: [],
+      proseSegmentMap: [{ row: 0, col: 0 }, { row: 1, col: 0 }, { row: 2, col: 0 }],
+    });
+    const map = getProseSegmentMap(state);
+    expect(map).toEqual([{ row: 0, col: 0 }, { row: 1, col: 0 }, { row: 2, col: 0 }]);
+  });
+
+  it("inserting newline adds entry and shifts subsequent rows", () => {
+    const state = createEditorState({
+      prose: "Line1\nLine2",
+      frames: [],
+      proseSegmentMap: [{ row: 0, col: 0 }, { row: 1, col: 0 }],
+    });
+    const updated = proseInsert(state, { row: 0, col: 5 }, "\n");
+    const map = getProseSegmentMap(updated);
+    expect(map).toHaveLength(3);
+    expect(map[0]).toEqual({ row: 0, col: 0 });
+    expect(map[1]).toEqual({ row: 1, col: 0 });
+    expect(map[2]).toEqual({ row: 2, col: 0 });
+  });
+
+  it("deleting newline removes entry and shifts rows up", () => {
+    const state = createEditorState({
+      prose: "Line1\nLine2\nLine3",
+      frames: [],
+      proseSegmentMap: [{ row: 0, col: 0 }, { row: 1, col: 0 }, { row: 2, col: 0 }],
+    });
+    const updated = proseDeleteBefore(state, { row: 1, col: 0 });
+    const map = getProseSegmentMap(updated);
+    expect(map).toHaveLength(2);
+    expect(map[0]).toEqual({ row: 0, col: 0 });
+    expect(map[1]).toEqual({ row: 1, col: 0 });
+  });
+
+  it("multi-line paste adds multiple entries", () => {
+    const state = createEditorState({
+      prose: "Before\nAfter",
+      frames: [],
+      proseSegmentMap: [{ row: 0, col: 0 }, { row: 1, col: 0 }],
+    });
+    const updated = proseInsert(state, { row: 0, col: 6 }, "\nPasted1\nPasted2");
+    const map = getProseSegmentMap(updated);
+    expect(map).toHaveLength(4);
+    expect(map[3]).toEqual({ row: 3, col: 0 });
+  });
+
+  it("no-op transaction preserves map", () => {
+    const state = createEditorState({
+      prose: "Hello",
+      frames: [],
+      proseSegmentMap: [{ row: 0, col: 0 }],
+    });
+    const updated = proseInsert(state, { row: 0, col: 5 }, "!");
+    const map = getProseSegmentMap(updated);
+    expect(map).toHaveLength(1);
+    expect(map[0]).toEqual({ row: 0, col: 0 });
+  });
+});
+
+describe("createEditorStateFromText (grid-based)", () => {
+  it("constructs state with proseSegmentMap from prose segments", () => {
+    const state = createEditorStateFromText(
+      "Hello\n\n┌──┐\n│  │\n└──┘\n\nWorld",
+      9.6, 18.4,
+    );
+    const map = getProseSegmentMap(state);
+    expect(map.length).toBeGreaterThan(0);
+    expect(map[0].row).toBe(0);
+  });
+
+  it("builds CM doc from prose segments joined by newlines", () => {
+    const state = createEditorStateFromText("Hello\n\nWorld", 9.6, 18.4);
+    const doc = getDoc(state);
+    expect(doc).toContain("Hello");
+    expect(doc).toContain("World");
+  });
+
+  it("frames are at absolute grid positions", () => {
+    const state = createEditorStateFromText(
+      "Prose\n\n┌──┐\n│  │\n└──┘",
+      9.6, 18.4,
+    );
+    const frames = getFrames(state);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames[0].y).toBe(2 * 18.4);
+  });
+
+  it("stores originalProseSegments for serialization", () => {
+    const state = createEditorStateFromText("Hello\n\nWorld", 9.6, 18.4);
+    const origSegs = getOriginalProseSegments(state);
+    expect(origSegs.length).toBeGreaterThan(0);
+    expect(origSegs.some(s => s.text === "Hello")).toBe(true);
   });
 });

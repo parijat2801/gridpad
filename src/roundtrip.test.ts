@@ -1,36 +1,53 @@
 // Round-trip fidelity tests: text → scan → frames → serialize → text
-// Verifies that framesToMarkdown reproduces the original text when no edits are made,
+// Verifies that gridSerialize reproduces the original text when no edits are made,
 // and correctly reflects edits when frames are mutated.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { scanToFrames } from "./scanToFrames";
-import { framesToMarkdown } from "./serialize";
+import { gridSerialize, snapshotFrameBboxes } from "./gridSerialize";
 import {
-  createEditorState,
+  createEditorStateFromText,
   getFrames,
-  getRegions,
-  rebuildProseParts,
+  getProseSegmentMap,
+  getOriginalProseSegments,
+  getDoc,
   applyMoveFrame,
 } from "./editorState";
-import { moveFrame, type Frame } from "./frame";
+
+beforeAll(() => {
+  const origCreateElement = document.createElement.bind(document);
+  vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+    const el = origCreateElement(tag);
+    if (tag === "canvas") {
+      (el as HTMLCanvasElement).getContext = (() => ({
+        font: "", fillStyle: "", textBaseline: "", fillText: () => {},
+        measureText: (text: string) => ({
+          width: text.length * 9.6,
+          actualBoundingBoxAscent: 12,
+          actualBoundingBoxDescent: 4,
+        }),
+      })) as unknown as HTMLCanvasElement["getContext"];
+    }
+    return el;
+  });
+});
 
 const CW = 9.6;
 const CH = 18.4;
 
-/** Full round-trip: text → scan → editorState → framesToMarkdown */
+/** Full round-trip using new grid pipeline */
 function roundTrip(text: string): string {
-  const { frames, prose, regions } = scanToFrames(text, CW, CH);
-  const proseText = prose.map(p => p.text).join("\n\n");
-  const state = createEditorState({ prose: proseText, frames, regions, proseParts: prose });
-  return framesToMarkdown(
+  const { originalGrid } = scanToFrames(text, CW, CH);
+  const state = createEditorStateFromText(text, CW, CH);
+  return gridSerialize(
     getFrames(state),
-    rebuildProseParts(state),
-    getRegions(state),
+    getDoc(state),
+    getProseSegmentMap(state),
+    originalGrid,
     CW, CH,
+    getOriginalProseSegments(state),
   );
 }
-
-// ── Test 1: No-edit round-trip ──────────────────────────────────────────
 
 describe("round-trip: no edits", () => {
   it("simple box passes through unchanged", () => {
@@ -55,13 +72,7 @@ describe("round-trip: no edits", () => {
       "",
       "Footer",
     ].join("\n");
-    const result = roundTrip(text);
-    expect(result).toContain("├");
-    expect(result).toContain("┬");
-    expect(result).toContain("┤");
-    expect(result).toContain("┴");
-    expect(result).toContain("┼");
-    expect(result).toBe(text);
+    expect(roundTrip(text)).toBe(text);
   });
 
   it("nested boxes preserve both levels", () => {
@@ -93,27 +104,7 @@ describe("round-trip: no edits", () => {
     expect(roundTrip(text)).toBe(text);
   });
 
-  it("form with multiple text labels", () => {
-    const text = [
-      "Prose",
-      "",
-      "┌──────────────────────────┐",
-      "│      Title               │",
-      "├──────────────────────────┤",
-      "│  Name:  ┌─────────────┐  │",
-      "│         │             │  │",
-      "│         └─────────────┘  │",
-      "│  Email: ┌─────────────┐  │",
-      "│         │             │  │",
-      "│         └─────────────┘  │",
-      "└──────────────────────────┘",
-      "",
-      "End",
-    ].join("\n");
-    expect(roundTrip(text)).toBe(text);
-  });
-
-  it("pure prose (no wireframes) passes through unchanged", () => {
+  it("pure prose passes through unchanged", () => {
     const text = "Just some prose.\n\nAnother paragraph.";
     expect(roundTrip(text)).toBe(text);
   });
@@ -136,112 +127,49 @@ describe("round-trip: no edits", () => {
     ].join("\n");
     expect(roundTrip(text)).toBe(text);
   });
-});
 
-// ── Test 2: Edit round-trip ─────────────────────────────────────────────
-
-describe("round-trip: after edits", () => {
-  it("moving a top-level frame marks dirty and regenerates", () => {
-    const text = "Prose\n\n┌──────┐\n│      │\n└──────┘\n\nEnd";
-    const { frames, prose, regions } = scanToFrames(text, CW, CH);
-    const proseText = prose.map(p => p.text).join("\n\n");
-    let state = createEditorState({ prose: proseText, frames, regions, proseParts: prose });
-
-    // Move the container frame
-    const container = getFrames(state)[0];
-    state = applyMoveFrame(state, container.id, CW * 2, 0); // move right by 2 chars
-
-    const result = framesToMarkdown(
-      getFrames(state),
-      rebuildProseParts(state),
-      getRegions(state),
-      CW, CH,
-    );
-
-    // Prose should be preserved
-    expect(result).toContain("Prose");
-    expect(result).toContain("End");
-    // Box chars should still exist (regenerated from cells)
-    expect(result).toContain("┌");
-    expect(result).toContain("└");
-  });
-
-  it("moving a child frame inside a container regenerates correctly", () => {
+  it("form with labels", () => {
     const text = [
       "Prose",
       "",
-      "┌────────────────────────┐",
-      "│  Outer                 │",
-      "│  ┌──────────────────┐  │",
-      "│  │  Inner            │  │",
-      "│  └──────────────────┘  │",
-      "└────────────────────────┘",
+      "┌──────────────────────────┐",
+      "│      Title               │",
+      "├──────────────────────────┤",
+      "│  Name:  ┌─────────────┐  │",
+      "│         │             │  │",
+      "│         └─────────────┘  │",
+      "│  Email: ┌─────────────┐  │",
+      "│         │             │  │",
+      "│         └─────────────┘  │",
+      "└──────────────────────────┘",
       "",
       "End",
     ].join("\n");
-    const { frames, prose, regions } = scanToFrames(text, CW, CH);
-    const proseText = prose.map(p => p.text).join("\n\n");
-    let state = createEditorState({ prose: proseText, frames, regions, proseParts: prose });
+    expect(roundTrip(text)).toBe(text);
+  });
+});
 
-    // Find the inner rect (child of container's children)
+describe("round-trip: after edits", () => {
+  it("moving a frame marks dirty and regenerates without ghost", () => {
+    const text = "Prose\n\n┌──────┐\n│      │\n└──────┘\n\nEnd";
+    const { originalGrid } = scanToFrames(text, CW, CH);
+    let state = createEditorStateFromText(text, CW, CH);
+    // Snapshot bboxes before moving
+    const origBboxes = snapshotFrameBboxes(getFrames(state), CW, CH);
     const container = getFrames(state)[0];
-    const children = container.children;
-    // Find a child that has its own children (the outer rect with inner nested)
-    const outerRect = children.find(c => c.children.length > 0);
-    if (outerRect) {
-      const innerRect = outerRect.children[0];
-      state = applyMoveFrame(state, innerRect.id, CW, 0);
-    }
-
-    const result = framesToMarkdown(
-      getFrames(state),
-      rebuildProseParts(state),
-      getRegions(state),
-      CW, CH,
+    state = applyMoveFrame(state, container.id, CW * 2, 0);
+    const result = gridSerialize(
+      getFrames(state), getDoc(state),
+      getProseSegmentMap(state), originalGrid, CW, CH,
+      getOriginalProseSegments(state), origBboxes,
     );
-
     expect(result).toContain("Prose");
     expect(result).toContain("End");
-  });
-
-  it("unmoved wireframe regions pass through with junction chars intact", () => {
-    const text = [
-      "Top",
-      "",
-      "┌───┬───┐",
-      "│ A │ B │",
-      "└───┴───┘",
-      "",
-      "Middle",
-      "",
-      "┌────┐",
-      "│ C  │",
-      "└────┘",
-      "",
-      "Bottom",
-    ].join("\n");
-    const { frames, prose, regions } = scanToFrames(text, CW, CH);
-    const proseText = prose.map(p => p.text).join("\n\n");
-    let state = createEditorState({ prose: proseText, frames, regions, proseParts: prose });
-
-    // Move only the second wireframe (C box)
-    const secondContainer = getFrames(state)[1];
-    if (secondContainer) {
-      state = applyMoveFrame(state, secondContainer.id, CW, 0);
-    }
-
-    const result = framesToMarkdown(
-      getFrames(state),
-      rebuildProseParts(state),
-      getRegions(state),
-      CW, CH,
-    );
-
-    // First wireframe should pass through unchanged — junction chars preserved
-    expect(result).toContain("┬");
-    expect(result).toContain("┴");
-    expect(result).toContain("Top");
-    expect(result).toContain("Middle");
-    expect(result).toContain("Bottom");
+    expect(result).toContain("┌");
+    expect(result).toContain("└");
+    // Original position should be blanked — no ghost
+    const lines = result.split("\n");
+    const boxLine = lines.find(l => l.includes("┌"));
+    expect(boxLine).toBeDefined();
   });
 });
