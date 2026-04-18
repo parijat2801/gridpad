@@ -327,3 +327,51 @@ export function framesFromRegions(
 
   return { frames, prose };
 }
+
+// ── framesFromScan ─────────────────────────────────────────
+
+export function framesFromScan(
+  scanResult: ScanResult,
+  charWidth: number,
+  charHeight: number,
+): Frame[] {
+  const allLayers = buildLayersFromScan(scanResult);
+  const layers = allLayers.filter((l) => l.type !== "base");
+
+  const frames: Frame[] = layers.map((layer) => {
+    const x = layer.bbox.col * charWidth;
+    const y = layer.bbox.row * charHeight;
+    const w = layer.bbox.w * charWidth;
+    const h = layer.bbox.h * charHeight;
+
+    // Rebase cells to origin (0,0) — the frame's pixel position handles the offset
+    const rebasedCells = new Map<string, string>();
+    const baseRow = layer.bbox.row;
+    const baseCol = layer.bbox.col;
+    for (const [k, val] of layer.cells) {
+      const ci = k.indexOf(",");
+      const r = Number(k.slice(0, ci)) - baseRow;
+      const c = Number(k.slice(ci + 1)) - baseCol;
+      rebasedCells.set(`${r},${c}`, val);
+    }
+
+    let content: FrameContent | null = null;
+    if (layer.type === "rect" && layer.style) {
+      content = { type: "rect", cells: rebasedCells, style: layer.style };
+    } else if (layer.type === "line") {
+      content = { type: "line", cells: rebasedCells };
+    } else if (layer.type === "text") {
+      content = { type: "text", cells: rebasedCells, text: layer.content ?? "" };
+    } else {
+      content = { type: "rect", cells: rebasedCells, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" } };
+    }
+
+    return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: true, dirty: false };
+  });
+
+  reparentChildren(frames, charWidth, charHeight);
+
+  // After reparenting, top-level text frames are bare prose — discard them.
+  // Text frames that belong inside rects have already been moved to children.
+  return frames.filter((f) => f.content?.type !== "text");
+}
