@@ -1,0 +1,6 @@
+Test: enter-above
+Input lines: 8
+Output lines: 11
+Markdown match: false
+Visual diff: 0.00%
+Ghosts: 0

@@ -1,0 +1,6 @@
+Test: no-edit-two-separate
+Input lines: 13
+Output lines: 13
+Markdown match: true
+Visual diff: 0.00%
+Ghosts: 0

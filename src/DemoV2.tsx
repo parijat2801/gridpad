@@ -650,6 +650,38 @@ export default function DemoV2() {
             frameBboxSnapshotRef.current,
           );
         },
+        /** Serialize + update all refs (mirrors real saveToHandle minus file I/O) */
+        saveDocument: () => {
+          const state = stateRef.current;
+          const cw = cwRef.current, ch = chRef.current;
+          const md = gridSerialize(
+            getFrames(state), getDoc(state),
+            getProseSegmentMap(state), originalGridRef.current,
+            cw, ch,
+            getOriginalProseSegments(state),
+            frameBboxSnapshotRef.current,
+          );
+          // Same ref updates as saveToHandle
+          stateRef.current = applyClearDirty(stateRef.current);
+          const { proseSegments: newSegs } = scanToFrames(md, cw, ch);
+          stateRef.current = applySetOriginalProseSegments(stateRef.current, newSegs);
+          framesRef.current = getFrames(stateRef.current);
+          originalGridRef.current = rebuildOriginalGrid(md);
+          frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current), cw, ch);
+          doLayout(); paint();
+          return md;
+        },
+        /** Get all top-level frame bounding boxes in CSS pixels */
+        getFrameRects: () => {
+          return framesRef.current.map(f => ({
+            id: f.id,
+            x: f.x, y: f.y, w: f.w, h: f.h,
+            hasChildren: f.children.length > 0,
+            contentType: f.content?.type ?? "container",
+          }));
+        },
+        /** Get current prose text from CM doc */
+        getProseDoc: () => getDoc(stateRef.current),
       };
     }).catch(err => console.error("Init failed:", err));
   }, []);

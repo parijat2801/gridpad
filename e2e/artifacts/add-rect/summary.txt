@@ -1,0 +1,6 @@
+Test: add-rect
+Input lines: 5
+Output lines: 11
+Markdown match: false
+Visual diff: 0.25%
+Ghosts: 0

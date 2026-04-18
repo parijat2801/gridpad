@@ -1,0 +1,6 @@
+Test: type-at-start
+Input lines: 8
+Output lines: 8
+Markdown match: false
+Visual diff: 0.01%
+Ghosts: 0

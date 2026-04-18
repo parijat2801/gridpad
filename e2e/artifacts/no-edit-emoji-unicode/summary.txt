@@ -1,0 +1,6 @@
+Test: no-edit-emoji-unicode
+Input lines: 7
+Output lines: 7
+Markdown match: true
+Visual diff: 0.00%
+Ghosts: 0

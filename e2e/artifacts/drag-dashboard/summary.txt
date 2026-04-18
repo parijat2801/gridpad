@@ -1,0 +1,6 @@
+Test: drag-dashboard
+Input lines: 1
+Output lines: 1
+Markdown match: true
+Visual diff: 0.00%
+Ghosts: 0

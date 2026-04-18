@@ -1,0 +1,6 @@
+Test: drag-junction
+Input lines: 9
+Output lines: 9
+Markdown match: true
+Visual diff: 0.37%
+Ghosts: 0

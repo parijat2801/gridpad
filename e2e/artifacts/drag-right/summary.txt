@@ -1,0 +1,6 @@
+Test: drag-right
+Input lines: 8
+Output lines: 8
+Markdown match: false
+Visual diff: 0.10%
+Ghosts: 0
