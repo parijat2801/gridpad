@@ -275,5 +275,97 @@ export function framesFromScan(
 
   // After reparenting, top-level text frames are bare prose — discard them.
   // Text frames that belong inside rects have already been moved to children.
-  return frames.filter((f) => f.content?.type !== "text");
+  const shaped = frames.filter((f) => f.content?.type !== "text");
+
+  // Group overlapping/adjacent top-level frames into container frames.
+  // This restores the "click container → drag whole wireframe" UX that
+  // framesFromRegions provided via region-based grouping.
+  return groupIntoContainers(shaped, charWidth, charHeight);
+}
+
+/**
+ * Group overlapping/adjacent top-level frames into container frames.
+ * Two frames belong to the same wireframe if their bounding boxes overlap
+ * or are within 1 cell of each other vertically.
+ */
+function groupIntoContainers(
+  frames: Frame[],
+  _charWidth: number,
+  charHeight: number,
+): Frame[] {
+  if (frames.length <= 1) return frames;
+
+  // Union-find to group overlapping frames
+  const parent = frames.map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+    return i;
+  };
+  const union = (a: number, b: number) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+
+  // Merge frames whose row ranges overlap or are adjacent (within 1 row gap).
+  // This groups all shapes that are part of the same wireframe, including
+  // side-by-side boxes that share the same row range.
+  const margin = charHeight; // 1 row margin
+  for (let i = 0; i < frames.length; i++) {
+    for (let j = i + 1; j < frames.length; j++) {
+      const a = frames[i], b = frames[j];
+      const aTop = a.y, aBot = a.y + a.h;
+      const bTop = b.y, bBot = b.y + b.h;
+      // Vertical overlap or adjacency — same wireframe if they share rows
+      if (aTop <= bBot + margin && bTop <= aBot + margin) union(i, j);
+    }
+  }
+
+  // Collect groups
+  const groups = new Map<number, number[]>();
+  for (let i = 0; i < frames.length; i++) {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root)!.push(i);
+  }
+
+  const result: Frame[] = [];
+  for (const indices of groups.values()) {
+    if (indices.length === 1) {
+      // Single frame — no container needed
+      result.push(frames[indices[0]]);
+      continue;
+    }
+
+    // Multiple frames — wrap in a container
+    const children = indices.map(i => frames[i]);
+    let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
+    for (const c of children) {
+      if (c.x < minX) minX = c.x;
+      if (c.y < minY) minY = c.y;
+      if (c.x + c.w > maxX) maxX = c.x + c.w;
+      if (c.y + c.h > maxY) maxY = c.y + c.h;
+    }
+
+    // Rebase children to container-relative coordinates
+    const rebasedChildren = children.map(c => ({
+      ...c,
+      x: c.x - minX,
+      y: c.y - minY,
+    }));
+
+    result.push({
+      id: nextId(),
+      x: minX,
+      y: minY,
+      w: maxX - minX,
+      h: maxY - minY,
+      z: 0,
+      children: rebasedChildren,
+      content: null,
+      clip: true,
+      dirty: false,
+    });
+  }
+
+  return result;
 }

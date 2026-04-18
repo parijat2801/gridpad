@@ -25,10 +25,11 @@ const CW = 9.6;
 const CH = 18.4;
 
 describe("framesFromScan", () => {
-  it("single rect produces one frame at absolute grid position", () => {
+  it("single rect produces one frame at absolute grid position (no container)", () => {
     const scanResult = scan("┌──┐\n│  │\n└──┘");
     const frames = framesFromScan(scanResult, CW, CH);
     expect(frames).toHaveLength(1);
+    // Single rect is NOT wrapped in a container
     expect(frames[0].x).toBe(0);
     expect(frames[0].y).toBe(0);
     expect(frames[0].w).toBe(4 * CW);
@@ -90,7 +91,7 @@ describe("framesFromScan", () => {
     expect(frames).toHaveLength(0);
   });
 
-  it("side-by-side rects produce separate top-level frames", () => {
+  it("side-by-side rects are grouped into a container", () => {
     const text = [
       "┌──────┐  ┌──────┐",
       "│  A   │  │  B   │",
@@ -98,7 +99,12 @@ describe("framesFromScan", () => {
     ].join("\n");
     const scanResult = scan(text);
     const frames = framesFromScan(scanResult, CW, CH);
-    const rectFrames = frames.filter(f => f.content?.type === "rect");
-    expect(rectFrames.length).toBe(2);
+    // Side-by-side rects on same rows → grouped into one container
+    expect(frames).toHaveLength(1);
+    expect(frames[0].content).toBeNull(); // container
+    expect(frames[0].clip).toBe(true);
+    // Children are the two rects
+    const rectChildren = frames[0].children.filter(c => c.content?.type === "rect");
+    expect(rectChildren.length).toBe(2);
   });
 });
