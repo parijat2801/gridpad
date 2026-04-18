@@ -106,6 +106,16 @@ export function framesToMarkdown(
     parts.push(grid.map(row => row.join("").trimEnd()).join("\n"));
   }
 
-  return parts.join("\n\n");
+  // Strip leading/trailing blank lines from each part — detectRegions
+  // expands wireframe ranges by ±1 row margin, pulling blank separator
+  // lines into the region text. Without stripping, join("\n\n") produces
+  // triple newlines.
+  const trimmed = parts.map(p => {
+    const lines = p.split("\n");
+    while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+    while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+    return lines.join("\n");
+  });
+  return trimmed.join("\n\n");
 }
 
