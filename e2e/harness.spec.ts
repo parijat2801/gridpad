@@ -1836,6 +1836,7 @@ test.describe("interaction: children", () => {
     if (selectedNode) {
       const cx = box!.x + selectedNode.absX + selectedNode.w / 2;
       const cy = box!.y + selectedNode.absY + selectedNode.h / 2;
+      await page.mouse.move(cx, cy);
       await page.mouse.down();
       for (let i = 1; i <= 3; i++) await page.mouse.move(cx + i * 10, cy);
       await page.mouse.up();
@@ -2147,143 +2148,386 @@ test.describe("shared walls", () => {
     expect(r.ghosts).toEqual([]);
   });
 
-  // ── Creating new shared walls by dragging ──
+  // ── Creating adjacencies and overlaps by dragging ──
 
-  test("drag side-by-side boxes together to touch, borders don't corrupt", async ({ page }) => {
-    // Two boxes with a gap — drag box B left to close the gap
-    const spaced = `Title\n\n┌──────┐      ┌──────┐\n│  A   │      │  B   │\n└──────┘      └──────┘\n\nEnd`;
-    await load(page, spaced);
-    writeArtifact("shared-create-touch", "input.md", spaced);
+  test("drag box right into adjacent box — borders don't corrupt", async ({ page }) => {
+    // A at x=0, B at x=far. Drag A right until adjacent to B.
+    await load(page, SIDE_BY_SIDE);
+    writeArtifact("wall-drag-adjacent", "input.md", SIDE_BY_SIDE);
+    const framesBefore = await getFrames(page);
+    await screenshot(page, "wall-drag-adjacent", "1-before");
 
-    // Select B (second frame) and drag left to touch A
-    const frames = await getFrames(page);
-    if (frames.length >= 2) {
-      // Click the second frame
-      const canvas = page.locator("canvas");
-      const box = await canvas.boundingBox();
-      const f = frames[frames.length - 1]; // B is rightmost
-      await page.mouse.click(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
-      await page.waitForTimeout(300);
-      await dragSelected(page, -80, 0); // drag left toward A
-      await clickProse(page, 5, 5);
-    }
+    await clickFrame(page, 0); // select A (first/leftmost)
+    await dragSelected(page, 50, 0);
+    await clickProse(page, 5, 5);
+    const framesAfter = await getFrames(page);
 
     const saved = await save(page);
-    writeArtifact("shared-create-touch", "output.md", saved);
-    await screenshot(page, "shared-create-touch", "after");
-    // Both boxes should survive
+    writeArtifact("wall-drag-adjacent", "output.md", saved);
+    await screenshot(page, "wall-drag-adjacent", "2-after");
+
+    // Verify A actually moved
+    expect(framesAfter[0].x).toBeGreaterThan(framesBefore[0].x);
+    // Both labels survive
+    expect(saved).toContain("A");
+    expect(saved).toContain("B");
+    // Count box corners — should have at least 4 (2 boxes × 2 visible corners min)
+    const corners = [...saved].filter(c => "┌┐└┘".includes(c)).length;
+    expect(corners).toBeGreaterThanOrEqual(4);
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+
+    // Reload and verify visual matches
+    await load(page, saved);
+    await screenshot(page, "wall-drag-adjacent", "3-reloaded");
+    const framesReloaded = await getFrames(page);
+    expect(framesReloaded.length).toBe(framesAfter.length);
+  });
+
+  test("drag box down onto another — overlapping positions", async ({ page }) => {
+    await load(page, TWO_SEPARATE);
+    writeArtifact("wall-overlap-down", "input.md", TWO_SEPARATE);
+    const framesBefore = await getFrames(page);
+    await screenshot(page, "wall-overlap-down", "1-before");
+
+    // Drag A down past Middle prose toward B
+    await clickFrame(page, 0);
+    await dragSelected(page, 0, 120);
+    await clickProse(page, 5, 5);
+
+    const saved = await save(page);
+    writeArtifact("wall-overlap-down", "output.md", saved);
+    await screenshot(page, "wall-overlap-down", "2-after");
+
+    // A should have moved down
+    const framesAfter = await getFrames(page);
+    expect(framesAfter[0].y).toBeGreaterThan(framesBefore[0].y);
+    // Both boxes survive
+    expect(saved).toContain("A");
+    expect(saved).toContain("B");
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+
+    // Reload survives
+    await load(page, saved);
+    await screenshot(page, "wall-overlap-down", "3-reloaded");
+  });
+
+  test("stack two same-width boxes vertically — bottom border meets top border", async ({ page }) => {
+    const stacked = [
+      "Title", "",
+      "┌──────────┐",
+      "│  Top     │",
+      "└──────────┘", "", "", "",
+      "┌──────────┐",
+      "│  Bottom  │",
+      "└──────────┘", "",
+      "End",
+    ].join("\n");
+    await load(page, stacked);
+    writeArtifact("wall-stack-vert", "input.md", stacked);
+
+    // Drag bottom box up to touch top box
+    const frames = await getFrames(page);
+    const bottom = frames.reduce((a, b) => a.y > b.y ? a : b);
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+    await page.mouse.click(box!.x + bottom.x + bottom.w / 2, box!.y + bottom.y + bottom.h / 2);
+    await page.waitForTimeout(300);
+    await dragSelected(page, 0, -50);
+    await clickProse(page, 5, 5);
+
+    const saved = await save(page);
+    writeArtifact("wall-stack-vert", "output.md", saved);
+    await screenshot(page, "wall-stack-vert", "2-after");
+
+    expect(saved).toContain("Top");
+    expect(saved).toContain("Bottom");
+    // Both boxes have valid structure — at least 2 ┌ and 2 └
+    const tl = [...saved].filter(c => c === "┌").length;
+    const bl = [...saved].filter(c => c === "└").length;
+    expect(tl).toBeGreaterThanOrEqual(2);
+    expect(bl).toBeGreaterThanOrEqual(1); // bottom of lower box
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+  });
+
+  test("drag small box inside large box — nesting by drag", async ({ page }) => {
+    const separate = [
+      "Notes", "",
+      "┌──────────────────┐",
+      "│                  │",
+      "│                  │",
+      "│                  │",
+      "└──────────────────┘", "",
+      "┌────┐",
+      "│ X  │",
+      "└────┘", "",
+      "End",
+    ].join("\n");
+    await load(page, separate);
+    writeArtifact("wall-nest-drag", "input.md", separate);
+
+    // Drag small box X up into the large box
+    const frames = await getFrames(page);
+    const small = frames.reduce((a, b) => a.w < b.w ? a : b);
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+    await page.mouse.click(box!.x + small.x + small.w / 2, box!.y + small.y + small.h / 2);
+    await page.waitForTimeout(300);
+    await dragSelected(page, 30, -60);
+    await clickProse(page, 5, 5);
+
+    const saved = await save(page);
+    writeArtifact("wall-nest-drag", "output.md", saved);
+    await screenshot(page, "wall-nest-drag", "2-after");
+
+    expect(saved).toContain("X");
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+
+    // Reload and verify both boxes exist
+    await load(page, saved);
+    const framesReloaded = await getFrames(page);
+    expect(framesReloaded.length).toBeGreaterThanOrEqual(1);
+    await screenshot(page, "wall-nest-drag", "3-reloaded");
+  });
+
+  test("drag box to exact same row as another — horizontal adjacency", async ({ page }) => {
+    // Two boxes at different Y positions, drag B to same Y as A
+    const offset = [
+      "Title", "",
+      "┌────────┐",
+      "│   A    │",
+      "└────────┘", "", "", "",
+      "          ┌────────┐",
+      "          │   B    │",
+      "          └────────┘", "",
+      "End",
+    ].join("\n");
+    await load(page, offset);
+    writeArtifact("wall-same-row", "input.md", offset);
+
+    // Drag B up to same row as A
+    const frames = await getFrames(page);
+    const b = frames.reduce((a, b) => a.y > b.y ? a : b);
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+    await page.mouse.click(box!.x + b.x + b.w / 2, box!.y + b.y + b.h / 2);
+    await page.waitForTimeout(300);
+    await dragSelected(page, 0, -80);
+    await clickProse(page, 5, 5);
+
+    const saved = await save(page);
+    writeArtifact("wall-same-row", "output.md", saved);
+    await screenshot(page, "wall-same-row", "2-after");
+
     expect(saved).toContain("A");
     expect(saved).toContain("B");
     expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 
-  test("drag box onto another — overlapping borders", async ({ page }) => {
-    // Two separate boxes, drag A down onto B's position
-    await load(page, TWO_SEPARATE);
-    writeArtifact("shared-overlap", "input.md", TWO_SEPARATE);
+  // ── Multi-step: drag, save, drag again ──
 
+  test("drag box right, save, drag same box down, save — L-path", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    writeArtifact("wall-L-path", "input.md", SIMPLE_BOX);
+
+    // Step 1: drag right
     await clickFrame(page, 0);
-    await dragSelected(page, 0, 120); // drag A down past B
+    await dragSelected(page, 80, 0);
+    await clickProse(page, 5, 5);
+    const save1 = await save(page);
+    writeArtifact("wall-L-path", "save1.md", save1);
+
+    // Step 2: drag down
+    await clickFrame(page, 0);
+    await dragSelected(page, 0, 60);
+    await clickProse(page, 5, 5);
+    const save2 = await save(page);
+    writeArtifact("wall-L-path", "save2.md", save2);
+    await screenshot(page, "wall-L-path", "2-after");
+
+    // Box should be offset both right and down
+    const boxLine = save2.split("\n").find(l => l.includes("┌"))!;
+    const indent = boxLine.length - boxLine.trimStart().length;
+    expect(indent).toBeGreaterThan(3);
+    const boxRow = save2.split("\n").indexOf(boxLine);
+    expect(boxRow).toBeGreaterThan(3);
+    expect(await findGhostsFromPage(page, save2)).toEqual([]);
+  });
+
+  test("move frame, add new rect via tool, save — both persist", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    writeArtifact("wall-move-add", "input.md", SIMPLE_BOX);
+
+    // Move existing frame right
+    await clickFrame(page, 0);
+    await dragSelected(page, 80, 0);
+    await clickProse(page, 5, 5);
+
+    // Switch to rect tool, draw a new box
+    await page.keyboard.press("r");
+    await page.waitForTimeout(200);
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+    // Draw rect at bottom-left area
+    const startX = box!.x + 10;
+    const startY = box!.y + 200;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX + 100, startY + 50, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    // Back to select
+    await page.keyboard.press("v");
     await clickProse(page, 5, 5);
 
     const saved = await save(page);
-    writeArtifact("shared-overlap", "output.md", saved);
-    await screenshot(page, "shared-overlap", "after");
-    // Both frames should still exist in some form
-    expect(saved).toContain("┌");
+    writeArtifact("wall-move-add", "output.md", saved);
+    await screenshot(page, "wall-move-add", "2-after");
+
+    // Should have at least 2 ┌ (original + new)
+    const topLefts = [...saved].filter(c => c === "┌").length;
+    expect(topLefts).toBeGreaterThanOrEqual(2);
     expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 
-  test("drag box to share horizontal wall with existing box", async ({ page }) => {
-    // Two boxes stacked with gap — drag bottom one up to share a wall
-    const stacked = `Title\n\n┌──────────┐\n│  Top     │\n└──────────┘\n\n\n\n┌──────────┐\n│  Bottom  │\n└──────────┘\n\nEnd`;
-    await load(page, stacked);
-    writeArtifact("shared-create-horiz", "input.md", stacked);
+  // ── Resize creating overlap ──
 
-    // Get frames, select the bottom one, drag up
-    const frames = await getFrames(page);
-    if (frames.length >= 2) {
-      const canvas = page.locator("canvas");
-      const box = await canvas.boundingBox();
-      // Click the lower frame
-      const bottom = frames.reduce((a, b) => a.y > b.y ? a : b);
-      await page.mouse.click(box!.x + bottom.x + bottom.w / 2, box!.y + bottom.y + bottom.h / 2);
-      await page.waitForTimeout(300);
-      await dragSelected(page, 0, -60); // drag up toward top box
-      await clickProse(page, 5, 5);
-    }
+  test("resize box to overlap with adjacent box", async ({ page }) => {
+    await load(page, SIDE_BY_SIDE);
+    writeArtifact("wall-resize-overlap", "input.md", SIDE_BY_SIDE);
+
+    // Select A, resize right to overlap with B
+    await clickFrame(page, 0);
+    await resizeSelected(page, 80, 0);
+    await clickProse(page, 5, 5);
 
     const saved = await save(page);
-    writeArtifact("shared-create-horiz", "output.md", saved);
-    await screenshot(page, "shared-create-horiz", "after");
+    writeArtifact("wall-resize-overlap", "output.md", saved);
+    await screenshot(page, "wall-resize-overlap", "2-after");
+
+    // Both labels should survive
+    expect(saved).toContain("A");
+    expect(saved).toContain("B");
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+  });
+
+  // ── Delete one frame from shared-wall pair ──
+
+  test("delete one box from junction grid, save", async ({ page }) => {
+    await load(page, JUNCTION);
+    writeArtifact("wall-delete-one", "input.md", JUNCTION);
+
+    // Select the wireframe and delete
+    await clickFrame(page, 0);
+    await page.waitForTimeout(200);
+    await page.keyboard.press("Delete");
+    await page.waitForTimeout(300);
+
+    const saved = await save(page);
+    writeArtifact("wall-delete-one", "output.md", saved);
+    await screenshot(page, "wall-delete-one", "2-after");
+
+    // Header and Footer prose should survive
+    expect(saved).toContain("Header");
+    expect(saved).toContain("Footer");
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+  });
+
+  // ── Undo after drag ──
+
+  test("drag shared-wall box, undo, save — original position restored", async ({ page }) => {
+    await load(page, SHARED_HORIZONTAL);
+    writeArtifact("wall-undo-drag", "input.md", SHARED_HORIZONTAL);
+
+    await clickFrame(page, 0);
+    await dragSelected(page, 80, 0);
+    await clickProse(page, 5, 5);
+
+    // Undo
+    const mod = process.platform === "darwin" ? "Meta" : "Control";
+    await page.keyboard.press(`${mod}+z`);
+    await page.waitForTimeout(300);
+
+    const saved = await save(page);
+    writeArtifact("wall-undo-drag", "output.md", saved);
+    await screenshot(page, "wall-undo-drag", "2-after-undo");
+
+    // Should match original (or close — box at original position)
     expect(saved).toContain("Top");
     expect(saved).toContain("Bottom");
+    expect(saved).toContain("├");  // junction should be preserved (never moved)
     expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 
-  test("create L-shape by dragging small box next to tall box", async ({ page }) => {
-    // Tall box + small box below — drag small box up and right to form L
-    const pieces = `Notes\n\n┌──┐\n│  │\n│  │\n│  │\n│  │\n└──┘\n\n┌────────┐\n│  Wide  │\n└────────┘\n\nEnd`;
-    await load(page, pieces);
-    writeArtifact("shared-create-L", "input.md", pieces);
+  // ── Complex multi-frame scenarios ──
 
+  test("move two separate boxes toward each other, save", async ({ page }) => {
+    await load(page, TWO_SEPARATE);
+    writeArtifact("wall-converge", "input.md", TWO_SEPARATE);
+
+    // Move A down
+    await clickFrame(page, 0);
+    await dragSelected(page, 0, 80);
+    await clickProse(page, 5, 5);
+
+    // Move B up
     const frames = await getFrames(page);
     if (frames.length >= 2) {
       const canvas = page.locator("canvas");
       const box = await canvas.boundingBox();
-      const wide = frames.reduce((a, b) => a.w > b.w ? a : b);
-      await page.mouse.click(box!.x + wide.x + wide.w / 2, box!.y + wide.y + wide.h / 2);
+      const b = frames.reduce((a, b) => a.y > b.y ? a : b);
+      await page.mouse.click(box!.x + b.x + b.w / 2, box!.y + b.y + b.h / 2);
       await page.waitForTimeout(300);
-      await dragSelected(page, 30, -80); // drag up and right
+      await dragSelected(page, 0, -80);
       await clickProse(page, 5, 5);
     }
 
     const saved = await save(page);
-    writeArtifact("shared-create-L", "output.md", saved);
-    await screenshot(page, "shared-create-L", "after");
-    expect(saved).toContain("Wide");
+    writeArtifact("wall-converge", "output.md", saved);
+    await screenshot(page, "wall-converge", "2-after");
+
+    expect(saved).toContain("A");
+    expect(saved).toContain("B");
     expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 
-  test("drag three separate boxes into a row, save twice", async ({ page }) => {
-    // Three boxes in a column — drag B and C to form a horizontal row with A
-    const col = `X\n\n┌────┐\n│ A  │\n└────┘\n\n┌──────┐\n│  B   │\n└──────┘\n\n┌────────┐\n│   C    │\n└────────┘\n\nY`;
-    await load(page, col);
-    writeArtifact("shared-create-row", "input.md", col);
+  test("drag, type prose between frames, save, reload", async ({ page }) => {
+    await load(page, SIDE_BY_SIDE);
+    writeArtifact("wall-drag-type", "input.md", SIDE_BY_SIDE);
 
-    // Drag B right of A
-    const frames1 = await getFrames(page);
-    if (frames1.length >= 2) {
-      const canvas = page.locator("canvas");
-      const box = await canvas.boundingBox();
-      const b = frames1[1]; // second frame
-      await page.mouse.click(box!.x + b.x + b.w / 2, box!.y + b.y + b.h / 2);
-      await page.waitForTimeout(300);
-      await dragSelected(page, 80, -60);
-      await clickProse(page, 5, 5);
-    }
-    const save1 = await save(page);
-    writeArtifact("shared-create-row", "save1.md", save1);
+    // Move A down a bit
+    await clickFrame(page, 0);
+    await dragSelected(page, 0, 30);
+    await clickProse(page, 5, 5);
 
-    // Drag C right of B
-    const frames2 = await getFrames(page);
-    if (frames2.length >= 3) {
-      const canvas = page.locator("canvas");
-      const box = await canvas.boundingBox();
-      const c = frames2[2]; // third frame
-      await page.mouse.click(box!.x + c.x + c.w / 2, box!.y + c.y + c.h / 2);
-      await page.waitForTimeout(300);
-      await dragSelected(page, 160, -120);
-      await clickProse(page, 5, 5);
-    }
-    const save2 = await save(page);
-    writeArtifact("shared-create-row", "save2.md", save2);
-    await screenshot(page, "shared-create-row", "after");
+    // Type some prose
+    await page.keyboard.type("INSERTED");
+    await page.waitForTimeout(200);
 
-    expect(save2).toContain("A");
-    expect(save2).toContain("B");
-    expect(save2).toContain("C");
-    expect(await findGhostsFromPage(page, save2)).toEqual([]);
+    const saved = await save(page);
+    writeArtifact("wall-drag-type", "output.md", saved);
+    await screenshot(page, "wall-drag-type", "2-after");
+
+    expect(saved).toContain("INSERTED");
+    expect(saved).toContain("A");
+    expect(saved).toContain("B");
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+
+    // Reload and check
+    await load(page, saved);
+    await screenshot(page, "wall-drag-type", "3-reloaded");
+    const framesReloaded = await getFrames(page);
+    expect(framesReloaded.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("save three times without edits — idempotent", async ({ page }) => {
+    await load(page, GRID_3X2);
+    const s1 = await save(page);
+    const s2 = await save(page);
+    const s3 = await save(page);
+    writeArtifact("wall-idempotent-3x2", "save1.md", s1);
+    writeArtifact("wall-idempotent-3x2", "save3.md", s3);
+    expect(s1).toBe(s2);
+    expect(s2).toBe(s3);
   });
 });
 
