@@ -1193,25 +1193,28 @@ test.describe("harness", () => {
     writeArtifact("text-label-edit", "input.md", LABELED_BOX);
     await screenshot(page, "text-label-edit", "1-before");
 
-    // Get frame positions
-    const frames = await getFrames(page);
+    // Find the text child via frame tree
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    const textNode = flat.find(f => f.contentType === "text");
+    writeArtifact("text-label-edit", "tree.json", JSON.stringify(flat, null, 2));
+
+    if (!textNode) {
+      // If no text child, the label might be in the parent — try clicking center
+      await clickFrame(page, 0);
+    } else {
+      // Drill down: click parent first, then child
+      await clickChild(page, 0);
+    }
+
+    // Double-click to enter text edit mode — use scroll-aware coordinates
     const canvas = page.locator("canvas");
     const box = await canvas.boundingBox();
-
-    // Find a text-type child frame (the "Hello" label)
-    // The labeled box has a rect with text children
-    // Double-click center of the wireframe area
-    const f = frames[0];
-    const centerX = box!.x + f.x + f.w / 2;
-    const centerY = box!.y + f.y + f.h / 2;
-
-    // First click selects container, second click drills down
-    await page.mouse.click(centerX, centerY);
-    await page.waitForTimeout(300);
-    await page.mouse.click(centerX, centerY);
-    await page.waitForTimeout(300);
-    // Double-click to enter text edit mode
-    await page.mouse.dblclick(centerX, centerY);
+    const scrollTop = await page.evaluate(() => document.querySelector("canvas")?.parentElement?.scrollTop ?? 0);
+    const target = textNode ?? flat[0];
+    const dblX = box!.x + target.absX + target.w / 2;
+    const dblY = box!.y + (target.absY - scrollTop) + target.h / 2;
+    await page.mouse.dblclick(dblX, dblY);
     await page.waitForTimeout(300);
 
     await page.keyboard.press("End");
@@ -2447,6 +2450,9 @@ test.describe("shared walls", () => {
     await dragSelected(page, 80, 0);
     await clickProse(page, 5, 5);
 
+    // Clear prose cursor before switching tools
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(100);
     // Switch to rect tool, draw a new box
     await page.keyboard.press("r");
     await page.waitForTimeout(200);

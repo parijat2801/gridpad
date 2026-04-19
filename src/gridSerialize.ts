@@ -57,13 +57,15 @@ export function gridSerialize(
     collectIds(frames);
 
     // Collect dirty frame IDs (recursively).
-    // When a container is dirty (dragged), ALL its descendants are effectively
-    // dirty too — they moved with the container even though their own dirty
-    // flag is false. We must blank their original positions.
+    // Dirty propagates both DOWN (ancestor dirty → children dirty) and
+    // UP (child dirty → parent dirty). When a child moves inside a parent,
+    // the parent's border cells at the child's old position need blanking.
     const dirtyIds = new Set<string>();
+    const hasAnyDirtyDesc = (f: Frame): boolean =>
+      f.dirty || f.children.some(hasAnyDirtyDesc);
     const collectDirty = (fs: Frame[], ancestorDirty = false) => {
       for (const f of fs) {
-        const isDirty = f.dirty || ancestorDirty;
+        const isDirty = f.dirty || ancestorDirty || hasAnyDirtyDesc(f);
         if (isDirty) dirtyIds.add(f.id);
         collectDirty(f.children, isDirty);
       }
@@ -205,10 +207,11 @@ function writeFrameToGrid(
 ): void {
   const absX = offX + f.x;
   const absY = offY + f.y;
-  // A frame needs rewriting if it's dirty itself OR if an ancestor moved.
-  // When a container is dragged, the container is dirty but children are not.
-  // Children must still be written at the new position.
-  const needsWrite = f.dirty || ancestorDirty;
+  // A frame needs rewriting if it's dirty itself, an ancestor moved,
+  // OR any descendant is dirty (child move can overwrite parent border cells).
+  const hasAnyDirtyDescendant = (fr: Frame): boolean =>
+    fr.dirty || fr.children.some(hasAnyDirtyDescendant);
+  const needsWrite = f.dirty || ancestorDirty || hasAnyDirtyDescendant(f);
 
   if (needsWrite && f.content) {
     // Blank the frame's CURRENT bounding box
