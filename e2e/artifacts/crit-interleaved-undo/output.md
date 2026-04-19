@@ -1,4 +1,4 @@
- TYPProse above
+ TYPEProse above
 
      ┌──────────────┐
      │              │

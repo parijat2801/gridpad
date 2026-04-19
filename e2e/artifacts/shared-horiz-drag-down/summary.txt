@@ -1,0 +1,43 @@
+Test: shared-horiz-drag-down
+Input lines: 9
+Output lines: 11
+Markdown match: false
+Visual diff: 0.32%
+Ghosts: 0
+Render failures: 0
+Prose issues: 0
+Prose-frame overlaps: 0
+Frame tree diffs: 0
+Invariant failures: 0
+
+Markdown diff:
+  L3:
+    - "┌──────────────┐"
+    + ""
+  L4:
+    - "│     Top      │"
+    + "End"
+  L5:
+    - "├──────────────┤"
+    + ""
+  L6:
+    - "│    Bottom    │"
+    + ""
+  L7:
+    - "└──────────────┘"
+    + "┌──────────────┐"
+  L8:
+    - ""
+    + "│     Top      │"
+  L9:
+    - "End"
+    + "├──────────────┤"
+  L10:
+    - "<missing>"
+    + "│              │"
+  L11:
+    - "<missing>"
+    + "└──────────────┘"
+
+Prose doc after reload: 1 lines
+Frames before: 5  Frames after: 4

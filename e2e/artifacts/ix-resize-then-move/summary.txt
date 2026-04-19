@@ -2,11 +2,11 @@ Test: ix-resize-then-move
 Input lines: 8
 Output lines: 10
 Markdown match: false
-Visual diff: 0.13%
-Ghosts: 3
-  Ghost '│' at L6:5:     │                   │
-  Ghost '│' at L7:5:     │                   │
-  Ghost '└' at L8:5:     └───────────────────┘
+Visual diff: 0.14%
+Ghosts: 0
+Render failures: 0
+Prose issues: 0
+Prose-frame overlaps: 0
 Frame tree diffs: 0
 Invariant failures: 0
 

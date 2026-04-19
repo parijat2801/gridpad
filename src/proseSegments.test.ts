@@ -71,6 +71,56 @@ describe("extractProseSegments", () => {
     ]);
   });
 
+  it("filters wire chars inside frame bboxes", () => {
+    // Simulates the nested box case: │ at col 25 is inside the outer rect bbox
+    const unclaimed = new Map([
+      ["0,0", "T"], ["0,1", "o"], ["0,2", "p"],
+      ["3,25", "│"],  // wire char inside frame bbox — should be filtered
+      ["5,0", "E"], ["5,1", "n"], ["5,2", "d"],
+    ]);
+    const grid = [
+      [..."Top"],
+      [..."┌" + "─".repeat(24) + "┐"],
+      [..."│  Inner            │  │"],
+      [..."│" + " ".repeat(24) + "│"],  // row 3 — │ at col 25
+      [..."└" + "─".repeat(24) + "┘"],
+      [..."End"],
+    ];
+    const frameBboxes = [{ row: 1, col: 0, w: 26, h: 4 }]; // covers cols 0-25
+    const result = extractProseSegments(unclaimed, grid, frameBboxes);
+    // │ at (3,25) should NOT appear as prose
+    const hasWireChar = result.some(s => s.text.includes("│"));
+    expect(hasWireChar).toBe(false);
+    expect(result).toContainEqual({ row: 0, col: 0, text: "Top" });
+    expect(result).toContainEqual({ row: 5, col: 0, text: "End" });
+  });
+
+  it("nested box: no wire chars in prose segments (integration)", async () => {
+    // Use the actual scanToFrames pipeline with the nested fixture
+    const { extractProseSegments: _ } = await import("./proseSegments");
+    const { scanToFrames } = await import("./scanToFrames");
+    const text = [
+      "Top", "",
+      "┌────────────────────────┐",
+      "│  Outer                 │",
+      "│  ┌──────────────────┐  │",
+      "│  │  Inner           │  │",
+      "│  └──────────────────┘  │",
+      "└────────────────────────┘",
+      "", "Bottom",
+    ].join("\n");
+    const { proseSegments } = scanToFrames(text, 9.6, 18.4);
+    // No prose segment should contain wire chars
+    const WIRE = new Set([..."┌┐└┘│─├┤┬┴┼"]);
+    for (const seg of proseSegments) {
+      for (const ch of seg.text) {
+        if (WIRE.has(ch)) {
+          throw new Error(`Wire char '${ch}' found in prose segment at row=${seg.row} col=${seg.col}: "${seg.text}"`);
+        }
+      }
+    }
+  });
+
   it("preserves trailing spaces within a run", () => {
     const unclaimed = new Map([
       ["0,0", "H"], ["0,1", "i"], ["0,2", " "], ["0,3", " "],

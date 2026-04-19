@@ -3,8 +3,10 @@ Input lines: 9
 Output lines: 9
 Markdown match: false
 Visual diff: 0.11%
-Ghosts: 1
-  Ghost '─' at L3:8: └──────────────┘
+Ghosts: 0
+Render failures: 0
+Prose issues: 0
+Prose-frame overlaps: 0
 Frame tree diffs: 0
 Invariant failures: 0
 

@@ -64,7 +64,7 @@ A simple flowchart showing navigation between screens. Drag the boxes to rearran
 
 
 ┌─────────┐    ┌───────────┐    ┌──────────┐    ┌──────────┐
-│  Login  │────│ Dashboard │────│ Settings │────│  Logout  │
+│  Login  ├────┤ Dashboard ├────┤ Settings ├────┤  Logout  │
 └─────────┘    └───────────┘    └──────────┘    └──────────┘
 
 

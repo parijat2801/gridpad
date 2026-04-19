@@ -3,10 +3,11 @@ Input lines: 8
 Output lines: 12
 Markdown match: false
 Visual diff: 0.00%
-Ghosts: 3
-  Ghost '│' at L10:1: │              │
-  Ghost '│' at L11:1: │              │
-  Ghost '└' at L12:1: └──────────────┘
+Ghosts: 0
+Render failures: 1
+  Frame at (0,107) 154x53: no visible pixels (0.0% lit)
+Prose issues: 0
+Prose-frame overlaps: 0
 Frame tree diffs: 0
 Invariant failures: 0
 

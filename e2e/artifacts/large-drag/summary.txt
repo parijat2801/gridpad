@@ -2,14 +2,11 @@ Test: large-drag
 Input lines: 13
 Output lines: 27
 Markdown match: false
-Visual diff: 0.08%
-Ghosts: 6
-  Ghost '┌' at L9:1: ┌────┐
-  Ghost '│' at L10:1: │ B  │
-  Ghost '└' at L11:1: └────┘
-  Ghost '┌' at L25:1: ┌────┐
-  Ghost '│' at L26:1: │ A  │
-  Ghost '└' at L27:1: └────┘
+Visual diff: 0.09%
+Ghosts: 0
+Render failures: 0
+Prose issues: 0
+Prose-frame overlaps: 0
 Frame tree diffs: 0
 Invariant failures: 0
 

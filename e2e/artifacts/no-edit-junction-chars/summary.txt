@@ -4,6 +4,11 @@ Output lines: 9
 Markdown match: true
 Visual diff: 0.00%
 Ghosts: 0
+Render failures: 2
+  Frame at (29,67) 77x13: no visible pixels (0.0% lit)
+  Frame at (144,67) 77x13: no visible pixels (0.0% lit)
+Prose issues: 0
+Prose-frame overlaps: 0
 Frame tree diffs: 0
 Invariant failures: 0
 

@@ -12,7 +12,7 @@ A classic three-column web app. Drag the sidebar or panels to watch text reflow 
 
   ┌───────────────────────────────────────────────────────┐
   │                      My App                           │
-  ┌───────────┌───────────────────────────┌───────────────┐
+  ├───────────┬───────────────────────────┬───────────────┤
   │ Nav       │                           │               │
   │           │                           │               │
   │ Home      │  ┌─────────────────────┐  │  User: Alice  │
@@ -24,7 +24,7 @@ A classic three-column web app. Drag the sidebar or panels to watch text reflow 
   │           │  │ Users    │ │ Tasks  │  │  │ Delete  │  │
   │           │  │ 1,204    │ │ 38     │  │  └─────────┘  │
   │           │  └──────────┘ └────────┘  │               │
-  └───────────└───────────────────────────└───────────────┘
+  └───────────┴───────────────────────────┴───────────────┘
 
 
 
@@ -40,7 +40,7 @@ A phone-sized screen with header, content area, and bottom navigation bar.
 
   ┌──────────────────┐
   │    My App    ≡   │
-  ┌──────────────────┐
+  ├──────────────────┤
   │                  │
   │  Welcome back!   │
   │                  │
@@ -51,7 +51,7 @@ A phone-sized screen with header, content area, and bottom navigation bar.
   │  │  └──────┘  │  │
   │  └────────────┘  │
   │                  │
-  ┌──────────────────┐
+  ├──────────────────┤
   │ ⌂    ☆    ✉    ⚙ │
   └──────────────────┘
                     │
@@ -63,9 +63,9 @@ A phone-sized screen with header, content area, and bottom navigation bar.
 A simple flowchart showing navigation between screens. Drag the boxes to rearrange the flow.
 
 
-┌─────────┐    ┌───────────┐    ┌──────────┐    ┌──────────┐
-│  Login  │────│ Dashboard │────│ Settings │────│  Logout  │
-└─────────┘    └───────────┘    └──────────┘    └──────────┘
+  ┌─────────┐    ┌───────────┐    ┌──────────┐    ┌──────────┐
+  │  Login  ├────┤ Dashboard ├────┤ Settings ├────┤  Logout  │
+  └─────────┘    └───────────┘    └──────────┘    └──────────┘
 
 
 
@@ -79,22 +79,22 @@ Every element on this page is interactive. Wireframes are detected from plain AS
 A form wireframe. Double-click the text labels inside frames to edit them inline.
 
 
-┌──────────────────────────┐
-│      Create Account      │
-├──────────────────────────┤
-│                          │
-│  Name:  ┌─────────────┐  │
-│         │             │  │
-│         └─────────────┘  │
-│  Email: ┌─────────────┐  │
-│         │             │  │
-│         └─────────────┘  │
-│  Pass:  ┌─────────────┐  │
-│         │             │  │
-│         └─────────────┘  │
-│                          │
-│     ┌──────────────┐     │
-│     │   Sign Up    │     │
-│     └──────────────┘     │
-│                          │
-└──────────────────────────┘
+  ┌──────────────────────────┐
+  │      Create Account      │
+  ├──────────────────────────┤
+  │                          │
+  │  Name:  ┌─────────────┐  │
+  │         │             │  │
+  │         └─────────────┘  │
+  │  Email: ┌─────────────┐  │
+  │         │             │  │
+  │         └─────────────┘  │
+  │  Pass:  ┌─────────────┐  │
+  │         │             │  │
+  │         └─────────────┘  │
+  │                          │
+  │     ┌──────────────┐     │
+  │     │   Sign Up    │     │
+  │     └──────────────┘     │
+  │                          │
+  └──────────────────────────┘

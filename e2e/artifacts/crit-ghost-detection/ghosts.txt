@@ -1,3 +1,1 @@
-Ghost '│' at L4:1: │      │
-Ghost '└' at L5:1: └──────┘
 Ghost '│' at L7:6: More │ ghost

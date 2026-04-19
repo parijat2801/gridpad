@@ -4,6 +4,9 @@ Output lines: 14
 Markdown match: true
 Visual diff: 0.00%
 Ghosts: 0
+Render failures: 0
+Prose issues: 0
+Prose-frame overlaps: 0
 Frame tree diffs: 0
 Invariant failures: 0
 
