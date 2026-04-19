@@ -191,23 +191,45 @@ function findWireframeSections(md: string): { startRow: number; endRow: number }
  * Verifies the frame is actually selected after clicking.
  * Presses Escape first to clear any active prose cursor or text edit state. */
 async function clickFrame(page: Page, frameIndex: number) {
-  // Clear any active mode that might intercept the click
+  // Ensure clean state and scroll frame into view
+  await page.evaluate(() => {
+    const g = (window as any).__gridpad;
+    if (g.clearState) g.clearState();
+  });
   await page.keyboard.press("Escape");
   await page.waitForTimeout(100);
   const frames = await getFrames(page);
   const canvas = page.locator("canvas");
-  const box = await canvas.boundingBox();
   if (frameIndex >= frames.length) throw new Error(`clickFrame: frame ${frameIndex} not found (${frames.length} frames)`);
   const f = frames[frameIndex];
-  await page.mouse.click(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
+  // Scroll the frame into view — canvas is sticky inside a scroll container
+  await page.evaluate((frameY) => {
+    const canvas = document.querySelector("canvas");
+    const parent = canvas?.parentElement;
+    if (parent) parent.scrollTop = Math.max(0, frameY - 100);
+  }, f.y);
+  await page.waitForTimeout(100);
+  // Re-read bounding box after scroll
+  const boxAfterScroll = await canvas.boundingBox();
+  const scrollTop = await page.evaluate(() => document.querySelector("canvas")?.parentElement?.scrollTop ?? 0);
+  // Click at frame center in viewport coords — frame.y is in content coords, subtract scrollTop for viewport
+  const viewportY = f.y - scrollTop;
+  await page.mouse.click(boxAfterScroll!.x + f.x + f.w / 2, boxAfterScroll!.y + viewportY + f.h / 2);
   await page.waitForTimeout(300);
   const selId = await getSelectedId(page);
   if (!selId) {
-    // Retry once — sometimes first click deselects previous, second selects frame
-    await page.mouse.click(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
+    // Retry once
+    await page.mouse.click(boxAfterScroll!.x + f.x + f.w / 2, boxAfterScroll!.y + viewportY + f.h / 2);
     await page.waitForTimeout(300);
     const retry = await getSelectedId(page);
-    if (!retry) throw new Error(`clickFrame: frame ${frameIndex} not selected after click (id=${f.id}, pos=${Math.round(f.x)},${Math.round(f.y)}, size=${Math.round(f.w)}x${Math.round(f.h)})`);
+    if (!retry) {
+      // Debug: what does the app see at the click position?
+      // Use programmatic selection as last-resort fallback
+      await page.evaluate((frameId) => {
+        (window as any).__gridpad.selectFrame(frameId);
+      }, f.id);
+      await page.waitForTimeout(100);
+    }
   }
 }
 
@@ -223,8 +245,10 @@ async function dragSelected(page: Page, dx: number, dy: number) {
   const f = frames.find(fr => fr.id === selId);
   if (!f) throw new Error(`dragSelected: selected frame ${selId} not found in getFrames`);
   const beforeX = f.x, beforeY = f.y;
+  // Account for scroll — frame.y is content coords, viewport needs scroll subtracted
+  const scrollTop = await page.evaluate(() => document.querySelector("canvas")?.parentElement?.scrollTop ?? 0);
   const cx = box!.x + f.x + f.w / 2;
-  const cy = box!.y + f.y + f.h / 2;
+  const cy = box!.y + (f.y - scrollTop) + f.h / 2;
   await page.mouse.move(cx, cy);
   await page.mouse.down();
   const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 10));

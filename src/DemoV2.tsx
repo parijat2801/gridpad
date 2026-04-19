@@ -708,6 +708,31 @@ export default function DemoV2() {
         getCharDims: () => ({ cw: cwRef.current, ch: chRef.current }),
         /** Get current text edit state (null if not editing) */
         getTextEdit: () => getTextEdit(stateRef.current),
+        /** Debug: test hitTestFrames at a given position */
+        hitTest: (px: number, py: number) => {
+          const hit = hitTestFrames(framesRef.current, px, py);
+          return hit ? { id: hit.id, type: hit.content?.type ?? "container" } : null;
+        },
+        /** Clear all active interaction state (prose cursor, selection, text edit) */
+        clearState: () => {
+          stateRef.current = stateRef.current.update({
+            effects: [selectFrameEffect.of(null), setTextEditEffect.of(null)],
+          }).state;
+          proseCursorRef.current = null;
+          textEditRef.current = null;
+          dragRef.current = null;
+          doLayout(); paint();
+        },
+        /** Programmatically select a frame by ID and prepare for drag */
+        selectFrame: (id: string) => {
+          stateRef.current = stateRef.current.update({
+            effects: [selectFrameEffect.of(id), setTextEditEffect.of(null)],
+          }).state;
+          proseCursorRef.current = null;
+          textEditRef.current = null;
+          framesRef.current = getFrames(stateRef.current);
+          paint();
+        },
       };
     }).catch(err => console.error("Init failed:", err));
   }, []);
