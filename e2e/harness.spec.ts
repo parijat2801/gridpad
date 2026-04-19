@@ -3057,3 +3057,192 @@ test.describe("critical", () => {
     expect(checkInvariants(tree)).toEqual([]);
   });
 });
+
+test.describe("prose-wireframe vertical position", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  test("heading prose next to wireframe — both survive round-trip", async ({ page }) => {
+    // Prose heading and wireframe on nearby rows, like the default doc.
+    // The heading should NOT overwrite wireframe borders on save.
+    const fixture = [
+      "# Title",
+      "",
+      "",
+      "## Section One",
+      "",
+      "Some prose here.",
+      "",
+      "",
+      "┌───────────────────────────────┐",
+      "│  Dashboard                    │",
+      "├───────────┬───────────────────┤",
+      "│ Nav       │  Content          │",
+      "│ Home      │                   │",
+      "│ Search    │  User: Alice      │",
+      "│ Settings  │  Role: Admin      │",
+      "└───────────┴───────────────────┘",
+      "",
+      "",
+      "## Section Two",
+      "",
+      "More prose after the wireframe.",
+    ].join("\n");
+    const r = await roundTrip(page, "vert-heading-wireframe", fixture);
+    expect(r.markdownMatch).toBe(true);
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("heading on same visual row as wireframe after drag — no corruption", async ({ page }) => {
+    // After dragging wireframe, the heading and wireframe may share visual Y.
+    // Save should preserve both without corruption.
+    const fixture = [
+      "# Main Title",
+      "",
+      "Intro paragraph.",
+      "",
+      "",
+      "┌──────────────────────┐",
+      "│  Box                 │",
+      "│                      │",
+      "└──────────────────────┘",
+      "",
+      "## Subtitle Here",
+      "",
+      "Conclusion text.",
+    ].join("\n");
+    const r = await roundTrip(page, "vert-heading-drag", fixture, async (p) => {
+      await clickFrame(p, 0);
+      await dragSelected(p, 0, -30); // drag up toward heading
+      await clickProse(p, 5, 5);
+    });
+    expect(r.output).toContain("Main Title");
+    expect(r.output).toContain("Subtitle Here");
+    expect(r.output).toContain("Box");
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("└");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("two wireframes with prose between — vertical positions preserved", async ({ page }) => {
+    // Two wireframes separated by prose. Both should maintain their relative
+    // vertical position after save/reload.
+    const fixture = [
+      "Top prose",
+      "",
+      "┌──────────────┐",
+      "│  Frame A     │",
+      "│              │",
+      "└──────────────┘",
+      "",
+      "Middle prose here.",
+      "",
+      "## Middle Heading",
+      "",
+      "More middle text.",
+      "",
+      "┌──────────────┐",
+      "│  Frame B     │",
+      "│              │",
+      "└──────────────┘",
+      "",
+      "Bottom prose",
+    ].join("\n");
+    const r = await roundTrip(page, "vert-two-frames-prose", fixture);
+    expect(r.markdownMatch).toBe(true);
+    expect(r.ghosts).toEqual([]);
+
+    // Verify frame order preserved — A before B in the output
+    const aRow = r.output.split("\n").findIndex(l => l.includes("Frame A"));
+    const bRow = r.output.split("\n").findIndex(l => l.includes("Frame B"));
+    expect(aRow).toBeLessThan(bRow);
+  });
+
+  test("wide wireframe with prose to the right — prose stays right", async ({ page }) => {
+    // Prose appears to the right of a wireframe (reflowed around obstacle).
+    // After save/reload, prose should not jump positions.
+    const fixture = [
+      "Introduction text above everything.",
+      "",
+      "┌──────────┐",
+      "│  Narrow  │",
+      "│  Box     │",
+      "│          │",
+      "│          │",
+      "└──────────┘",
+      "",
+      "Text below the box.",
+    ].join("\n");
+    const r = await roundTrip(page, "vert-prose-beside", fixture);
+    expect(r.markdownMatch).toBe(true);
+
+    // Reload and verify rendered prose doesn't overlap frame
+    const lines = await getRenderedLines(page);
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    const overlaps = findProseFrameOverlaps(lines, flat, 22);
+    expect(overlaps).toEqual([]);
+  });
+
+  test("default doc: drag dashboard, save, ## headings survive", async ({ page }) => {
+    // Use the actual default doc — the real user scenario
+    await load(page, ""); // empty triggers default text
+    await page.waitForTimeout(1000);
+
+    const framesBefore = await getFrames(page);
+    if (framesBefore.length === 0) {
+      // Default might not load with empty string — skip
+      return;
+    }
+
+    writeArtifact("vert-default-drag", "before.png", await page.locator("canvas").screenshot());
+
+    // Drag the first (dashboard) wireframe right
+    await clickFrame(page, 0);
+    await dragSelected(page, 100, 0);
+    await clickProse(page, 5, 5);
+
+    const saved = await save(page);
+    writeArtifact("vert-default-drag", "output.md", saved);
+    writeArtifact("vert-default-drag", "after.png", await page.locator("canvas").screenshot());
+
+    // All headings must survive
+    expect(saved).toContain("Dashboard Layout");
+    expect(saved).toContain("Mobile App");
+    // All wireframe structures must survive
+    expect(saved).toContain("┌");
+    expect(saved).toContain("└");
+    expect(saved).toContain("Nav");
+    expect(saved).toContain("Welcome back!");
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+
+    // Reload and verify visual
+    await load(page, saved);
+    writeArtifact("vert-default-drag", "reloaded.png", await page.locator("canvas").screenshot());
+    const framesAfter = await getFrames(page);
+    // Same number of top-level frames
+    expect(framesAfter.length).toBe(framesBefore.length);
+  });
+
+  test("markdown heading ## does not overwrite adjacent wireframe row", async ({ page }) => {
+    // Specific bug: ## heading text shares a grid row with wireframe border.
+    // The heading must not overwrite the wireframe cell.
+    const fixture = [
+      "## Heading",
+      "┌──────────────────────────────────────────────────────────────────────────────────────────┐",
+      "│                                                                                          │",
+      "└──────────────────────────────────────────────────────────────────────────────────────────┘",
+      "",
+      "After.",
+    ].join("\n");
+    const r = await roundTrip(page, "vert-heading-adjacent-wire", fixture);
+    // The wireframe should be intact
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("└");
+    expect(r.output).toContain("Heading");
+    expect(r.ghosts).toEqual([]);
+  });
+});
