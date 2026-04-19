@@ -68,9 +68,16 @@ async function screenshot(page: Page, testName: string, label: string): Promise<
 
 /** Pixel diff percentage between two PNG buffers */
 async function pixelDiff(page: Page, a: Buffer, b: Buffer): Promise<number> {
+  // Use base64 instead of spreading Buffer to number array — avoids massive JSON payloads
+  const b64a = a.toString("base64");
+  const b64b = b.toString("base64");
   return page.evaluate(async ({ d1, d2 }) => {
-    const toImg = (data: number[]) =>
-      createImageBitmap(new Blob([new Uint8Array(data)], { type: "image/png" }));
+    const toImg = async (b64: string) => {
+      const bin = atob(b64);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return createImageBitmap(new Blob([arr], { type: "image/png" }));
+    };
     const [i1, i2] = await Promise.all([toImg(d1), toImg(d2)]);
     const c = document.createElement("canvas");
     c.width = i1.width; c.height = i1.height;
@@ -85,7 +92,7 @@ async function pixelDiff(page: Page, a: Buffer, b: Buffer): Promise<number> {
       if (Math.abs(p1[i]-p2[i]) + Math.abs(p1[i+1]-p2[i+1]) + Math.abs(p1[i+2]-p2[i+2]) > 30) diff++;
     }
     return (diff / (p1.length / 4)) * 100;
-  }, { d1: [...a], d2: [...b] });
+  }, { d1: b64a, d2: b64b });
 }
 
 /** Find ghost wire characters using frame-bbox mask.
@@ -223,8 +230,8 @@ async function clickFrame(page: Page, frameIndex: number) {
     await page.waitForTimeout(300);
     const retry = await getSelectedId(page);
     if (!retry) {
-      // Debug: what does the app see at the click position?
-      // Use programmatic selection as last-resort fallback
+      // Programmatic fallback — bypasses hit testing. Log warning.
+      console.warn(`clickFrame: WARNING — using programmatic fallback for frame ${frameIndex} (click-based selection failed, hit testing may be broken)`);
       await page.evaluate((frameId) => {
         (window as any).__gridpad.selectFrame(frameId);
       }, f.id);
@@ -258,7 +265,6 @@ async function dragSelected(page: Page, dx: number, dy: number) {
   await page.mouse.up();
   await page.waitForTimeout(300);
   // Verify frame moved (skip check for sub-pixel drags or boundary clamps)
-  const minExpectedMove = Math.min(Math.abs(dx), Math.abs(dy)) > 0 ? 1 : 0;
   if (Math.abs(dx) >= 5 || Math.abs(dy) >= 5) {
     const framesAfter = await getFrames(page);
     const fAfter = framesAfter.find(fr => fr.id === selId);
@@ -438,6 +444,24 @@ async function verifyProseIntegrity(
   return issues;
 }
 
+/** Get current scroll offset and canvas bounding box */
+async function getScrollState(page: Page) {
+  const canvas = page.locator("canvas");
+  const box = await canvas.boundingBox();
+  const scrollTop = await page.evaluate(() =>
+    document.querySelector("canvas")?.parentElement?.scrollTop ?? 0,
+  );
+  return { box: box!, scrollTop };
+}
+
+/** Convert content coordinates to viewport coordinates */
+function toViewport(
+  contentX: number, contentY: number,
+  box: { x: number; y: number }, scrollTop: number,
+): { vx: number; vy: number } {
+  return { vx: box.x + contentX, vy: box.y + (contentY - scrollTop) };
+}
+
 /** Click on prose area at canvas-relative coordinates */
 async function clickProse(page: Page, relX: number, relY: number) {
   const canvas = page.locator("canvas");
@@ -450,11 +474,11 @@ async function clickProse(page: Page, relX: number, relY: number) {
  * Verifies text edit mode is active after double-click. */
 async function dblclickFrame(page: Page, frameIndex: number) {
   const frames = await getFrames(page);
-  const canvas = page.locator("canvas");
-  const box = await canvas.boundingBox();
   if (frameIndex >= frames.length) throw new Error(`dblclickFrame: frame ${frameIndex} not found (${frames.length} frames)`);
   const f = frames[frameIndex];
-  await page.mouse.dblclick(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
+  const { box, scrollTop } = await getScrollState(page);
+  const { vx, vy } = toViewport(f.x + f.w / 2, f.y + f.h / 2, box, scrollTop);
+  await page.mouse.dblclick(vx, vy);
   await page.waitForTimeout(300);
   const textEdit = await page.evaluate(() => (window as any).__gridpad.getTextEdit?.());
   if (textEdit === null || textEdit === undefined) {
@@ -469,13 +493,11 @@ async function resizeSelected(page: Page, dw: number, dh: number) {
   const selId = await getSelectedId(page);
   if (!selId) throw new Error(`resizeSelected: no frame selected — call clickFrame first`);
   const frames = await getFrames(page);
-  const canvas = page.locator("canvas");
-  const box = await canvas.boundingBox();
   const f = frames.find(fr => fr.id === selId) ?? frames[0];
   const beforeW = f.w, beforeH = f.h;
-  // Bottom-right corner of the frame
-  const hx = box!.x + f.x + f.w;
-  const hy = box!.y + f.y + f.h;
+  // Bottom-right corner in viewport coords (scroll-aware)
+  const { box: rbox, scrollTop: rscroll } = await getScrollState(page);
+  const { vx: hx, vy: hy } = toViewport(f.x + f.w, f.y + f.h, rbox, rscroll);
   await page.mouse.move(hx, hy);
   await page.waitForTimeout(100);
   await page.mouse.down();
@@ -501,13 +523,11 @@ async function resizeSelected(page: Page, dw: number, dh: number) {
  * Verifies a child frame is selected (different ID from parent). */
 async function clickChild(page: Page, parentIndex: number) {
   const frames = await getFrames(page);
-  const canvas = page.locator("canvas");
-  const box = await canvas.boundingBox();
   if (parentIndex >= frames.length) throw new Error(`clickChild: frame ${parentIndex} not found (${frames.length} frames)`);
   const f = frames[parentIndex];
   const parentId = f.id;
-  const cx = box!.x + f.x + f.w / 2;
-  const cy = box!.y + f.y + f.h / 2;
+  const { box: cbox, scrollTop: cscroll } = await getScrollState(page);
+  const { vx: cx, vy: cy } = toViewport(f.x + f.w / 2, f.y + f.h / 2, cbox, cscroll);
   // First click selects parent
   await page.mouse.click(cx, cy);
   await page.waitForTimeout(200);
@@ -573,15 +593,10 @@ async function roundTrip(
   const refShot = action ? afterShot : beforeShot;
   const visualDiff = await pixelDiff(page, refShot, reloadedShot);
 
-  // Ghost detection
-  let ghosts: string[] = [];
-  if (action) {
-    // After edits: use frame-bbox mask from the RELOADED tree
-    const { cw, ch } = await getCharDims(page);
-    const bboxes = computeFrameGridBboxes(treeAfter, cw, ch);
-    ghosts = findGhosts(output, null, bboxes);
-  }
-  // For no-edit tests, skip ghost check — if output === input, there are no ghosts by definition
+  // Ghost detection — always run, even for no-edit tests (input could have stray wire chars)
+  const { cw: ghostCw, ch: ghostCh } = await getCharDims(page);
+  const ghostBboxes = computeFrameGridBboxes(treeAfter, ghostCw, ghostCh);
+  const ghosts = findGhosts(output, null, ghostBboxes);
 
   // Canvas verification: are frames actually rendered at their positions?
   const renderFailures = await verifyFramesRendered(page, treeAfter);
@@ -2393,10 +2408,10 @@ test.describe("shared walls", () => {
 
     // Drag B up to same row as A
     const frames = await getFrames(page);
-    const b = frames.reduce((a, b) => a.y > b.y ? a : b);
+    const bottomFrame = frames.reduce((prev, cur) => prev.y > cur.y ? prev : cur);
     const canvas = page.locator("canvas");
     const box = await canvas.boundingBox();
-    await page.mouse.click(box!.x + b.x + b.w / 2, box!.y + b.y + b.h / 2);
+    await page.mouse.click(box!.x + bottomFrame.x + bottomFrame.w / 2, box!.y + bottomFrame.y + bottomFrame.h / 2);
     await page.waitForTimeout(300);
     await dragSelected(page, 0, -80);
     await clickProse(page, 5, 5);
@@ -2564,8 +2579,8 @@ test.describe("shared walls", () => {
     if (frames.length >= 2) {
       const canvas = page.locator("canvas");
       const box = await canvas.boundingBox();
-      const b = frames.reduce((a, b) => a.y > b.y ? a : b);
-      await page.mouse.click(box!.x + b.x + b.w / 2, box!.y + b.y + b.h / 2);
+      const bottomFrame = frames.reduce((prev, cur) => prev.y > cur.y ? prev : cur);
+      await page.mouse.click(box!.x + bottomFrame.x + bottomFrame.w / 2, box!.y + bottomFrame.y + bottomFrame.h / 2);
       await page.waitForTimeout(300);
       await dragSelected(page, 0, -80);
       await clickProse(page, 5, 5);
