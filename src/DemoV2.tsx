@@ -723,6 +723,10 @@ export default function DemoV2() {
           dragRef.current = null;
           doLayout(); paint();
         },
+        /** Get prose cursor position */
+        getCursorPosition: () => proseCursorRef.current,
+        /** Check if any frame is dirty */
+        isDirty: () => framesRef.current.some(f => f.dirty),
         /** Programmatically select a frame by ID and prepare for drag */
         selectFrame: (id: string) => {
           stateRef.current = stateRef.current.update({
