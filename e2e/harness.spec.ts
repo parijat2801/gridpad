@@ -296,6 +296,92 @@ async function countSelectionPixels(page: Page): Promise<number> {
   });
 }
 
+/** Verify frame borders are actually rendered on the canvas at expected positions.
+ * Checks that lit (non-background) pixels exist in a thin strip along each frame's
+ * top edge. Returns a list of frames that failed the check. */
+async function verifyFramesRendered(
+  page: Page,
+  tree: Array<{ absX: number; absY: number; w: number; h: number; children?: any[] }>,
+): Promise<string[]> {
+  const flat: Array<{ absX: number; absY: number; w: number; h: number }> = [];
+  const collect = (nodes: any[]) => {
+    for (const n of nodes) {
+      // Only check content frames (rect/line), not invisible containers
+      if (n.w > 5 && n.h > 5 && n.contentType && n.contentType !== "container") {
+        flat.push({ absX: n.absX, absY: n.absY, w: n.w, h: n.h });
+      }
+      if (n.children) collect(n.children);
+    }
+  };
+  collect(tree);
+  if (flat.length === 0) return [];
+
+  return page.evaluate((frames) => {
+    const canvas = document.querySelector("canvas");
+    if (!canvas) return ["No canvas found"];
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return ["No 2d context"];
+    // Canvas may have a CSS↔backing-store scale applied via ctx.scale().
+    // Use canvas.width/clientWidth to detect the ratio.
+    const scale = canvas.width / (canvas.clientWidth || canvas.width);
+    const failures: string[] = [];
+    for (const f of frames) {
+      // Sample the entire frame bbox to check if ANYTHING is rendered
+      const sx = Math.max(0, Math.round(f.absX * scale));
+      const sy = Math.max(0, Math.round(f.absY * scale));
+      const sw = Math.min(Math.max(1, Math.round(f.w * scale)), canvas.width - sx);
+      const sh = Math.min(Math.max(1, Math.round(f.h * scale)), canvas.height - sy);
+      if (sw <= 0 || sh <= 0) continue;
+      const data = ctx.getImageData(sx, sy, sw, sh).data;
+      let lit = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] > 150 || data[i + 1] > 150 || data[i + 2] > 150) lit++;
+      }
+      const ratio = lit / (data.length / 4);
+      if (ratio < 0.02) {
+        failures.push(`Frame at (${Math.round(f.absX)},${Math.round(f.absY)}) ${Math.round(f.w)}x${Math.round(f.h)}: no visible pixels (${(ratio * 100).toFixed(1)}% lit)`);
+      }
+    }
+    return failures;
+  }, flat);
+}
+
+/** Verify prose doc integrity — check for duplication and corruption.
+ * Returns a list of issues found. */
+async function verifyProseIntegrity(
+  page: Page,
+  expectedFragments?: string[],
+): Promise<string[]> {
+  const prose: string = await page.evaluate(() => (window as any).__gridpad.getProseDoc());
+  const rendered: Array<{ text: string; sourceLine: number }> = await page.evaluate(
+    () => (window as any).__gridpad.getRenderedLines().map((l: any) => ({ text: l.text, sourceLine: l.sourceLine })),
+  );
+  const issues: string[] = [];
+
+  // Check for duplicated rendered lines (same text appearing at multiple source lines)
+  const textCounts = new Map<string, number>();
+  for (const r of rendered) {
+    if (r.text.trim().length === 0) continue;
+    textCounts.set(r.text, (textCounts.get(r.text) ?? 0) + 1);
+  }
+  for (const [text, count] of textCounts) {
+    if (count > 1 && text.length > 3) {
+      issues.push(`Duplicated rendered line (${count}x): "${text.substring(0, 50)}"`);
+    }
+  }
+
+  // Check expected fragments are present in prose
+  if (expectedFragments) {
+    for (const frag of expectedFragments) {
+      if (!prose.includes(frag)) {
+        issues.push(`Missing expected prose fragment: "${frag}"`);
+      }
+    }
+  }
+
+  return issues;
+}
+
 /** Click on prose area at canvas-relative coordinates */
 async function clickProse(page: Page, relX: number, relY: number) {
   const canvas = page.locator("canvas");
@@ -362,6 +448,9 @@ interface RoundTripResult {
   visualDiff: number;      // before vs reloaded (%)
   markdownMatch: boolean;  // output === input
   ghosts: string[];        // ghost wire chars in prose lines
+  renderFailures: string[];  // frames not visually rendered
+  proseIssues: string[];     // prose duplication/corruption
+  proseOverlaps: string[];   // prose text inside frame bboxes
 }
 
 async function roundTrip(
@@ -407,6 +496,17 @@ async function roundTrip(
     ghosts = findGhosts(output, null, bboxes);
   }
   // For no-edit tests, skip ghost check — if output === input, there are no ghosts by definition
+
+  // Canvas verification: are frames actually rendered at their positions?
+  const renderFailures = await verifyFramesRendered(page, treeAfter);
+
+  // Prose integrity: check for duplication/corruption
+  const proseIssues = await verifyProseIntegrity(page);
+
+  // Prose-frame overlap: prose text shouldn't be inside frame interiors
+  const renderedLines = await getRenderedLines(page);
+  const flatFrames = flattenTree(treeAfter).filter(f => f.contentType !== "text");
+  const proseOverlaps = findProseFrameOverlaps(renderedLines, flatFrames, 22);
 
   // Compute markdown diff
   const mdDiffLines: string[] = [];
@@ -454,6 +554,12 @@ async function roundTrip(
     `Visual diff: ${visualDiff.toFixed(2)}%`,
     `Ghosts: ${ghosts.length}`,
     ...ghosts.map(g => `  ${g}`),
+    `Render failures: ${renderFailures.length}`,
+    ...renderFailures.map(f => `  ${f}`),
+    `Prose issues: ${proseIssues.length}`,
+    ...proseIssues.map(i => `  ${i}`),
+    `Prose-frame overlaps: ${proseOverlaps.length}`,
+    ...proseOverlaps.map(o => `  ${o}`),
     `Frame tree diffs: ${treeDiffs.length}`,
     ...treeDiffs.map(d => `  ${d}`),
     `Invariant failures: ${invariantFailures.length}`,
@@ -471,6 +577,9 @@ async function roundTrip(
     visualDiff,
     markdownMatch: output === inputMd,
     ghosts,
+    renderFailures,
+    proseIssues,
+    proseOverlaps,
   };
 }
 
