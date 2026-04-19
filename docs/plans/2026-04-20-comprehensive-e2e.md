@@ -132,35 +132,100 @@ async function sweep(
 **3b. Fixture corpus:**
 
 - **Canonical** (13): SIMPLE_BOX, LABELED_BOX, JUNCTION, NESTED, SIDE_BY_SIDE, TWO_SEPARATE, FORM, PURE_PROSE, SHARED_HORIZONTAL, SHARED_VERTICAL, THREE_IN_ROW, GRID_3X2, DASHES_NOT_WIREFRAME
-- **Real** (5): DEFAULT_TEXT, EMOJI, ASYMMETRIC_SHARED, WITH_CHILDREN, plus a "messy" fixture with trailing spaces, mixed blank lines, prose flush against wire chars
-- **Generated** (built at test time): `generateFixture({ boxes: N, width: W, height: H, nesting: D, sharedWalls: S, proseLines: P })` for key parameter combinations. ~20 generated fixtures covering the interesting corners of the space.
+- **Real** (7): DEFAULT_TEXT, EMOJI, ASYMMETRIC_SHARED, WITH_CHILDREN, plus:
+  - `MESSY` — trailing spaces, mixed blank lines, prose flush against wire chars
+  - `INDENTED` — wireframe at column 5 (not col 0)
+  - `INLINE_ANNOTATION` — prose on same row as wireframe: `└────┘  Some note here`
+- **Generated** (~18, built at test time): `generateFixture(params)` for key corners:
+  - Box count: 1, 3, 5
+  - Width: 4 (tiny), 20 (normal), 50 (wide)
+  - Nesting: 0, 1, 2 levels
+  - Shared walls: none, horizontal, vertical
+  - Prose: none, 1 line, 5 lines wrapping
+  - Blank lines between prose/wire: 0, 1, 3
+  - Special: empty doc, single-char prose "X", no-blank-line adjacency
+- **Bug repros** (locked fixtures from fixed bugs): every fixture that triggered a real bug gets added here as a regression test. Currently: `WITH_CHILDREN` (orphaned │), `THREE_IN_ROW` (junction loss), the default doc dashboard drag.
 
-**3c. Operation set:**
+**3c. Operation set (tiered density):**
+
+Three tiers control which operations run in CI vs full sweep:
 
 ```typescript
-const OPERATIONS = [
-  { name: "drag-right-50", run: async (p) => { await clickFrame(p, 0); await dragSelected(p, 50, 0); await clickProse(p, 5, 5); } },
-  { name: "drag-down-80", run: ... },
-  { name: "drag-left-50", run: ... },
-  { name: "resize-wider-40", run: ... },
-  { name: "resize-smaller-30", run: ... },
-  { name: "type-5-chars", run: async (p) => { await clickProse(p, 5, 5); await p.keyboard.type("HELLO"); } },
-  { name: "enter-above", run: async (p) => { await clickProse(p, 5, 5); await p.keyboard.press("Enter"); } },
-  { name: "delete-frame", run: async (p) => { await clickFrame(p, 0); await p.keyboard.press("Delete"); } },
-  { name: "undo-after-drag", run: async (p) => { await clickFrame(p, 0); await dragSelected(p, 50, 0); await clickProse(p, 5, 5); await p.keyboard.press("Meta+z"); } },
+// Tier A (CI — always): 8 representative operations
+const TIER_A_OPS = [
+  // Drag: 4 directions + extremes
+  { name: "drag-right-50",    run: drag(50, 0) },
+  { name: "drag-down-80",     run: drag(0, 80) },
+  { name: "drag-diagonal-50", run: drag(50, 50) },
+  { name: "drag-left-50",     run: drag(-50, 0) },
+  // Resize
+  { name: "resize-larger",    run: resize(40, 20) },
+  { name: "resize-smaller",   run: resize(-30, -20) },
+  // Prose
+  { name: "type-5-chars",     run: typeAtProse("HELLO") },
+  // Delete
+  { name: "delete-frame",     run: deleteFirst() },
 ];
+
+// Tier B (PR — branches): +12 more operations
+const TIER_B_OPS = [
+  // More drag directions
+  { name: "drag-up-50",          run: drag(0, -50) },
+  { name: "drag-to-bottom-2000", run: drag(0, 2000) },
+  { name: "drag-past-left-500",  run: drag(-500, 0) },
+  { name: "drag-sub-pixel-1",    run: drag(1, 0) },
+  // Prose operations
+  { name: "enter-above",         run: enterAtProse() },
+  { name: "backspace-merge",     run: backspaceAtLineStart() },
+  { name: "type-50-chars",       run: typeAtProse("A".repeat(50)) },
+  { name: "paste-multiline",     run: typeAtProse("line1\nline2\nline3") },
+  // Undo/redo
+  { name: "undo-after-drag",     run: dragThenUndo(50, 0) },
+  { name: "undo-after-type",     run: typeThenUndo("XYZ") },
+  // Sequences
+  { name: "drag-then-type",      run: dragThenType(50, 0, "MOVED") },
+  { name: "type-then-drag",      run: typeThenDrag("TYPED", 50, 0) },
+];
+
+// Tier C (full sweep — manual/nightly): +10 more
+const TIER_C_OPS = [
+  // Circular movement (back to start)
+  { name: "circular-drag",       run: circularDrag(50) },
+  // Resize extremes
+  { name: "resize-to-minimum",   run: resize(-500, -500) },
+  { name: "resize-very-large",   run: resize(200, 100) },
+  // Shrink then expand back (idempotency)
+  { name: "resize-shrink-expand", run: resizeThenResize(-30, -20, 30, 20) },
+  // Multiple drags (accumulation)
+  { name: "drag-5x-small",       run: repeatDrag(5, 10, 0) },
+  // Operation chains
+  { name: "drag-resize-type",    run: dragResizeType(50, 0, 30, 20, "COMBO") },
+  { name: "delete-undo-drag",    run: deleteUndoThenDrag(50, 0) },
+  // Text edit inside frame
+  { name: "edit-label-append",   run: editLabelAppend("!") },
+  // Multi-frame: operate on second frame
+  { name: "drag-second-frame",   run: dragNth(1, 50, 0) },
+  // Undo depth
+  { name: "undo-3x-redo-2x",    run: multiUndoRedo(3, 2) },
+];
+```
+
+**Tier selection at runtime:**
+
+```typescript
+const ops = TIER_A_OPS;
+if (process.env.SWEEP_TIER !== "A") ops.push(...TIER_B_OPS);
+if (process.env.SWEEP_TIER === "C") ops.push(...TIER_C_OPS);
 ```
 
 **3d. The matrix:**
 
 ```typescript
 for (const fixture of ALL_FIXTURES) {
-  // No-edit round-trip
   test(`sweep: ${fixture.name} no-edit`, async ({ page }) => {
     await sweep(page, fixture, null, results);
   });
-  // Each operation
-  for (const op of OPERATIONS) {
+  for (const op of ops) {
     test(`sweep: ${fixture.name} + ${op.name}`, async ({ page }) => {
       await sweep(page, fixture, op, results);
     });
@@ -168,14 +233,29 @@ for (const fixture of ALL_FIXTURES) {
 }
 ```
 
-Total: ~38 fixtures × (1 no-edit + 9 operations) = ~380 test cases. With 4 workers at ~2s each: ~3 minutes.
+**3d-extra. Enhanced sweep function assertions:**
+
+Beyond the 4 oracle tiers, the sweep function also checks:
+- **Frame count preserved** (unless operation is delete): `flattenTree(treeBefore).length === flattenTree(treeAfter).length`
+- **Prose order preserved**: prose fragments appear in same relative order before and after
+- **Console errors**: `page.on("pageerror")` captures uncaught exceptions — fail if any
+- **Position delta correctness** (for drag ops): frame moved by approximately `(dx, dy)` in pixel space
+
+Totals by tier:
+
+| Tier | Fixtures | Operations | Total tests | Runtime (4 workers) |
+|------|----------|------------|-------------|---------------------|
+| A (CI) | 38 | 8 + no-edit = 9 | 342 | ~3 min |
+| B (PR) | 38 | 20 + no-edit = 21 | 798 | ~7 min |
+| C (full) | 38 | 30 + no-edit = 31 | 1,178 | ~10 min |
 
 **3e. Multi-cycle convergence:**
 
-For 10 selected fixtures, run 3 edit→save→reload cycles:
+For 10 selected fixtures, run multiple edit→save→reload cycles. Three variants:
 
+**Same-operation cycle** (drift detection):
 ```typescript
-test(`multi-cycle: ${fixture.name}`, async ({ page }) => {
+test(`multi-cycle-same: ${fixture.name}`, async ({ page }) => {
   let md = fixture.md;
   for (let cycle = 0; cycle < 3; cycle++) {
     await load(page, md);
@@ -183,10 +263,49 @@ test(`multi-cycle: ${fixture.name}`, async ({ page }) => {
     md = await save(page);
     expect(await findGhostsFromPage(page, md)).toEqual([]);
   }
-  // Final convergence check
+  // Convergence: one more save without edits must be identical
   await load(page, md);
   const final = await save(page);
   expect(final).toBe(md);
+});
+```
+
+**Different-operation cycle** (state accumulation):
+```typescript
+test(`multi-cycle-mixed: ${fixture.name}`, async ({ page }) => {
+  const ops = [
+    async () => { await clickFrame(page, 0); await dragSelected(page, 30, 0); await clickProse(page, 5, 5); },
+    async () => { await clickProse(page, 5, 5); await page.keyboard.type("ADDED"); },
+    async () => { await clickFrame(page, 0); await resizeSelected(page, 20, 10); await clickProse(page, 5, 5); },
+  ];
+  let md = fixture.md;
+  for (let cycle = 0; cycle < ops.length; cycle++) {
+    await load(page, md);
+    await ops[cycle]();
+    md = await save(page);
+    expect(await findGhostsFromPage(page, md)).toEqual([]);
+    const tree = await getFrameTree(page);
+    expect(checkInvariants(tree)).toEqual([]);
+  }
+  // Convergence
+  await load(page, md);
+  expect(await save(page)).toBe(md);
+});
+```
+
+**Undo across save boundary** (real user footgun):
+```typescript
+test(`multi-cycle-undo-across-save: ${fixture.name}`, async ({ page }) => {
+  await load(page, fixture.md);
+  await clickFrame(page, 0); await dragSelected(page, 50, 0); await clickProse(page, 5, 5);
+  const afterDrag = await save(page); // save flushes state
+  // Now undo — does it undo the drag, or is save a checkpoint?
+  await page.keyboard.press("Meta+z");
+  const afterUndo = await save(page);
+  // Either behavior is acceptable, but it must not crash or corrupt
+  expect(await findGhostsFromPage(page, afterUndo)).toEqual([]);
+  const tree = await getFrameTree(page);
+  expect(checkInvariants(tree)).toEqual([]);
 });
 ```
 
@@ -253,16 +372,19 @@ Check this file into git. Future runs diff against it. New failures = regression
 
 ## Summary
 
-| Component | Tests | Runtime (4 workers) |
-|-----------|-------|---------------------|
-| Existing harness | 125 | ~2 min |
-| Workflows | 10 | ~15s |
-| Sweep: no-edit | ~38 | ~20s |
-| Sweep: operations | ~342 | ~3 min |
-| Sweep: multi-cycle | 10 | ~30s |
-| Sweep: chaos | 5 | ~25s |
-| P0 coverage | 7 | ~15s |
-| **Total** | **~537** | **~7 min** |
+| Component | Tests (Tier A) | Tests (Tier B) | Tests (Tier C) |
+|-----------|----------------|----------------|----------------|
+| Existing harness | 125 | 125 | 125 |
+| Workflows | 10 | 10 | 10 |
+| Sweep: no-edit | 38 | 38 | 38 |
+| Sweep: operations | 304 | 760 | 1,140 |
+| Sweep: multi-cycle | 30 | 30 | 30 |
+| Sweep: chaos (5 seeds) | 5 | 5 | 5 |
+| P0 coverage | 7 | 7 | 7 |
+| **Total** | **~519** | **~975** | **~1,355** |
+| **Runtime (4 workers)** | **~5 min** | **~9 min** | **~12 min** |
+
+Default CI runs Tier A. PRs run Tier B. Full sweep on demand with `SWEEP_TIER=C`.
 
 | File | Changes |
 |------|---------|
