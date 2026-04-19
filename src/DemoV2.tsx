@@ -882,6 +882,22 @@ export default function DemoV2() {
           textEditRef.current = getTextEdit(stateRef.current);
           blinkRef.current = true; paint(); return;
         }
+        if (e.key === "Home") {
+          e.preventDefault();
+          stateRef.current = stateRef.current.update({
+            effects: setTextEditEffect.of({ frameId: te.frameId, col: 0 }),
+          }).state;
+          textEditRef.current = getTextEdit(stateRef.current);
+          blinkRef.current = true; paint(); return;
+        }
+        if (e.key === "End") {
+          e.preventDefault();
+          stateRef.current = stateRef.current.update({
+            effects: setTextEditEffect.of({ frameId: te.frameId, col: codepoints.length }),
+          }).state;
+          textEditRef.current = getTextEdit(stateRef.current);
+          blinkRef.current = true; paint(); return;
+        }
         if (e.key === "Backspace") {
           e.preventDefault();
           if (te.col > 0) {

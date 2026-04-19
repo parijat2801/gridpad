@@ -188,8 +188,12 @@ function findWireframeSections(md: string): { startRow: number; endRow: number }
 }
 
 /** Click the center of the Nth top-level frame (0-indexed).
- * Verifies the frame is actually selected after clicking. */
+ * Verifies the frame is actually selected after clicking.
+ * Presses Escape first to clear any active prose cursor or text edit state. */
 async function clickFrame(page: Page, frameIndex: number) {
+  // Clear any active mode that might intercept the click
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(100);
   const frames = await getFrames(page);
   const canvas = page.locator("canvas");
   const box = await canvas.boundingBox();
@@ -199,11 +203,11 @@ async function clickFrame(page: Page, frameIndex: number) {
   await page.waitForTimeout(300);
   const selId = await getSelectedId(page);
   if (!selId) {
-    // Retry once — sometimes first click on prose deselects, second selects frame
+    // Retry once — sometimes first click deselects previous, second selects frame
     await page.mouse.click(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
     await page.waitForTimeout(300);
     const retry = await getSelectedId(page);
-    if (!retry) throw new Error(`clickFrame: frame ${frameIndex} not selected after click (id=${f.id}, pos=${Math.round(f.x)},${Math.round(f.y)})`);
+    if (!retry) throw new Error(`clickFrame: frame ${frameIndex} not selected after click (id=${f.id}, pos=${Math.round(f.x)},${Math.round(f.y)}, size=${Math.round(f.w)}x${Math.round(f.h)})`);
   }
 }
 
@@ -2786,8 +2790,11 @@ test.describe("critical", () => {
     await load(page, fixture);
     const yBefore = (await getFrames(page))[0]?.y ?? 0;
 
-    // Click "Line two", go to start, backspace to merge with blank line
-    await clickProse(page, 5, 55);
+    // Click "Line two" — find its rendered position instead of hardcoding
+    const lines = await getRenderedLines(page);
+    const lineTwoLine = lines.find(l => l.text.includes("Line two"));
+    const clickY = lineTwoLine ? lineTwoLine.y + 5 : 44; // fallback to ~row 2
+    await clickProse(page, 5, clickY);
     await page.keyboard.press("Home");
     await page.keyboard.press("Backspace");
     await page.waitForTimeout(300);
