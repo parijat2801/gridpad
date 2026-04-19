@@ -2146,6 +2146,145 @@ test.describe("shared walls", () => {
     expect(r.output).toContain("┌");
     expect(r.ghosts).toEqual([]);
   });
+
+  // ── Creating new shared walls by dragging ──
+
+  test("drag side-by-side boxes together to touch, borders don't corrupt", async ({ page }) => {
+    // Two boxes with a gap — drag box B left to close the gap
+    const spaced = `Title\n\n┌──────┐      ┌──────┐\n│  A   │      │  B   │\n└──────┘      └──────┘\n\nEnd`;
+    await load(page, spaced);
+    writeArtifact("shared-create-touch", "input.md", spaced);
+
+    // Select B (second frame) and drag left to touch A
+    const frames = await getFrames(page);
+    if (frames.length >= 2) {
+      // Click the second frame
+      const canvas = page.locator("canvas");
+      const box = await canvas.boundingBox();
+      const f = frames[frames.length - 1]; // B is rightmost
+      await page.mouse.click(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
+      await page.waitForTimeout(300);
+      await dragSelected(page, -80, 0); // drag left toward A
+      await clickProse(page, 5, 5);
+    }
+
+    const saved = await save(page);
+    writeArtifact("shared-create-touch", "output.md", saved);
+    await screenshot(page, "shared-create-touch", "after");
+    // Both boxes should survive
+    expect(saved).toContain("A");
+    expect(saved).toContain("B");
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+  });
+
+  test("drag box onto another — overlapping borders", async ({ page }) => {
+    // Two separate boxes, drag A down onto B's position
+    await load(page, TWO_SEPARATE);
+    writeArtifact("shared-overlap", "input.md", TWO_SEPARATE);
+
+    await clickFrame(page, 0);
+    await dragSelected(page, 0, 120); // drag A down past B
+    await clickProse(page, 5, 5);
+
+    const saved = await save(page);
+    writeArtifact("shared-overlap", "output.md", saved);
+    await screenshot(page, "shared-overlap", "after");
+    // Both frames should still exist in some form
+    expect(saved).toContain("┌");
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+  });
+
+  test("drag box to share horizontal wall with existing box", async ({ page }) => {
+    // Two boxes stacked with gap — drag bottom one up to share a wall
+    const stacked = `Title\n\n┌──────────┐\n│  Top     │\n└──────────┘\n\n\n\n┌──────────┐\n│  Bottom  │\n└──────────┘\n\nEnd`;
+    await load(page, stacked);
+    writeArtifact("shared-create-horiz", "input.md", stacked);
+
+    // Get frames, select the bottom one, drag up
+    const frames = await getFrames(page);
+    if (frames.length >= 2) {
+      const canvas = page.locator("canvas");
+      const box = await canvas.boundingBox();
+      // Click the lower frame
+      const bottom = frames.reduce((a, b) => a.y > b.y ? a : b);
+      await page.mouse.click(box!.x + bottom.x + bottom.w / 2, box!.y + bottom.y + bottom.h / 2);
+      await page.waitForTimeout(300);
+      await dragSelected(page, 0, -60); // drag up toward top box
+      await clickProse(page, 5, 5);
+    }
+
+    const saved = await save(page);
+    writeArtifact("shared-create-horiz", "output.md", saved);
+    await screenshot(page, "shared-create-horiz", "after");
+    expect(saved).toContain("Top");
+    expect(saved).toContain("Bottom");
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+  });
+
+  test("create L-shape by dragging small box next to tall box", async ({ page }) => {
+    // Tall box + small box below — drag small box up and right to form L
+    const pieces = `Notes\n\n┌──┐\n│  │\n│  │\n│  │\n│  │\n└──┘\n\n┌────────┐\n│  Wide  │\n└────────┘\n\nEnd`;
+    await load(page, pieces);
+    writeArtifact("shared-create-L", "input.md", pieces);
+
+    const frames = await getFrames(page);
+    if (frames.length >= 2) {
+      const canvas = page.locator("canvas");
+      const box = await canvas.boundingBox();
+      const wide = frames.reduce((a, b) => a.w > b.w ? a : b);
+      await page.mouse.click(box!.x + wide.x + wide.w / 2, box!.y + wide.y + wide.h / 2);
+      await page.waitForTimeout(300);
+      await dragSelected(page, 30, -80); // drag up and right
+      await clickProse(page, 5, 5);
+    }
+
+    const saved = await save(page);
+    writeArtifact("shared-create-L", "output.md", saved);
+    await screenshot(page, "shared-create-L", "after");
+    expect(saved).toContain("Wide");
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+  });
+
+  test("drag three separate boxes into a row, save twice", async ({ page }) => {
+    // Three boxes in a column — drag B and C to form a horizontal row with A
+    const col = `X\n\n┌────┐\n│ A  │\n└────┘\n\n┌──────┐\n│  B   │\n└──────┘\n\n┌────────┐\n│   C    │\n└────────┘\n\nY`;
+    await load(page, col);
+    writeArtifact("shared-create-row", "input.md", col);
+
+    // Drag B right of A
+    const frames1 = await getFrames(page);
+    if (frames1.length >= 2) {
+      const canvas = page.locator("canvas");
+      const box = await canvas.boundingBox();
+      const b = frames1[1]; // second frame
+      await page.mouse.click(box!.x + b.x + b.w / 2, box!.y + b.y + b.h / 2);
+      await page.waitForTimeout(300);
+      await dragSelected(page, 80, -60);
+      await clickProse(page, 5, 5);
+    }
+    const save1 = await save(page);
+    writeArtifact("shared-create-row", "save1.md", save1);
+
+    // Drag C right of B
+    const frames2 = await getFrames(page);
+    if (frames2.length >= 3) {
+      const canvas = page.locator("canvas");
+      const box = await canvas.boundingBox();
+      const c = frames2[2]; // third frame
+      await page.mouse.click(box!.x + c.x + c.w / 2, box!.y + c.y + c.h / 2);
+      await page.waitForTimeout(300);
+      await dragSelected(page, 160, -120);
+      await clickProse(page, 5, 5);
+    }
+    const save2 = await save(page);
+    writeArtifact("shared-create-row", "save2.md", save2);
+    await screenshot(page, "shared-create-row", "after");
+
+    expect(save2).toContain("A");
+    expect(save2).toContain("B");
+    expect(save2).toContain("C");
+    expect(await findGhostsFromPage(page, save2)).toEqual([]);
+  });
 });
 
 test.describe("interaction: undo chains", () => {
