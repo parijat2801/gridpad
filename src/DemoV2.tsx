@@ -706,6 +706,8 @@ export default function DemoV2() {
         })),
         /** Get measured character dimensions */
         getCharDims: () => ({ cw: cwRef.current, ch: chRef.current }),
+        /** Get current text edit state (null if not editing) */
+        getTextEdit: () => getTextEdit(stateRef.current),
       };
     }).catch(err => console.error("Init failed:", err));
   }, []);

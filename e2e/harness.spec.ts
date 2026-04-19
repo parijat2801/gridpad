@@ -187,26 +187,38 @@ function findWireframeSections(md: string): { startRow: number; endRow: number }
   return sections;
 }
 
-/** Click the center of the Nth top-level frame (0-indexed) */
+/** Click the center of the Nth top-level frame (0-indexed).
+ * Verifies the frame is actually selected after clicking. */
 async function clickFrame(page: Page, frameIndex: number) {
   const frames = await getFrames(page);
   const canvas = page.locator("canvas");
   const box = await canvas.boundingBox();
-  if (frameIndex >= frames.length) throw new Error(`Frame ${frameIndex} not found (${frames.length} frames)`);
+  if (frameIndex >= frames.length) throw new Error(`clickFrame: frame ${frameIndex} not found (${frames.length} frames)`);
   const f = frames[frameIndex];
   await page.mouse.click(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
   await page.waitForTimeout(300);
+  const selId = await getSelectedId(page);
+  if (!selId) {
+    // Retry once — sometimes first click on prose deselects, second selects frame
+    await page.mouse.click(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
+    await page.waitForTimeout(300);
+    const retry = await getSelectedId(page);
+    if (!retry) throw new Error(`clickFrame: frame ${frameIndex} not selected after click (id=${f.id}, pos=${Math.round(f.x)},${Math.round(f.y)})`);
+  }
 }
 
 /** Drag the currently-selected frame by (dx, dy) pixels.
- * Uses getSelectedId to find the right frame, not hardcoded frames[0]. */
+ * Verifies a frame is selected before dragging and that it actually moved.
+ * Throws if no frame is selected or the frame didn't move. */
 async function dragSelected(page: Page, dx: number, dy: number) {
   const canvas = page.locator("canvas");
   const box = await canvas.boundingBox();
   const selId = await getSelectedId(page);
+  if (!selId) throw new Error(`dragSelected: no frame selected — call clickFrame first`);
   const frames = await getFrames(page);
-  // Find the selected frame, fall back to frames[0]
-  const f = (selId ? frames.find(fr => fr.id === selId) : null) ?? frames[0];
+  const f = frames.find(fr => fr.id === selId);
+  if (!f) throw new Error(`dragSelected: selected frame ${selId} not found in getFrames`);
+  const beforeX = f.x, beforeY = f.y;
   const cx = box!.x + f.x + f.w / 2;
   const cy = box!.y + f.y + f.h / 2;
   await page.mouse.move(cx, cy);
@@ -217,6 +229,21 @@ async function dragSelected(page: Page, dx: number, dy: number) {
   }
   await page.mouse.up();
   await page.waitForTimeout(300);
+  // Verify frame moved (skip check for sub-pixel drags or boundary clamps)
+  const minExpectedMove = Math.min(Math.abs(dx), Math.abs(dy)) > 0 ? 1 : 0;
+  if (Math.abs(dx) >= 5 || Math.abs(dy) >= 5) {
+    const framesAfter = await getFrames(page);
+    const fAfter = framesAfter.find(fr => fr.id === selId);
+    if (fAfter) {
+      const movedX = Math.abs(fAfter.x - beforeX);
+      const movedY = Math.abs(fAfter.y - beforeY);
+      // Allow no-move if drag would push past boundary (e.g., negative clamp)
+      const wouldClamp = (beforeX + dx < 0) || (beforeY + dy < 0);
+      if (movedX < 1 && movedY < 1 && !wouldClamp) {
+        throw new Error(`dragSelected: frame ${selId} didn't move (before=${Math.round(beforeX)},${Math.round(beforeY)} after=${Math.round(fAfter.x)},${Math.round(fAfter.y)} dx=${dx} dy=${dy})`);
+      }
+    }
+  }
 }
 
 /** Get the full frame tree from Gridpad */
@@ -391,23 +418,33 @@ async function clickProse(page: Page, relX: number, relY: number) {
   await page.waitForTimeout(300);
 }
 
-/** Double-click center of Nth frame to enter text edit mode */
+/** Double-click center of Nth frame to enter text edit mode.
+ * Verifies text edit mode is active after double-click. */
 async function dblclickFrame(page: Page, frameIndex: number) {
   const frames = await getFrames(page);
   const canvas = page.locator("canvas");
   const box = await canvas.boundingBox();
+  if (frameIndex >= frames.length) throw new Error(`dblclickFrame: frame ${frameIndex} not found (${frames.length} frames)`);
   const f = frames[frameIndex];
   await page.mouse.dblclick(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
   await page.waitForTimeout(300);
+  const textEdit = await page.evaluate(() => (window as any).__gridpad.getTextEdit?.());
+  if (textEdit === null || textEdit === undefined) {
+    // Not all frames support text edit — only warn, don't throw
+    console.warn(`dblclickFrame: text edit mode not active after double-click on frame ${frameIndex}`);
+  }
 }
 
-/** Resize the currently-selected frame by dragging bottom-right handle */
+/** Resize the currently-selected frame by dragging bottom-right handle.
+ * Verifies the frame dimensions actually changed. */
 async function resizeSelected(page: Page, dw: number, dh: number) {
   const selId = await getSelectedId(page);
+  if (!selId) throw new Error(`resizeSelected: no frame selected — call clickFrame first`);
   const frames = await getFrames(page);
   const canvas = page.locator("canvas");
   const box = await canvas.boundingBox();
-  const f = (selId ? frames.find(fr => fr.id === selId) : null) ?? frames[0];
+  const f = frames.find(fr => fr.id === selId) ?? frames[0];
+  const beforeW = f.w, beforeH = f.h;
   // Bottom-right corner of the frame
   const hx = box!.x + f.x + f.w;
   const hy = box!.y + f.y + f.h;
@@ -420,14 +457,27 @@ async function resizeSelected(page: Page, dw: number, dh: number) {
   }
   await page.mouse.up();
   await page.waitForTimeout(300);
+  // Verify dimensions changed
+  const framesAfter = await getFrames(page);
+  const fAfter = framesAfter.find(fr => fr.id === selId);
+  if (fAfter) {
+    const dWidth = Math.abs(fAfter.w - beforeW);
+    const dHeight = Math.abs(fAfter.h - beforeH);
+    if (dWidth < 1 && dHeight < 1) {
+      throw new Error(`resizeSelected: frame ${selId} didn't resize (before=${Math.round(beforeW)}x${Math.round(beforeH)} after=${Math.round(fAfter.w)}x${Math.round(fAfter.h)} dw=${dw} dh=${dh})`);
+    }
+  }
 }
 
-/** Click a child frame inside a container (drill-down: click parent first, then child) */
+/** Click a child frame inside a container (drill-down: click parent first, then child).
+ * Verifies a child frame is selected (different ID from parent). */
 async function clickChild(page: Page, parentIndex: number) {
   const frames = await getFrames(page);
   const canvas = page.locator("canvas");
   const box = await canvas.boundingBox();
+  if (parentIndex >= frames.length) throw new Error(`clickChild: frame ${parentIndex} not found (${frames.length} frames)`);
   const f = frames[parentIndex];
+  const parentId = f.id;
   const cx = box!.x + f.x + f.w / 2;
   const cy = box!.y + f.y + f.h / 2;
   // First click selects parent
@@ -436,6 +486,13 @@ async function clickChild(page: Page, parentIndex: number) {
   // Second click drills down to child
   await page.mouse.click(cx, cy);
   await page.waitForTimeout(300);
+  // Verify a child is selected (different ID from parent)
+  const childId = await getSelectedId(page);
+  if (!childId) throw new Error(`clickChild: nothing selected after drill-down click on frame ${parentIndex}`);
+  if (childId === parentId) {
+    // Might be a container without selectable children — warn but don't throw
+    console.warn(`clickChild: still selecting parent ${parentId} after drill-down — frame may not have selectable children`);
+  }
 }
 
 // ── Full round-trip runner ─────────────────────────────────
