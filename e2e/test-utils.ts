@@ -686,3 +686,135 @@ export const WITH_CHILDREN = `Top
 └────────────────────────┘
 
 Bottom`;
+
+// ── Realistic wireframe fixtures ──────────────────────────
+
+/** Three-column dashboard with shared walls, inner boxes, text labels */
+export const DASHBOARD = `## Dashboard
+
+┌───────────────────────────────────────────────────────┐
+│                      My App                           │
+├───────────┬───────────────────────────┬───────────────┤
+│ Nav       │  Main Content             │  Details      │
+│           │                           │               │
+│ Home      │  ┌─────────────────────┐  │  User: Alice  │
+│ Search    │  │  Revenue Chart      │  │  Role: Admin  │
+│ Settings  │  └─────────────────────┘  │               │
+│ Help      │                           │  ┌─────────┐  │
+│           │  ┌──────────┐ ┌────────┐  │  │ Actions │  │
+│           │  │ Users    │ │ Tasks  │  │  │ Edit    │  │
+│           │  │ 1,204    │ │ 38     │  │  │ Delete  │  │
+│           │  └──────────┘ └────────┘  │  └─────────┘  │
+└───────────┴───────────────────────────┴───────────────┘
+
+Some text below the dashboard.`;
+
+/** Mobile app with header, content, nested profile card, bottom nav */
+export const MOBILE_APP = `## Mobile App
+
+┌──────────────────┐
+│    My App    ≡   │
+├──────────────────┤
+│                  │
+│  Welcome back!   │
+│                  │
+│  ┌────────────┐  │
+│  │  Profile   │  │
+│  │  ┌──────┐  │  │
+│  │  │ IMG  │  │  │
+│  │  └──────┘  │  │
+│  └────────────┘  │
+│                  │
+├──────────────────┤
+│ Home  Star  Mail │
+└──────────────────┘
+
+Description of the mobile app.`;
+
+/** Sign-up form with labeled input fields and button */
+export const SIGNUP_FORM = `## Sign Up
+
+┌──────────────────────────┐
+│      Create Account      │
+├──────────────────────────┤
+│                          │
+│  Name:  ┌─────────────┐  │
+│         │             │  │
+│         └─────────────┘  │
+│  Email: ┌─────────────┐  │
+│         │             │  │
+│         └─────────────┘  │
+│  Pass:  ┌─────────────┐  │
+│         │             │  │
+│         └─────────────┘  │
+│                          │
+│     ┌──────────────┐     │
+│     │   Sign Up    │     │
+│     └──────────────┘     │
+│                          │
+└──────────────────────────┘
+
+Terms and conditions below.`;
+
+/** Flowchart — four boxes connected by horizontal lines */
+export const FLOWCHART = `## User Flow
+
+┌─────────┐    ┌───────────┐    ┌──────────┐    ┌──────────┐
+│  Login  │────│ Dashboard │────│ Settings │────│  Logout  │
+└─────────┘    └───────────┘    └──────────┘    └──────────┘
+
+Drag the boxes to rearrange the flow.`;
+
+/** Multi-section doc with prose between multiple wireframes */
+export const MULTI_SECTION = `# Project Plan
+
+## Header Component
+
+The header should be responsive and collapse on mobile.
+
+┌────────────────────────────────────────┐
+│  Logo    Navigation     Search   User  │
+└────────────────────────────────────────┘
+
+## Content Area
+
+Main content sits below the header with a sidebar.
+
+┌──────────┬─────────────────────────────┐
+│ Sidebar  │  Main Content               │
+│          │                             │
+│ Menu 1   │  ┌───────────────────────┐  │
+│ Menu 2   │  │  Card Component       │  │
+│ Menu 3   │  │  With some content    │  │
+│          │  └───────────────────────┘  │
+│          │                             │
+│          │  ┌───────────────────────┐  │
+│          │  │  Another Card         │  │
+│          │  └───────────────────────┘  │
+└──────────┴─────────────────────────────┘
+
+## Footer
+
+The footer contains links and copyright info.
+
+┌────────────────────────────────────────┐
+│  About  Contact  Privacy  Terms        │
+└────────────────────────────────────────┘
+
+End of document.`;
+
+/** Kanban board — three columns with cards */
+export const KANBAN = `## Kanban Board
+
+┌────────────┬────────────┬────────────┐
+│  To Do     │  In Prog   │  Done      │
+├────────────┼────────────┼────────────┤
+│ ┌────────┐ │ ┌────────┐ │ ┌────────┐ │
+│ │ Task 1 │ │ │ Task 3 │ │ │ Task 5 │ │
+│ └────────┘ │ └────────┘ │ └────────┘ │
+│ ┌────────┐ │ ┌────────┐ │            │
+│ │ Task 2 │ │ │ Task 4 │ │            │
+│ └────────┘ │ └────────┘ │            │
+└────────────┴────────────┴────────────┘
+
+Drag tasks between columns.`;

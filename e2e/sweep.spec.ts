@@ -28,6 +28,12 @@ import {
   JUNCTION,
   NESTED,
   WITH_CHILDREN,
+  DASHBOARD,
+  MOBILE_APP,
+  SIGNUP_FORM,
+  FLOWCHART,
+  MULTI_SECTION,
+  KANBAN,
 } from "./test-utils";
 
 // ── Fixtures ──────────────────────────────────────────────
@@ -38,6 +44,12 @@ const FIXTURES: Array<{ name: string; md: string | null }> = [
   { name: "junction", md: JUNCTION },
   { name: "nested", md: NESTED },
   { name: "with-children", md: WITH_CHILDREN },
+  { name: "dashboard", md: DASHBOARD },
+  { name: "mobile-app", md: MOBILE_APP },
+  { name: "signup-form", md: SIGNUP_FORM },
+  { name: "flowchart", md: FLOWCHART },
+  { name: "multi-section", md: MULTI_SECTION },
+  { name: "kanban", md: KANBAN },
   { name: "default", md: null }, // null = use default text already on page
 ];
 
