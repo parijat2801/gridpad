@@ -27,12 +27,26 @@ export function extractProseSegments(
     }
   }
 
-  // Group unclaimed cells by row, then sort by col within each row
+  // Box-drawing characters that should not be extracted as prose
+  const WIRE_CHARS = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"]);
+
+  // Helper: is this cell inside any frame bbox?
+  const isInsideFrame = (r: number, c: number): boolean => {
+    for (const b of frameBboxes) {
+      if (r >= b.row && r < b.row + b.h && c >= b.col && c < b.col + b.w) return true;
+    }
+    return false;
+  };
+
+  // Group unclaimed cells by row, then sort by col within each row.
+  // Skip box-drawing characters that fall inside frame bboxes — these are
+  // scanner artifacts from shared walls, not real prose.
   const rowMap = new Map<number, { col: number; ch: string }[]>();
   for (const [key, ch] of unclaimedCells) {
     const ci = key.indexOf(",");
     const r = Number(key.slice(0, ci));
     const c = Number(key.slice(ci + 1));
+    if (WIRE_CHARS.has(ch) && isInsideFrame(r, c)) continue;
     let arr = rowMap.get(r);
     if (!arr) { arr = []; rowMap.set(r, arr); }
     arr.push({ col: c, ch });
