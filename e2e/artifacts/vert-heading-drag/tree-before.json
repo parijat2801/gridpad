@@ -1,0 +1,22 @@
+[
+  {
+    "depth": 0,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 66.84375,
+    "w": 231.1875,
+    "h": 53.474999999999994,
+    "childCount": 1
+  },
+  {
+    "depth": 1,
+    "contentType": "text",
+    "text": "Box",
+    "absX": 28.8984375,
+    "absY": 80.21249999999999,
+    "w": 28.8984375,
+    "h": 13.368749999999999,
+    "childCount": 0
+  }
+]

@@ -3,7 +3,8 @@ Input lines: 5
 Output lines: 5
 Markdown match: true
 Visual diff: 0.00%
-Ghosts: 0
+Ghosts: 1
+  Ghost '│' at L3:18: This has a rogue │ pipe.
 Render failures: 0
 Prose issues: 0
 Prose-frame overlaps: 0
