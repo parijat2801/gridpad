@@ -667,6 +667,65 @@ Another paragraph.
 
 A third one.`;
 
+// ── Shared-wall fixtures ──────────────────────────────────
+
+/** Two boxes sharing a vertical wall (different heights) */
+const SHARED_VERTICAL = `Title
+
+┌────┐┌──────────┐
+│ A  ││  B       │
+│    ││          │
+└────┘│          │
+      │          │
+      └──────────┘
+
+End`;
+
+/** Two boxes sharing a horizontal wall */
+const SHARED_HORIZONTAL = `Title
+
+┌──────────────┐
+│     Top      │
+├──────────────┤
+│    Bottom    │
+└──────────────┘
+
+End`;
+
+/** Three boxes in a row sharing walls */
+const THREE_IN_ROW = `Header
+
+┌───┬──────┬─────────┐
+│ S │  Med │  Wide    │
+│   │      │         │
+└───┴──────┴─────────┘
+
+Footer`;
+
+/** Tall narrow box next to short wide box (asymmetric shared wall) */
+const ASYMMETRIC_SHARED = `Notes
+
+┌──┐┌──────────────────┐
+│  ││                  │
+│  │└──────────────────┘
+│  │
+│  │┌────┐
+│  ││ X  │
+└──┘└────┘
+
+Done`;
+
+/** 3×2 grid — full matrix of shared walls */
+const GRID_3X2 = `Layout
+
+┌─────┬─────┬─────┐
+│ A   │ B   │ C   │
+├─────┼─────┼─────┤
+│ D   │ E   │ F   │
+└─────┴─────┴─────┘
+
+End`;
+
 const DASHES_NOT_WIREFRAME = `# Table
 
 | Name | Age |
@@ -1956,6 +2015,136 @@ test.describe("interaction: multi-frame", () => {
     expect(saved).toContain("BETWEEN");
     expect(saved).toContain("┌");
     expect(await findGhostsFromPage(page, saved)).toEqual([]);
+  });
+});
+
+test.describe("shared walls", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  // ── No-edit round-trips (do shared walls survive parse → serialize?) ──
+
+  test("shared vertical wall round-trips unchanged", async ({ page }) => {
+    const r = await roundTrip(page, "shared-vertical-noedit", SHARED_VERTICAL);
+    expect(r.markdownMatch).toBe(true);
+  });
+
+  test("shared horizontal wall round-trips unchanged", async ({ page }) => {
+    const r = await roundTrip(page, "shared-horizontal-noedit", SHARED_HORIZONTAL);
+    expect(r.markdownMatch).toBe(true);
+  });
+
+  test("three-in-row shared walls round-trip unchanged", async ({ page }) => {
+    const r = await roundTrip(page, "three-in-row-noedit", THREE_IN_ROW);
+    expect(r.markdownMatch).toBe(true);
+  });
+
+  test("asymmetric shared walls round-trip unchanged", async ({ page }) => {
+    const r = await roundTrip(page, "asymmetric-noedit", ASYMMETRIC_SHARED);
+    expect(r.markdownMatch).toBe(true);
+  });
+
+  test("3x2 grid round-trips unchanged", async ({ page }) => {
+    const r = await roundTrip(page, "grid3x2-noedit", GRID_3X2);
+    expect(r.markdownMatch).toBe(true);
+  });
+
+  // ── Drag entire wireframe group ──
+
+  test("drag 2x2 junction grid right, check for ghosts", async ({ page }) => {
+    const r = await roundTrip(page, "shared-junction-drag", JUNCTION, async (p) => {
+      await clickFrame(p, 0);
+      await dragSelected(p, 80, 0);
+      await clickProse(p, 5, 5);
+    });
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("└");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("drag shared-horizontal box down, no ghosts", async ({ page }) => {
+    const r = await roundTrip(page, "shared-horiz-drag-down", SHARED_HORIZONTAL, async (p) => {
+      await clickFrame(p, 0);
+      await dragSelected(p, 0, 60);
+      await clickProse(p, 5, 5);
+    });
+    expect(r.output).toContain("┌");
+    expect(r.output).toContain("└");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("drag three-in-row right, no ghosts", async ({ page }) => {
+    const r = await roundTrip(page, "shared-three-drag", THREE_IN_ROW, async (p) => {
+      await clickFrame(p, 0);
+      await dragSelected(p, 60, 0);
+      await clickProse(p, 5, 5);
+    });
+    expect(r.output).toContain("┌");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  test("drag 3x2 grid diagonally, no ghosts", async ({ page }) => {
+    const r = await roundTrip(page, "shared-grid3x2-drag", GRID_3X2, async (p) => {
+      await clickFrame(p, 0);
+      await dragSelected(p, 40, 30);
+      await clickProse(p, 5, 5);
+    });
+    expect(r.output).toContain("┌");
+    expect(r.ghosts).toEqual([]);
+  });
+
+  // ── Drag + save + drag (position accumulates) ──
+
+  test("drag shared-wall box twice, position accumulates", async ({ page }) => {
+    await load(page, SHARED_HORIZONTAL);
+
+    await clickFrame(page, 0);
+    await dragSelected(page, 50, 0);
+    await clickProse(page, 5, 5);
+    const save1 = await save(page);
+    expect(save1).toContain("┌");
+    expect(await findGhostsFromPage(page, save1)).toEqual([]);
+
+    await clickFrame(page, 0);
+    await dragSelected(page, 50, 0);
+    await clickProse(page, 5, 5);
+    const save2 = await save(page);
+    expect(save2).toContain("┌");
+    expect(await findGhostsFromPage(page, save2)).toEqual([]);
+
+    // Box should have moved right from original
+    const boxLine = save2.split("\n").find(l => l.includes("┌"))!;
+    const indent = boxLine.length - boxLine.trimStart().length;
+    expect(indent).toBeGreaterThan(5);
+  });
+
+  // ── Resize with shared walls ──
+
+  test("resize shared-horizontal box, no ghosts", async ({ page }) => {
+    await load(page, SHARED_HORIZONTAL);
+    await clickFrame(page, 0);
+    await resizeSelected(page, 40, 20);
+    await clickProse(page, 5, 5);
+    const saved = await save(page);
+    writeArtifact("shared-horiz-resize", "output.md", saved);
+    expect(saved).toContain("┌");
+    expect(saved).toContain("└");
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
+  });
+
+  // ── Asymmetric: different-sized boxes sharing a wall ──
+
+  test("drag asymmetric shared wall, no ghosts", async ({ page }) => {
+    const r = await roundTrip(page, "shared-asymmetric-drag", ASYMMETRIC_SHARED, async (p) => {
+      await clickFrame(p, 0);
+      await dragSelected(p, 50, 0);
+      await clickProse(p, 5, 5);
+    });
+    expect(r.output).toContain("┌");
+    expect(r.ghosts).toEqual([]);
   });
 });
 
