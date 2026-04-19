@@ -54,7 +54,16 @@ The sweep engine tags each failure with `(stage, symptom)` in the result JSON.
 
 Move all helpers, fixtures, oracle functions, and the `roundTrip` runner from `harness.spec.ts` into a shared module. Update `harness.spec.ts` to import. All 125 existing tests pass unchanged.
 
-Also add 4 hooks to `__gridpad` in DemoV2.tsx: `getCursorPosition`, `getToolMode`, `isDirty`, `setTextEditMode`.
+Also:
+- Add 4 hooks to `__gridpad` in DemoV2.tsx: `getCursorPosition`, `getToolMode`, `isDirty`, `setTextEditMode`.
+- Extend `resizeSelected(page, dw, dh, handle?)` to accept an optional handle parameter (default `"br"`). The handle determines which anchor point to drag from:
+
+```typescript
+// Handle positions relative to frame:
+// tl=(x, y)  tm=(x+w/2, y)  tr=(x+w, y)
+// ml=(x, y+h/2)              mr=(x+w, y+h/2)
+// bl=(x, y+h) bm=(x+w/2, y+h) br=(x+w, y+h)
+```
 
 **Verify:** `npx playwright test e2e/harness.spec.ts` — 125/125.
 
@@ -196,6 +205,15 @@ const TIER_C_OPS = [
   { name: "resize-very-large",   run: resize(200, 100) },
   // Shrink then expand back (idempotency)
   { name: "resize-shrink-expand", run: resizeThenResize(-30, -20, 30, 20) },
+  // Resize from all 8 handles (app supports tl/tm/tr/ml/mr/bl/bm/br)
+  { name: "resize-from-tl",     run: resizeFromHandle("tl", 20, 20) },
+  { name: "resize-from-tm",     run: resizeFromHandle("tm", 0, -20) },
+  { name: "resize-from-tr",     run: resizeFromHandle("tr", 20, -20) },
+  { name: "resize-from-ml",     run: resizeFromHandle("ml", -20, 0) },
+  { name: "resize-from-mr",     run: resizeFromHandle("mr", 20, 0) },
+  { name: "resize-from-bl",     run: resizeFromHandle("bl", -20, 20) },
+  { name: "resize-from-bm",     run: resizeFromHandle("bm", 0, 20) },
+  // br already covered by Tier A resize-larger
   // Multiple drags (accumulation)
   { name: "drag-5x-small",       run: repeatDrag(5, 10, 0) },
   // Operation chains
