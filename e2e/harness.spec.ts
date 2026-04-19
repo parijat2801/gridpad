@@ -209,8 +209,9 @@ async function dragSelected(page: Page, dx: number, dy: number) {
   const f = (selId ? frames.find(fr => fr.id === selId) : null) ?? frames[0];
   const cx = box!.x + f.x + f.w / 2;
   const cy = box!.y + f.y + f.h / 2;
+  await page.mouse.move(cx, cy);
   await page.mouse.down();
-  const steps = Math.max(Math.abs(dx), Math.abs(dy)) / 10 || 1;
+  const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 10));
   for (let i = 1; i <= steps; i++) {
     await page.mouse.move(cx + (dx * i / steps), cy + (dy * i / steps));
   }
@@ -413,7 +414,7 @@ async function resizeSelected(page: Page, dw: number, dh: number) {
   await page.mouse.move(hx, hy);
   await page.waitForTimeout(100);
   await page.mouse.down();
-  const steps = Math.max(Math.abs(dw), Math.abs(dh)) / 10 || 1;
+  const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dw), Math.abs(dh)) / 10));
   for (let i = 1; i <= steps; i++) {
     await page.mouse.move(hx + (dw * i / steps), hy + (dh * i / steps));
   }
