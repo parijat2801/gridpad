@@ -34,6 +34,14 @@ import {
   FLOWCHART,
   MULTI_SECTION,
   KANBAN,
+  CRM_WORKSPACE,
+  CONTAINER_LIST,
+  ADMIN_PANEL,
+  CHAT_UI,
+  ENTERPRISE_DASHBOARD,
+  DECISION_FLOWCHART,
+  ARCHITECTURE_DIAGRAM,
+  USER_JOURNEY,
 } from "./test-utils";
 
 // ── Fixtures ──────────────────────────────────────────────
@@ -50,6 +58,14 @@ const FIXTURES: Array<{ name: string; md: string | null }> = [
   { name: "flowchart", md: FLOWCHART },
   { name: "multi-section", md: MULTI_SECTION },
   { name: "kanban", md: KANBAN },
+  { name: "crm-workspace", md: CRM_WORKSPACE },
+  { name: "container-list", md: CONTAINER_LIST },
+  { name: "admin-panel", md: ADMIN_PANEL },
+  { name: "chat-ui", md: CHAT_UI },
+  { name: "enterprise-dashboard", md: ENTERPRISE_DASHBOARD },
+  { name: "decision-flowchart", md: DECISION_FLOWCHART },
+  { name: "architecture-diagram", md: ARCHITECTURE_DIAGRAM },
+  { name: "user-journey", md: USER_JOURNEY },
   { name: "default", md: null }, // null = use default text already on page
 ];
 

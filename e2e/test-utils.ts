@@ -818,3 +818,261 @@ export const KANBAN = `## Kanban Board
 └────────────┴────────────┴────────────┘
 
 Drag tasks between columns.`;
+
+/** Full CRM workspace — sidebar nav, main content with form, detail panel, chat */
+export const CRM_WORKSPACE = `# CRM Workspace
+
+┌────────────┬──────────────────────────────────────────────┬───────────────────┐
+│ Navigation │  Customer Information Available              │  AI Assistant     │
+│            │                                              │                   │
+│ ┌────────┐ │  ┌────────────────────────────────────────┐  │  Context: Facade  │
+│ │Customer│ │  │  Enter Customer Details          Done  │  │  Manual Test      │
+│ │Info    │ │  ├────────────────────────────────────────┤  │                   │
+│ └────────┘ │  │                                        │  │  picks up the     │
+│ ┌────────┐ │  │  Customer Name *                       │  │  new data.        │
+│ │Active  │ │  │  ┌──────────────────────────────────┐  │  │                   │
+│ │Supplie │ │  │  │ Maddie                           │  │  │  ┌─────────────┐ │
+│ └────────┘ │  │  └──────────────────────────────────┘  │  │  │  Complete   │ │
+│ ┌────────┐ │  │                                        │  │  └─────────────┘ │
+│ │Test    │ │  │  Company                               │  │                   │
+│ │Analysi │ │  │  ┌──────────────────────────────────┐  │  │  invalidate data  │
+│ └────────┘ │  │  │ Thirupathy                       │  │  │  for customer     │
+│            │  │  └──────────────────────────────────┘  │  │  information      │
+│            │  │                                        │  │                   │
+│            │  │  Email *                                │  │  ┌─────────────┐ │
+│            │  │  ┌──────────────────────────────────┐  │  │  │  Complete   │ │
+│            │  │  │ maddie@isamazing.com              │  │  │  └─────────────┘ │
+│            │  │  └──────────────────────────────────┘  │  │                   │
+│            │  │                                        │  │                   │
+│            │  │  Priority Level                        │  │                   │
+│            │  │  ┌──────────────────────────────────┐  │  │                   │
+│            │  │  │ 1                                 │  │  │                   │
+│            │  │  └──────────────────────────────────┘  │  │                   │
+│            │  │                                        │  │                   │
+│            │  └────────────────────────────────────────┘  │                   │
+└────────────┴──────────────────────────────────────────────┴───────────────────┘`;
+
+/** Docker-style container list — table with nested rows and status indicators */
+export const CONTAINER_LIST = `# Container Management
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Containers                                                                  │
+├────────┬────────────┬──────────────┬──────────────┬──────────┬───────────────┤
+│  Name  │ Container  │    Image     │   Port(s)    │  CPU (%) │ Last started  │
+├────────┼────────────┼──────────────┼──────────────┼──────────┼───────────────┤
+│ front  │ 174a2db6   │ colex-plat   │ 3342:5173    │  0.66%   │ 12 hours ago  │
+│ direct │ 7504a956   │ colex-plat   │ 6684:8055    │  0.59%   │ 12 hours ago  │
+│ tools  │ 226cbb93   │ colex-plat   │ 8201:8201    │  0.29%   │ 12 hours ago  │
+│ postgr │ e053f9af   │ postgres:15  │ 5432:5432    │  0%      │ 12 hours ago  │
+├────────┼────────────┼──────────────┼──────────────┼──────────┼───────────────┤
+│ front  │ fbe4666d   │ colex-front  │ 3443:5173    │  0.08%   │ 12 hours ago  │
+│ direct │ 2a1555d1   │ colex-direc  │ 6785:8055    │  0.7%    │ 12 hours ago  │
+│ tools  │ 6231683b   │ colex-tools  │ 8301:8201    │  0.4%    │ 12 hours ago  │
+└────────┴────────────┴──────────────┴──────────────┴──────────┴───────────────┘
+
+Status: 7 containers running, 0 stopped.`;
+
+/** Admin panel — top nav, sidebar with metrics, main content with data grid */
+export const ADMIN_PANEL = `# Admin Dashboard
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  ☰  Admin Panel        Search...                    User ▼  Notify  │
+├──────────┬───────────────────────────────────────────────────────────┤
+│ Overview │                                                           │
+│ Users    │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐    │
+│ Products │  │ Users    │ │ Revenue  │ │ Orders   │ │ Active   │    │
+│ Orders   │  │ 12,847   │ │ $48.2K   │ │ 1,204    │ │ 847      │    │
+│ Reports  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘    │
+│ Settings │                                                           │
+│          │  ┌────────────────────────────────────────────────────┐   │
+│          │  │  Recent Activity                                   │   │
+│          │  ├────────────────────────────────────────────────────┤   │
+│          │  │  User "alice" logged in                  2m ago    │   │
+│          │  │  Order #4521 shipped                     15m ago   │   │
+│          │  │  Product "Widget Pro" updated            1h ago    │   │
+│          │  │  Report generated                        3h ago    │   │
+│          │  └────────────────────────────────────────────────────┘   │
+│          │                                                           │
+└──────────┴───────────────────────────────────────────────────────────┘
+
+Footer: v2.1.0 | API Status: Online`;
+
+/** Chat interface — message list with avatars, input box, sidebar with contacts */
+export const CHAT_UI = `# Messaging
+
+┌───────────┬──────────────────────────────────────────┬──────────────┐
+│ Contacts  │  Chat: Alice                             │  Details     │
+│           │                                          │              │
+│ ┌───────┐ │  ┌────────────────────────────────────┐  │  Name: Alice │
+│ │ Alice │ │  │  Hey! How's the project going?     │  │  Role: Dev   │
+│ └───────┘ │  │                           10:23 AM │  │  Status: On  │
+│ ┌───────┐ │  └────────────────────────────────────┘  │              │
+│ │ Bob   │ │  ┌────────────────────────────────────┐  │  ┌────────┐ │
+│ └───────┘ │  │  Great! Just pushed the fix.       │  │  │ Call   │ │
+│ ┌───────┐ │  │                           10:25 AM │  │  └────────┘ │
+│ │ Carol │ │  └────────────────────────────────────┘  │  ┌────────┐ │
+│ └───────┘ │  ┌────────────────────────────────────┐  │  │ Video  │ │
+│           │  │  Nice! I'll review it now.          │  │  └────────┘ │
+│           │  │                           10:26 AM │  │              │
+│           │  └────────────────────────────────────┘  │              │
+│           │                                          │              │
+│           │  ┌────────────────────────────────┬───┐  │              │
+│           │  │  Type a message...             │ ▶ │  │              │
+│           │  └────────────────────────────────┴───┘  │              │
+└───────────┴──────────────────────────────────────────┴──────────────┘`;
+
+/** Dense enterprise dashboard — the kind of wireframe that actually breaks things */
+export const ENTERPRISE_DASHBOARD = `# Q4 Planning Dashboard
+
+## KPI Summary
+
+┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐
+│  Revenue    │  Customers  │  Churn      │  NPS Score  │  MRR Growth │
+│  $2.4M      │  12,847     │  2.3%       │  72         │  +8.4%      │
+│  ▲ 12%      │  ▲ 847      │  ▼ 0.4%     │  ▲ 3        │  ▲ 1.2%     │
+└─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘
+
+## Team Workload
+
+Assign capacity based on sprint velocity and current commitments.
+
+┌──────────────────────────────────────────────────────────────────────────────────────────┐
+│  Sprint 47 — Oct 14-25                                                                   │
+├──────────┬───────────────────────────────────────────────────────────────────────────────┤
+│ Alice    │  ┌──────────┐ ┌────────────────────┐ ┌──────┐                                │
+│ (8 pts)  │  │ AUTH-401 │ │ AUTH-402 (5pts)     │ │ BUG  │                                │
+│          │  │ Login    │ │ OAuth integration   │ │ #847 │                                │
+│          │  └──────────┘ └────────────────────┘ └──────┘                                │
+├──────────┼───────────────────────────────────────────────────────────────────────────────┤
+│ Bob      │  ┌────────────────────────────────┐ ┌──────────────────┐                     │
+│ (6 pts)  │  │ DATA-301 (3pts)                │ │ DATA-302 (3pts)  │                     │
+│          │  │ Pipeline refactor              │ │ Cache layer      │                     │
+│          │  └────────────────────────────────┘ └──────────────────┘                     │
+├──────────┼───────────────────────────────────────────────────────────────────────────────┤
+│ Carol    │  ┌──────────────────────────────────────────────┐ ┌────────────────────────┐ │
+│ (10 pts) │  │ UI-501 (6pts)                                │ │ UI-502 (4pts)          │ │
+│          │  │ Dashboard redesign                           │ │ Mobile responsive      │ │
+│          │  │  ┌─────────────┐ ┌─────────────┐            │ │  ┌──────────────────┐  │ │
+│          │  │  │ KPI cards   │ │ Chart panel │            │ │  │ Breakpoint tests │  │ │
+│          │  │  └─────────────┘ └─────────────┘            │ │  └──────────────────┘  │ │
+│          │  └──────────────────────────────────────────────┘ └────────────────────────┘ │
+└──────────┴───────────────────────────────────────────────────────────────────────────────┘
+
+## Risk Register
+
+┌─────┬────────────────────────┬──────────┬───────────┬───────────────────────────────────┐
+│  #  │  Risk                  │  Impact  │  Prob     │  Mitigation                       │
+├─────┼────────────────────────┼──────────┼───────────┼───────────────────────────────────┤
+│  1  │  OAuth vendor delay    │  High    │  Medium   │  Fallback to email/pass auth      │
+│  2  │  Pipeline perf issue   │  Medium  │  Low      │  Benchmark before merge           │
+│  3  │  Mobile Safari bugs    │  Medium  │  High     │  Dedicated QA sprint              │
+│  4  │  Scope creep on UI-501 │  High    │  Medium   │  Fixed scope doc signed off       │
+└─────┴────────────────────────┴──────────┴───────────┴───────────────────────────────────┘
+
+Next planning session: Monday Oct 28.`;
+
+/** Complex flowchart — decision tree with branches and merge */
+export const DECISION_FLOWCHART = `# Deployment Decision Flow
+
+┌──────────┐
+│  Start   │
+└────┬─────┘
+     │
+┌────┴─────┐
+│  Tests   │
+│  Pass?   │
+└──┬────┬──┘
+   │    │
+  Yes   No
+   │    │
+┌──┴──┐ ┌──┴──────┐
+│ QA  │ │  Fix    │
+│Check│ │  Bugs   │
+└──┬──┘ └──┬──────┘
+   │       │
+┌──┴───────┴──┐
+│   Deploy    │
+│  to Staging │
+└──────┬──────┘
+       │
+┌──────┴──────┐
+│  Smoke Test │
+│  Pass?      │
+└──┬───────┬──┘
+   │       │
+  Yes      No
+   │       │
+┌──┴────┐ ┌┴────────┐
+│Deploy │ │ Rollback │
+│  Prod │ │          │
+└───────┘ └──────────┘
+
+Review deployment logs after each release.`;
+
+/** Microservice architecture diagram */
+export const ARCHITECTURE_DIAGRAM = `# System Architecture
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Load Balancer                                │
+└──────────┬──────────────────┬───────────────────┬───────────────────┘
+           │                  │                   │
+    ┌──────┴──────┐   ┌──────┴──────┐   ┌────────┴────────┐
+    │  API GW     │   │  API GW     │   │  API GW         │
+    │  (primary)  │   │  (replica)  │   │  (replica)      │
+    └──────┬──────┘   └──────┬──────┘   └────────┬────────┘
+           │                  │                   │
+    ┌──────┴──────────────────┴───────────────────┴────────┐
+    │                    Message Bus (Kafka)                │
+    └──┬──────────┬──────────┬──────────┬──────────────────┘
+       │          │          │          │
+  ┌────┴────┐ ┌──┴────┐ ┌──┴─────┐ ┌──┴──────┐
+  │ Auth    │ │ Users │ │ Orders │ │ Payment │
+  │ Service │ │ Svc   │ │ Svc    │ │ Svc     │
+  ├─────────┤ ├───────┤ ├────────┤ ├─────────┤
+  │ ┌─────┐ │ │┌─────┐│ │┌──────┐│ │┌───────┐│
+  │ │Redis│ │ ││Pg DB││ ││Pg DB ││ ││Stripe ││
+  │ └─────┘ │ │└─────┘│ │└──────┘│ │└───────┘│
+  └─────────┘ └───────┘ └────────┘ └─────────┘
+
+Each service owns its database. Communication via async events.`;
+
+/** User journey / state machine */
+export const USER_JOURNEY = `# User Onboarding Flow
+
+         ┌──────────────┐
+         │  Landing     │
+         │  Page        │
+         └──────┬───────┘
+                │
+         ┌──────┴───────┐
+    ┌────┤  Sign Up     ├────┐
+    │    │  Form        │    │
+    │    └──────────────┘    │
+  Email                   Google
+  Verify                   OAuth
+    │                        │
+┌───┴────────┐    ┌──────────┴──┐
+│  Verify    │    │  Consent    │
+│  Email     │    │  Screen     │
+└───┬────────┘    └──────┬──────┘
+    │                    │
+    └────────┬───────────┘
+             │
+      ┌──────┴───────┐
+      │  Profile     │
+      │  Setup       │
+      ├──────────────┤
+      │ Name: ┌────┐ │
+      │       │    │ │
+      │       └────┘ │
+      │ Role: ┌────┐ │
+      │       │    │ │
+      │       └────┘ │
+      └──────┬───────┘
+             │
+      ┌──────┴───────┐
+      │  Welcome     │
+      │  Dashboard   │
+      └──────────────┘
+
+Avg completion: 3.2 minutes.`;
