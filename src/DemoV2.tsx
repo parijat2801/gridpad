@@ -704,6 +704,8 @@ export default function DemoV2() {
           x: l.x, y: l.y, text: l.text, width: l.width,
           sourceLine: l.sourceLine, sourceCol: l.sourceCol,
         })),
+        /** Get measured character dimensions */
+        getCharDims: () => ({ cw: cwRef.current, ch: chRef.current }),
       };
     }).catch(err => console.error("Init failed:", err));
   }, []);

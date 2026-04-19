@@ -139,10 +139,16 @@ function computeFrameGridBboxes(
   return bboxes;
 }
 
+/** Get measured character dimensions from the page */
+async function getCharDims(page: Page): Promise<{ cw: number; ch: number }> {
+  return page.evaluate(() => (window as any).__gridpad.getCharDims());
+}
+
 /** Find ghosts using frame tree from the page */
 async function findGhostsFromPage(page: Page, md: string): Promise<string[]> {
   const tree = await getFrameTree(page);
-  const bboxes = computeFrameGridBboxes(tree, 9.6, 18.4);
+  const { cw, ch } = await getCharDims(page);
+  const bboxes = computeFrameGridBboxes(tree, cw, ch);
   return findGhosts(md, null, bboxes);
 }
 
@@ -166,7 +172,7 @@ function checkInvariants(tree: any[]): string[] {
   return failures;
 }
 
-/** Legacy findWireframeSections — kept for tests that still use it */
+/** @deprecated — no longer used. Ghost detection uses frame-bbox mask instead. */
 function findWireframeSections(md: string): { startRow: number; endRow: number }[] {
   const lines = md.split("\n");
   const sections: { startRow: number; endRow: number }[] = [];
@@ -396,7 +402,8 @@ async function roundTrip(
   let ghosts: string[] = [];
   if (action) {
     // After edits: use frame-bbox mask from the RELOADED tree
-    const bboxes = computeFrameGridBboxes(treeAfter, 9.6, 18.4);
+    const { cw, ch } = await getCharDims(page);
+    const bboxes = computeFrameGridBboxes(treeAfter, cw, ch);
     ghosts = findGhosts(output, null, bboxes);
   }
   // For no-edit tests, skip ghost check — if output === input, there are no ghosts by definition
@@ -823,8 +830,7 @@ test.describe("harness", () => {
       console.log(`cycle ${cycle}: ${d.toFixed(2)}% diff`);
       expect(d).toBeLessThan(5);
 
-      const sections = findWireframeSections(md);
-      const ghosts = findGhosts(md, sections);
+      const ghosts = await findGhostsFromPage(page, md);
       expect(ghosts).toEqual([]);
       expect(md).toContain("┌");
     }
@@ -1259,8 +1265,7 @@ test.describe("ux stress", () => {
     // Frame should have moved right from its original position
     expect(finalFrames[0].x).toBeGreaterThan(50);
     expect(save2).toContain("┌");
-    const sections = findWireframeSections(save2);
-    expect(findGhosts(save2, sections)).toEqual([]);
+    expect(await findGhostsFromPage(page, save2)).toEqual([]);
   });
 
   test("ux: tiny 2x2 wireframe round-trips", async ({ page }) => {
@@ -1433,8 +1438,7 @@ test.describe("ux stress", () => {
     const saved = await save(page);
     expect(saved).toContain("┌");
     expect(saved).toContain("Prose above");
-    const sections = findWireframeSections(saved);
-    expect(findGhosts(saved, sections)).toEqual([]);
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 });
 
@@ -1527,8 +1531,7 @@ test.describe("interaction: text edit", () => {
     writeArtifact("ix-prose-then-label", "output.md", saved);
     expect(saved).toContain("EDITED");
     expect(saved).toContain("┌");
-    const sections = findWireframeSections(saved);
-    expect(findGhosts(saved, sections)).toEqual([]);
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 });
 
@@ -1678,8 +1681,7 @@ test.describe("interaction: children", () => {
 
     expect(saved).toContain("Outer");
     expect(saved).toContain("Inner");
-    const sections = findWireframeSections(saved);
-    expect(findGhosts(saved, sections)).toEqual([]);
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 
   test("child: delete inner box, outer survives", async ({ page }) => {
@@ -1718,8 +1720,7 @@ test.describe("interaction: children", () => {
     expect(saved).toContain("┌");
     expect(saved).toContain("└");
     expect(saved).toContain("Outer");
-    const sections = findWireframeSections(saved);
-    expect(findGhosts(saved, sections)).toEqual([]);
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 });
 
@@ -1776,8 +1777,7 @@ test.describe("interaction: alignment", () => {
 
     expect(saved).toContain("Hello");
     expect(saved).toContain("┌");
-    const sections = findWireframeSections(saved);
-    expect(findGhosts(saved, sections)).toEqual([]);
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 });
 
@@ -1811,8 +1811,7 @@ test.describe("interaction: multi-frame", () => {
     expect(saved).toContain("┌");
     expect(saved).toContain("Top");
     expect(saved).toContain("Bottom");
-    const sections = findWireframeSections(saved);
-    expect(findGhosts(saved, sections)).toEqual([]);
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 
   test("multi: move frame, resize another, edit prose between", async ({ page }) => {
@@ -1846,8 +1845,7 @@ test.describe("interaction: multi-frame", () => {
 
     expect(saved).toContain("BETWEEN");
     expect(saved).toContain("┌");
-    const sections = findWireframeSections(saved);
-    expect(findGhosts(saved, sections)).toEqual([]);
+    expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 });
 
@@ -2013,7 +2011,8 @@ test.describe("critical", () => {
     const withGhost = `Prose\n\n┌──────┐\n│      │\n└──────┘\n\nMore │ ghost`;
     await load(page, withGhost);
     const tree = await getFrameTree(page);
-    const bboxes = computeFrameGridBboxes(tree, 9.6, 18.4);
+    const { cw, ch } = await getCharDims(page);
+    const bboxes = computeFrameGridBboxes(tree, cw, ch);
     const ghosts = findGhosts(withGhost, null, bboxes);
     writeArtifact("crit-ghost-detection", "ghosts.txt", ghosts.join("\n") || "None");
     // The │ on the "More │ ghost" line should be detected
