@@ -2329,11 +2329,10 @@ test.describe("shared walls", () => {
 
     expect(saved).toContain("Top");
     expect(saved).toContain("Bottom");
-    // Both boxes have valid structure — at least 2 ┌ and 2 └
-    const tl = [...saved].filter(c => c === "┌").length;
-    const bl = [...saved].filter(c => c === "└").length;
-    expect(tl).toBeGreaterThanOrEqual(2);
-    expect(bl).toBeGreaterThanOrEqual(1); // bottom of lower box
+    // Shared wall: ├──────────┤ instead of └──┘ + ┌──┐
+    // Check both boxes are present (has at least ┌ and └)
+    expect(saved).toContain("┌");
+    expect(saved).toContain("└");
     expect(await findGhostsFromPage(page, saved)).toEqual([]);
   });
 
