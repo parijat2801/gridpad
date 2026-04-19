@@ -2,6 +2,73 @@
 import type { Frame } from "./frame";
 import type { ProseSegment } from "./proseSegments";
 
+// ── Junction repair ────────────────────────────────────────
+
+/** All box-drawing characters we recognize */
+const BOX_CHARS = new Set([..."┌┐└┘│─├┤┬┴┼"]);
+
+/** Which chars have a stroke going in each direction */
+const DOWN  = new Set([..."│├┤┼┌┐┬"]);
+const UP    = new Set([..."│├┤┼└┘┴"]);
+const RIGHT = new Set([..."─┌└├┬┴┼"]);
+const LEFT  = new Set([..."─┐┘┤┬┴┼"]);
+
+/** Map (up, down, left, right) → junction character */
+const JUNCTION_MAP: Record<string, string> = {
+  "0100": "╷", // down only — rare, keep original
+  "1000": "╵", // up only — rare, keep original
+  "0010": "╴", // left only — rare, keep original
+  "0001": "╶", // right only — rare, keep original
+  "0011": "─",
+  "1100": "│",
+  "0101": "┌",
+  "0110": "┐",
+  "1001": "└",
+  "1010": "┘",
+  "0111": "┬",
+  "1011": "┴",
+  "1101": "├",
+  "1110": "┤",
+  "1111": "┼",
+};
+
+/** Inherent connection directions of a box-drawing character */
+function inherentConnections(ch: string): [boolean, boolean, boolean, boolean] {
+  return [UP.has(ch), DOWN.has(ch), LEFT.has(ch), RIGHT.has(ch)];
+}
+
+/** Scan the grid for box-drawing characters and upgrade corners to junctions
+ * where neighboring cells connect. Mutates grid in place. Never downgrades
+ * — a cell's inherent connections are OR'd with neighbor connections. */
+export function repairJunctions(grid: string[][]): void {
+  const rows = grid.length;
+  if (rows === 0) return;
+
+  for (let r = 0; r < rows; r++) {
+    const cols = grid[r].length;
+    for (let c = 0; c < cols; c++) {
+      const ch = grid[r][c];
+      if (!BOX_CHARS.has(ch)) continue;
+
+      // Inherent connections of the current character
+      const [iUp, iDown, iLeft, iRight] = inherentConnections(ch);
+
+      // OR inherent connections with neighbor connections (never downgrade)
+      const hasUp    = iUp    || (r > 0 && c < grid[r - 1].length && DOWN.has(grid[r - 1][c]));
+      const hasDown  = iDown  || (r < rows - 1 && c < grid[r + 1].length && UP.has(grid[r + 1][c]));
+      const hasLeft  = iLeft  || (c > 0 && RIGHT.has(grid[r][c - 1]));
+      const hasRight = iRight || (c < cols - 1 && LEFT.has(grid[r][c + 1]));
+
+      const key = `${hasUp ? 1 : 0}${hasDown ? 1 : 0}${hasLeft ? 1 : 0}${hasRight ? 1 : 0}`;
+      const replacement = JUNCTION_MAP[key];
+      if (replacement) {
+        grid[r][c] = replacement;
+      }
+      // If no match (e.g., "0000"), keep original character
+    }
+  }
+}
+
 /** Bounding box in grid coordinates for tracking original frame positions. */
 export interface FrameBbox {
   row: number;
@@ -88,6 +155,9 @@ export function gridSerialize(
   for (const f of frames) {
     writeFrameToGrid(grid, f, 0, 0, charWidth, charHeight);
   }
+
+  // Phase B.5 — repair junction characters where frame borders meet
+  repairJunctions(grid);
 
   // Phase C — write prose.
   // If any frame moved (dirty), reflow prose into rows not occupied by frames.
