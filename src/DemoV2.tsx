@@ -1017,7 +1017,7 @@ export default function DemoV2() {
             const ch = chRef.current;
             const cw = cwRef.current;
             for (const f of framesRef.current) {
-              if (f.y >= mergeGridRow * ch) {
+              if (f.gridRow >= mergeGridRow) {
                 stateRef.current = stateRef.current.update({
                   effects: moveFrameEffect.of({ id: f.id, dCol: 0, dRow: -1, charWidth: cw, charHeight: ch }),
                 }).state;
@@ -1046,7 +1046,7 @@ export default function DemoV2() {
           const ch = chRef.current;
           const cw = cwRef.current;
           for (const f of framesRef.current) {
-            if (f.y >= editGridRow * ch) {
+            if (f.gridRow >= editGridRow) {
               stateRef.current = stateRef.current.update({
                 effects: moveFrameEffect.of({ id: f.id, dCol: 0, dRow: 1, charWidth: cw, charHeight: ch }),
               }).state;

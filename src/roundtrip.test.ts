@@ -50,6 +50,22 @@ function roundTrip(text: string): string {
 }
 
 describe("round-trip: no edits", () => {
+  it("API Gateway fixture survives round-trip", () => {
+    const text = [
+      "# My Project Plan", "",
+      "This document describes the architecture.", "", "",
+      "┌──────────────────────────────┐",
+      "│        API Gateway           │",
+      "├──────────┬───────────────────┤",
+      "│ Auth     │  Router            │",
+      "│ Service  │                   │",
+      "└──────────┴───────────────────┘",
+      "", "", "The gateway handles all incoming requests.",
+    ].join("\n");
+    const result = roundTrip(text);
+    expect(result).toContain("API Gateway");
+  });
+
   it("simple box passes through unchanged", () => {
     const text = "Prose above\n\n┌──────┐\n│      │\n└──────┘\n\nProse below";
     expect(roundTrip(text)).toBe(text);

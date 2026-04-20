@@ -564,7 +564,7 @@ describe("diagnostic: prose editing serialization", () => {
     const editGridRow = newSegMap[0]?.row ?? 0;
     let shifted = s;
     for (const f of getFrames(s)) {
-      if (f.y >= editGridRow * CH) {
+      if (f.gridRow >= editGridRow) {
         shifted = applyMoveFrame(shifted, f.id, 0, 1, CW, CH);
       }
     }
