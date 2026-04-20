@@ -139,6 +139,9 @@ export function gridSerialize(
     };
     collectDirty(frames);
 
+    // Box-drawing characters that indicate wireframe content
+    const WIRE = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"]);
+
     for (const bbox of originalFrameBboxes) {
       // Blank if frame is dirty (moved/resized) or deleted
       if (dirtyIds.has(bbox.id) || !currentIds.has(bbox.id)) {
@@ -147,13 +150,51 @@ export function gridSerialize(
             grid[r][c] = " ";
           }
         }
+        // Also blank orphaned wire characters adjacent to the bbox.
+        // Handles misaligned wireframe ASCII art where │ or ─ appear
+        // past the detected rect edge. Flood-blank wire chars connected
+        // to the bbox boundary (up to 3 cells out to handle common misalignments).
+        const MARGIN = 3;
+        const mr1 = Math.max(0, bbox.row - MARGIN);
+        const mr2 = Math.min(grid.length, bbox.row + bbox.h + MARGIN);
+        const mc1 = Math.max(0, bbox.col - MARGIN);
+        for (let r = mr1; r < mr2; r++) {
+          const mc2 = Math.min(grid[r].length, bbox.col + bbox.w + MARGIN);
+          for (let c = mc1; c < mc2; c++) {
+            if (r >= bbox.row && r < bbox.row + bbox.h && c >= bbox.col && c < bbox.col + bbox.w) continue;
+            if (WIRE.has(grid[r][c])) grid[r][c] = " ";
+          }
+        }
       }
     }
   }
 
-  // Phase B — write dirty frame cells at CURRENT positions
+  // Phase B — two-pass compositor: collect all cells, then blank, then write.
+  // This prevents later siblings from erasing earlier siblings' text cells.
+  const bboxesToBlank: { r1: number; c1: number; r2: number; c2: number }[] = [];
+  const cellsToWrite = new Map<string, string>(); // "row,col" → char
+
   for (const f of frames) {
-    writeFrameToGrid(grid, f, 0, 0, charWidth, charHeight);
+    collectFrameCells(f, 0, 0, charWidth, charHeight, false, null, bboxesToBlank, cellsToWrite);
+  }
+
+  // Pass 2a: blank all collected bboxes
+  for (const bb of bboxesToBlank) {
+    for (let r = bb.r1; r < bb.r2 && r < grid.length; r++) {
+      for (let c = bb.c1; c < bb.c2 && c < grid[r].length; c++) {
+        grid[r][c] = " ";
+      }
+    }
+  }
+
+  // Pass 2b: write all collected cells
+  for (const [key, ch_] of cellsToWrite) {
+    const ci = key.indexOf(",");
+    const r = Number(key.slice(0, ci));
+    const c = Number(key.slice(ci + 1));
+    if (r >= 0 && r < grid.length && c >= 0 && c < grid[r].length) {
+      grid[r][c] = ch_;
+    }
   }
 
   // Phase B.5 — repair junction characters where frame borders meet
@@ -231,7 +272,10 @@ export function snapshotFrameBboxes(
     for (const f of fs) {
       const absX = offX + f.x;
       const absY = offY + f.y;
-      if (f.content) {
+      // Include both content frames AND containers (content===null).
+      // Containers cover the full wireframe footprint including gaps
+      // between children. Phase A needs this to blank the entire area.
+      if (f.content || f.children.length > 0) {
         bboxes.push({
           id: f.id,
           row: Math.round(absY / charHeight),
@@ -266,50 +310,74 @@ function expandGridForFrame(
   }
 }
 
-function writeFrameToGrid(
-  grid: string[][],
+/** Clip rect: {r1,c1,r2,c2} in grid coordinates. null = no clipping. */
+type ClipRect = { r1: number; c1: number; r2: number; c2: number } | null;
+
+/**
+ * Collect all dirty frame cells and bboxes into output arrays.
+ * Two-pass compositor: collect first, then blank all, then write all.
+ * This prevents later siblings from erasing earlier siblings' text.
+ * Task 3: clipRect constrains children to parent's grid bounds.
+ */
+function collectFrameCells(
   f: Frame,
   offX: number,
   offY: number,
   cw: number,
   ch: number,
-  ancestorDirty = false,
+  ancestorDirty: boolean,
+  clipRect: ClipRect,
+  bboxesToBlank: { r1: number; c1: number; r2: number; c2: number }[],
+  cellsToWrite: Map<string, string>,
 ): void {
   const absX = offX + f.x;
   const absY = offY + f.y;
-  // A frame needs rewriting if it's dirty itself, an ancestor moved,
-  // OR any descendant is dirty (child move can overwrite parent border cells).
   const hasAnyDirtyDescendant = (fr: Frame): boolean =>
     fr.dirty || fr.children.some(hasAnyDirtyDescendant);
   const needsWrite = f.dirty || ancestorDirty || hasAnyDirtyDescendant(f);
 
   if (needsWrite && f.content) {
-    // Blank the frame's CURRENT bounding box
-    const startRow = Math.round(absY / ch);
-    const startCol = Math.round(absX / cw);
-    const endRow = Math.round((absY + f.h) / ch);
-    const endCol = Math.round((absX + f.w) / cw);
-    for (let r = startRow; r < endRow && r < grid.length; r++) {
-      for (let c = startCol; c < endCol && c < grid[r].length; c++) {
-        grid[r][c] = " ";
-      }
+    const r1 = Math.round(absY / ch);
+    const c1 = Math.round(absX / cw);
+    const r2 = Math.round((absY + f.h) / ch);
+    const c2 = Math.round((absX + f.w) / cw);
+
+    // Task 3: if frame doesn't fully fit within clip rect, skip it entirely.
+    // Partially drawn rectangles create ambiguous box-drawing characters.
+    if (clipRect && (r1 < clipRect.r1 || c1 < clipRect.c1 || r2 > clipRect.r2 || c2 > clipRect.c2)) {
+      // Frame overflows parent — don't serialize it or its children
+      return;
     }
 
-    // Write cells at current position
+    bboxesToBlank.push({ r1, c1, r2, c2 });
+
+    // Collect cells at current position
     const gridRow = Math.round(absY / ch);
     const gridCol = Math.round(absX / cw);
     for (const [key, ch_] of f.content.cells) {
       const ci = key.indexOf(",");
       const r = gridRow + Number(key.slice(0, ci));
       const c = gridCol + Number(key.slice(ci + 1));
-      if (r >= 0 && r < grid.length && c >= 0 && c < grid[r].length) {
-        grid[r][c] = ch_;
-      }
+      cellsToWrite.set(`${r},${c}`, ch_);
     }
   }
 
-  // Recurse into children — propagate dirty state
+  // Compute clip rect for children: only clip when this frame itself is dirty
+  // (was resized/moved directly). If only rewriting due to ancestor dirty,
+  // keep children at their original positions without clipping — they may
+  // extend slightly beyond the parent due to reparenting tolerance.
+  let childClip = clipRect;
+  if (f.content?.type === "rect" && f.dirty) {
+    const cr1 = Math.round(absY / ch);
+    const cc1 = Math.round(absX / cw);
+    const cr2 = Math.round((absY + f.h) / ch);
+    const cc2 = Math.round((absX + f.w) / cw);
+    childClip = clipRect
+      ? { r1: Math.max(cr1, clipRect.r1), c1: Math.max(cc1, clipRect.c1), r2: Math.min(cr2, clipRect.r2), c2: Math.min(cc2, clipRect.c2) }
+      : { r1: cr1, c1: cc1, r2: cr2, c2: cc2 };
+  }
+
   for (const child of f.children) {
-    writeFrameToGrid(grid, child, absX, absY, cw, ch, needsWrite);
+    collectFrameCells(child, absX, absY, cw, ch, needsWrite, childClip, bboxesToBlank, cellsToWrite);
   }
 }
