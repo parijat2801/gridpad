@@ -1164,12 +1164,12 @@ describe("delete cascade", () => {
     const child: Frame = {
       id: "child1", x: 0, y: 0, w: 100, h: 50,
       z: 0, children: [], content: { type: "rect", cells: new Map(), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" } },
-      clip: false, dirty: false,
+      clip: false, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0,
     };
     const parent: Frame = {
       id: "parent1", x: 0, y: 0, w: 200, h: 100,
       z: 0, children: [child], content: null,
-      clip: true, dirty: false,
+      clip: true, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0,
     };
     const state = createEditorState({
       prose: "", frames: [parent], proseSegmentMap: [],
@@ -1182,16 +1182,16 @@ describe("delete cascade", () => {
     const child1: Frame = {
       id: "c1", x: 0, y: 0, w: 50, h: 50, z: 0, children: [],
       content: { type: "rect", cells: new Map(), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" } },
-      clip: false, dirty: false,
+      clip: false, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0,
     };
     const child2: Frame = {
       id: "c2", x: 60, y: 0, w: 50, h: 50, z: 0, children: [],
       content: { type: "rect", cells: new Map(), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" } },
-      clip: false, dirty: false,
+      clip: false, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0,
     };
     const parent: Frame = {
       id: "p1", x: 0, y: 0, w: 200, h: 100, z: 0,
-      children: [child1, child2], content: null, clip: true, dirty: false,
+      children: [child1, child2], content: null, clip: true, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0,
     };
     const state = createEditorState({ prose: "", frames: [parent], proseSegmentMap: [] });
     const updated = applyDeleteFrame(state, "c1");

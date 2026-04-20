@@ -35,6 +35,12 @@ export interface Frame {
   content: FrameContent | null;
   clip: boolean;
   dirty: boolean;
+  /** Grid coordinates — canonical position for serialization.
+   * Pixel x/y/w/h are derived as gridRow * ch, gridCol * cw, etc. */
+  gridRow: number;
+  gridCol: number;
+  gridW: number;
+  gridH: number;
 }
 
 export interface Obstacle {
@@ -72,6 +78,10 @@ export function createFrame(params: {
     content: null,
     clip: true,
     dirty: false,
+    gridRow: 0,
+    gridCol: 0,
+    gridW: 0,
+    gridH: 0,
   };
 }
 
@@ -98,6 +108,10 @@ export function createRectFrame(params: {
     content: { type: "rect", cells, style },
     clip: true,
     dirty: false,
+    gridRow: 0,
+    gridCol: 0,
+    gridW: 0,
+    gridH: 0,
   };
 }
 
@@ -127,6 +141,10 @@ export function createTextFrame(params: {
     content: { type: "text", cells, text },
     clip: true,
     dirty: false,
+    gridRow: 0,
+    gridCol: 0,
+    gridW: 0,
+    gridH: 0,
   };
 }
 
@@ -153,6 +171,10 @@ export function createLineFrame(params: {
     content: { type: "line", cells },
     clip: true,
     dirty: false,
+    gridRow: 0,
+    gridCol: 0,
+    gridW: 0,
+    gridH: 0,
   };
 }
 
@@ -274,7 +296,7 @@ export function framesFromScan(
       content = { type: "rect", cells: rebasedCells, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" } };
     }
 
-    return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: true, dirty: false };
+    return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: true, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0 };
   });
 
   reparentChildren(frames, charWidth, charHeight);
@@ -384,6 +406,10 @@ function groupIntoContainers(
       content: null,
       clip: true,
       dirty: false,
+      gridRow: 0,
+      gridCol: 0,
+      gridW: 0,
+      gridH: 0,
     });
   }
 

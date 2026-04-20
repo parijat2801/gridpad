@@ -1,6 +1,6 @@
 // src/frame.test.ts
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { framesFromScan, type Frame } from "./frame";
+import { framesFromScan, createFrame, type Frame } from "./frame";
 import { scan } from "./scanner";
 
 beforeAll(() => {
@@ -106,5 +106,19 @@ describe("framesFromScan", () => {
     // Children are the two rects
     const rectChildren = frames[0].children.filter(c => c.content?.type === "rect");
     expect(rectChildren.length).toBe(2);
+  });
+});
+
+describe("grid-first frames", () => {
+  it("Frame has grid coordinate fields", () => {
+    const f = createFrame({ x: 0, y: 0, w: 96, h: 36.8 });
+    expect(f).toHaveProperty("gridRow");
+    expect(f).toHaveProperty("gridCol");
+    expect(f).toHaveProperty("gridW");
+    expect(f).toHaveProperty("gridH");
+    expect(typeof f.gridRow).toBe("number");
+    expect(typeof f.gridCol).toBe("number");
+    expect(typeof f.gridW).toBe("number");
+    expect(typeof f.gridH).toBe("number");
   });
 });
