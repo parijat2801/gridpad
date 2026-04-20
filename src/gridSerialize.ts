@@ -102,7 +102,7 @@ export function gridSerialize(
 
   // Expand grid if any frame extends beyond original bounds
   for (const f of frames) {
-    expandGridForFrame(grid, f, 0, 0, charWidth, charHeight);
+    expandGridForFrame(grid, f, 0, 0);
   }
 
   // Blank original prose segment positions (exact positions only)
@@ -175,7 +175,7 @@ export function gridSerialize(
   const cellsToWrite = new Map<string, string>(); // "row,col" → char
 
   for (const f of frames) {
-    collectFrameCells(f, 0, 0, charWidth, charHeight, false, null, bboxesToBlank, cellsToWrite);
+    collectFrameCells(f, 0, 0, false, null, bboxesToBlank, cellsToWrite);
   }
 
   // Pass 2a: blank all collected bboxes
@@ -222,9 +222,7 @@ export function gridSerialize(
     // Dirty path: reflow prose into rows not occupied by frames
     const frameRows = new Set<number>();
     for (const f of frames) {
-      const startRow = Math.round(f.y / charHeight);
-      const endRow = Math.round((f.y + f.h) / charHeight);
-      for (let r = startRow; r < endRow; r++) frameRows.add(r);
+      for (let r = f.gridRow; r < f.gridRow + f.gridH; r++) frameRows.add(r);
     }
 
     let maxRow = grid.length;
@@ -262,51 +260,39 @@ export function rebuildOriginalGrid(text: string): string[][] {
 }
 
 /** Snapshot frame bounding boxes for next save's dirty/delete detection. */
-export function snapshotFrameBboxes(
-  frames: Frame[],
-  charWidth: number,
-  charHeight: number,
-): FrameBbox[] {
+/** Snapshot frame bounding boxes using grid coordinates directly.
+ * No Math.round — grid coords are canonical. */
+export function snapshotFrameBboxes(frames: Frame[]): FrameBbox[] {
   const bboxes: FrameBbox[] = [];
-  const collect = (fs: Frame[], offX: number, offY: number) => {
+  const collect = (fs: Frame[], offRow: number, offCol: number) => {
     for (const f of fs) {
-      const absX = offX + f.x;
-      const absY = offY + f.y;
-      // Include both content frames AND containers (content===null).
-      // Containers cover the full wireframe footprint including gaps
-      // between children. Phase A needs this to blank the entire area.
+      const absRow = offRow + f.gridRow;
+      const absCol = offCol + f.gridCol;
       if (f.content || f.children.length > 0) {
         bboxes.push({
           id: f.id,
-          row: Math.round(absY / charHeight),
-          col: Math.round(absX / charWidth),
-          w: Math.round(f.w / charWidth),
-          h: Math.round(f.h / charHeight),
+          row: absRow,
+          col: absCol,
+          w: f.gridW,
+          h: f.gridH,
         });
       }
-      collect(f.children, absX, absY);
+      collect(f.children, absRow, absCol);
     }
   };
   collect(frames, 0, 0);
   return bboxes;
 }
 
-function expandGridForFrame(
-  grid: string[][],
-  f: Frame,
-  offX: number,
-  offY: number,
-  cw: number,
-  ch: number,
-): void {
-  const endRow = Math.round((offY + f.y + f.h) / ch);
-  const endCol = Math.round((offX + f.x + f.w) / cw);
+function expandGridForFrame(grid: string[][], f: Frame, offRow: number, offCol: number): void {
+  const endRow = offRow + f.gridRow + f.gridH;
+  const endCol = offCol + f.gridCol + f.gridW;
   while (grid.length < endRow) grid.push([]);
   for (const row of grid) {
     while (row.length < endCol) row.push(" ");
   }
   for (const child of f.children) {
-    expandGridForFrame(grid, child, offX + f.x, offY + f.y, cw, ch);
+    expandGridForFrame(grid, child, offRow + f.gridRow, offCol + f.gridCol);
   }
 }
 
@@ -319,69 +305,64 @@ type ClipRect = { r1: number; c1: number; r2: number; c2: number } | null;
  * This prevents later siblings from erasing earlier siblings' text.
  * Task 3: clipRect constrains children to parent's grid bounds.
  */
+/** Collect all dirty frame cells and bboxes using grid coordinates directly.
+ * No Math.round — grid coords are canonical. */
 function collectFrameCells(
   f: Frame,
-  offX: number,
-  offY: number,
-  cw: number,
-  ch: number,
+  offRow: number,
+  offCol: number,
   ancestorDirty: boolean,
   clipRect: ClipRect,
   bboxesToBlank: { r1: number; c1: number; r2: number; c2: number }[],
   cellsToWrite: Map<string, string>,
 ): void {
-  const absX = offX + f.x;
-  const absY = offY + f.y;
+  const absRow = offRow + f.gridRow;
+  const absCol = offCol + f.gridCol;
   const hasAnyDirtyDescendant = (fr: Frame): boolean =>
     fr.dirty || fr.children.some(hasAnyDirtyDescendant);
   const needsWrite = f.dirty || ancestorDirty || hasAnyDirtyDescendant(f);
 
   if (needsWrite && f.content) {
-    const r1 = Math.round(absY / ch);
-    const c1 = Math.round(absX / cw);
-    const r2 = Math.round((absY + f.h) / ch);
-    const c2 = Math.round((absX + f.w) / cw);
+    const r1 = absRow;
+    const c1 = absCol;
+    const r2 = absRow + f.gridH;
+    const c2 = absCol + f.gridW;
 
-    // Task 3: if frame doesn't fully fit within clip rect, skip it entirely.
-    // Partially drawn rectangles create ambiguous box-drawing characters.
+    // Skip frame entirely if it overflows parent clip rect.
     if (clipRect && (r1 < clipRect.r1 || c1 < clipRect.c1 || r2 > clipRect.r2 || c2 > clipRect.c2)) {
-      // Frame overflows parent — don't serialize it or its children
       return;
     }
 
     bboxesToBlank.push({ r1, c1, r2, c2 });
 
-    // Collect cells at current position, clamped to this frame's bbox.
-    // Using r1/c1 as the grid origin (not a separate Math.round) ensures
-    // cells never land outside the bbox due to rounding mismatches.
+    // Collect cells, clamped to bbox.
+    // Don't overwrite non-space chars with spaces — text content wins over
+    // rect interior spaces (text children write into their parent rect's area).
     for (const [key, ch_] of f.content.cells) {
       const ci = key.indexOf(",");
       const r = r1 + Number(key.slice(0, ci));
       const c = c1 + Number(key.slice(ci + 1));
       if (r >= r1 && r < r2 && c >= c1 && c < c2) {
-        cellsToWrite.set(`${r},${c}`, ch_);
+        const existing = cellsToWrite.get(`${r},${c}`);
+        if (ch_ !== " " || !existing || existing === " ") {
+          cellsToWrite.set(`${r},${c}`, ch_);
+        }
       }
     }
   }
 
-  // Compute clip rect for children.
-  // - Containers (content===null) always clip when dirty — their bbox is the
-  //   wireframe footprint and nothing should leak past it.
-  // - Rect frames only clip when they themselves were resized (f.dirty) —
-  //   text children may extend slightly past the rect due to reparenting tolerance.
+  // Clip rect for children — containers clip when dirty, rects clip when resized.
   let childClip = clipRect;
   const isContainer = !f.content && f.children.length > 0;
   if ((isContainer && needsWrite) || (f.content?.type === "rect" && f.dirty)) {
-    const cr1 = Math.round(absY / ch);
-    const cc1 = Math.round(absX / cw);
-    const cr2 = Math.round((absY + f.h) / ch);
-    const cc2 = Math.round((absX + f.w) / cw);
+    const cr1 = absRow, cc1 = absCol;
+    const cr2 = absRow + f.gridH, cc2 = absCol + f.gridW;
     childClip = clipRect
       ? { r1: Math.max(cr1, clipRect.r1), c1: Math.max(cc1, clipRect.c1), r2: Math.min(cr2, clipRect.r2), c2: Math.min(cc2, clipRect.c2) }
       : { r1: cr1, c1: cc1, r2: cr2, c2: cc2 };
   }
 
   for (const child of f.children) {
-    collectFrameCells(child, absX, absY, cw, ch, needsWrite, childClip, bboxesToBlank, cellsToWrite);
+    collectFrameCells(child, absRow, absCol, needsWrite, childClip, bboxesToBlank, cellsToWrite);
   }
 }

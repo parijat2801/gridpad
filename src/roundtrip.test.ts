@@ -155,7 +155,7 @@ describe("round-trip: after edits", () => {
     const { originalGrid } = scanToFrames(text, CW, CH);
     let state = createEditorStateFromText(text, CW, CH);
     // Snapshot bboxes before moving
-    const origBboxes = snapshotFrameBboxes(getFrames(state), CW, CH);
+    const origBboxes = snapshotFrameBboxes(getFrames(state));
     const container = getFrames(state)[0];
     state = applyMoveFrame(state, container.id, 2, 0, CW, CH);
     const result = gridSerialize(

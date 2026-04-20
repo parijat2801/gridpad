@@ -225,7 +225,7 @@ export default function DemoV2() {
       stateRef.current = applySetOriginalProseSegments(stateRef.current, newSegs);
       framesRef.current = getFrames(stateRef.current);
       originalGridRef.current = rebuildOriginalGrid(md);
-      frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current), cwRef.current, chRef.current);
+      frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current));
     } catch (err) { console.error("saveToHandle failed:", err); }
   }
   function scheduleAutosave() {
@@ -240,7 +240,7 @@ export default function DemoV2() {
     stateRef.current = createEditorStateFromText(text, cw, ch);
     const { originalGrid } = scanToFrames(text, cw, ch);
     originalGridRef.current = originalGrid;
-    frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current), cw, ch);
+    frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current));
     // Sync old refs for un-migrated code paths
     const frames = getFrames(stateRef.current);
     const proseText = getDoc(stateRef.current);
@@ -673,7 +673,7 @@ export default function DemoV2() {
           stateRef.current = applySetOriginalProseSegments(stateRef.current, newSegs);
           framesRef.current = getFrames(stateRef.current);
           originalGridRef.current = rebuildOriginalGrid(md);
-          frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current), cw, ch);
+          frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current));
           doLayout(); paint();
           return md;
         },
