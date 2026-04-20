@@ -351,23 +351,27 @@ function collectFrameCells(
 
     bboxesToBlank.push({ r1, c1, r2, c2 });
 
-    // Collect cells at current position
-    const gridRow = Math.round(absY / ch);
-    const gridCol = Math.round(absX / cw);
+    // Collect cells at current position, clamped to this frame's bbox.
+    // Using r1/c1 as the grid origin (not a separate Math.round) ensures
+    // cells never land outside the bbox due to rounding mismatches.
     for (const [key, ch_] of f.content.cells) {
       const ci = key.indexOf(",");
-      const r = gridRow + Number(key.slice(0, ci));
-      const c = gridCol + Number(key.slice(ci + 1));
-      cellsToWrite.set(`${r},${c}`, ch_);
+      const r = r1 + Number(key.slice(0, ci));
+      const c = c1 + Number(key.slice(ci + 1));
+      if (r >= r1 && r < r2 && c >= c1 && c < c2) {
+        cellsToWrite.set(`${r},${c}`, ch_);
+      }
     }
   }
 
-  // Compute clip rect for children: only clip when this frame itself is dirty
-  // (was resized/moved directly). If only rewriting due to ancestor dirty,
-  // keep children at their original positions without clipping — they may
-  // extend slightly beyond the parent due to reparenting tolerance.
+  // Compute clip rect for children.
+  // - Containers (content===null) always clip when dirty — their bbox is the
+  //   wireframe footprint and nothing should leak past it.
+  // - Rect frames only clip when they themselves were resized (f.dirty) —
+  //   text children may extend slightly past the rect due to reparenting tolerance.
   let childClip = clipRect;
-  if (f.content?.type === "rect" && f.dirty) {
+  const isContainer = !f.content && f.children.length > 0;
+  if ((isContainer && needsWrite) || (f.content?.type === "rect" && f.dirty)) {
     const cr1 = Math.round(absY / ch);
     const cc1 = Math.round(absX / cw);
     const cr2 = Math.round((absY + f.h) / ch);
