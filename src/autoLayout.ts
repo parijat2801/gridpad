@@ -204,6 +204,8 @@ export function reparentChildren(
         ...child,
         x: child.x - parentRect.x,
         y: child.y - parentRect.y,
+        gridRow: child.gridRow - parentRect.gridRow,
+        gridCol: child.gridCol - parentRect.gridCol,
         content: { ...child.content, hAlign, vAlign },
       };
     } else {
@@ -212,6 +214,8 @@ export function reparentChildren(
         ...child,
         x: child.x - parentRect.x,
         y: child.y - parentRect.y,
+        gridRow: child.gridRow - parentRect.gridRow,
+        gridCol: child.gridCol - parentRect.gridCol,
       };
     }
 

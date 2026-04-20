@@ -1,7 +1,8 @@
 // src/frame.test.ts
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { framesFromScan, createFrame, type Frame } from "./frame";
+import { framesFromScan, createFrame, createRectFrame, createTextFrame, createLineFrame, type Frame } from "./frame";
 import { scan } from "./scanner";
+import { scanToFrames } from "./scanToFrames";
 
 beforeAll(() => {
   const origCreateElement = document.createElement.bind(document);
@@ -120,5 +121,60 @@ describe("grid-first frames", () => {
     expect(typeof f.gridCol).toBe("number");
     expect(typeof f.gridW).toBe("number");
     expect(typeof f.gridH).toBe("number");
+  });
+
+  it("createRectFrame sets gridW and gridH", () => {
+    const CW = 9.6, CH = 18.4;
+    const f = createRectFrame({ gridW: 10, gridH: 5, style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: CW, charHeight: CH });
+    expect(f.gridW).toBe(10);
+    expect(f.gridH).toBe(5);
+    expect(f.gridRow).toBe(0);
+    expect(f.gridCol).toBe(0);
+  });
+
+  it("createTextFrame sets grid coords from row/col", () => {
+    const CW = 9.6, CH = 18.4;
+    const f = createTextFrame({ text: "Hello", row: 3, col: 5, charWidth: CW, charHeight: CH });
+    expect(f.gridRow).toBe(3);
+    expect(f.gridCol).toBe(5);
+    expect(f.gridW).toBe(5);
+    expect(f.gridH).toBe(1);
+  });
+
+  it("createLineFrame sets grid coords from bbox", () => {
+    const CW = 9.6, CH = 18.4;
+    const f = createLineFrame({ r1: 2, c1: 3, r2: 2, c2: 8, charWidth: CW, charHeight: CH });
+    expect(f.gridRow).toBe(2);
+    expect(f.gridCol).toBe(3);
+    expect(f.gridW).toBe(6);
+    expect(f.gridH).toBe(1);
+  });
+
+  it("framesFromScan sets grid coords on all content frames", () => {
+    const CW = 9.6, CH = 18.4;
+    const { frames } = scanToFrames("Prose\n\n┌──────┐\n│      │\n└──────┘\n\nEnd", CW, CH);
+    const check = (fs: Frame[]) => {
+      for (const f of fs) {
+        if (f.content) {
+          expect(f.gridW, `frame ${f.id} gridW`).toBeGreaterThan(0);
+          expect(f.gridH, `frame ${f.id} gridH`).toBeGreaterThan(0);
+        }
+        check(f.children);
+      }
+    };
+    check(frames);
+  });
+
+  it("groupIntoContainers sets container grid coords from children union", () => {
+    const CW = 9.6, CH = 18.4;
+    const text = "Header\n\n┌───────────┬───────────┐\n│  Left     │  Right    │\n├───────────┼───────────┤\n│  Bottom L │  Bottom R │\n└───────────┴───────────┘\n\nFooter";
+    const { frames } = scanToFrames(text, CW, CH);
+    // Junction produces a container wrapping multiple rects
+    const container = frames.find(f => !f.content && f.children.length > 0);
+    expect(container).toBeDefined();
+    expect(container!.gridW).toBeGreaterThan(0);
+    expect(container!.gridH).toBeGreaterThan(0);
+    expect(container!.gridRow).toBeGreaterThanOrEqual(0);
+    expect(container!.gridCol).toBeGreaterThanOrEqual(0);
   });
 });

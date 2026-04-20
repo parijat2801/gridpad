@@ -108,10 +108,9 @@ export function createRectFrame(params: {
     content: { type: "rect", cells, style },
     clip: true,
     dirty: false,
-    gridRow: 0,
-    gridCol: 0,
-    gridW: 0,
-    gridH: 0,
+    gridRow: 0, gridCol: 0, // caller sets position
+    gridW,
+    gridH,
   };
 }
 
@@ -141,10 +140,10 @@ export function createTextFrame(params: {
     content: { type: "text", cells, text },
     clip: true,
     dirty: false,
-    gridRow: 0,
-    gridCol: 0,
-    gridW: 0,
-    gridH: 0,
+    gridRow: row,
+    gridCol: col,
+    gridW: codepoints.length,
+    gridH: 1,
   };
 }
 
@@ -171,10 +170,10 @@ export function createLineFrame(params: {
     content: { type: "line", cells },
     clip: true,
     dirty: false,
-    gridRow: 0,
-    gridCol: 0,
-    gridW: 0,
-    gridH: 0,
+    gridRow: bbox.row,
+    gridCol: bbox.col,
+    gridW: bbox.w,
+    gridH: bbox.h,
   };
 }
 
@@ -296,7 +295,7 @@ export function framesFromScan(
       content = { type: "rect", cells: rebasedCells, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" } };
     }
 
-    return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: true, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0 };
+    return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: true, dirty: false, gridRow: layer.bbox.row, gridCol: layer.bbox.col, gridW: layer.bbox.w, gridH: layer.bbox.h };
   });
 
   reparentChildren(frames, charWidth, charHeight);
@@ -381,11 +380,16 @@ function groupIntoContainers(
     // Multiple frames — wrap in a container
     const children = indices.map(i => frames[i]);
     let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
+    let minRow = Infinity, minCol = Infinity, maxRow = 0, maxCol = 0;
     for (const c of children) {
       if (c.x < minX) minX = c.x;
       if (c.y < minY) minY = c.y;
       if (c.x + c.w > maxX) maxX = c.x + c.w;
       if (c.y + c.h > maxY) maxY = c.y + c.h;
+      if (c.gridRow < minRow) minRow = c.gridRow;
+      if (c.gridCol < minCol) minCol = c.gridCol;
+      if (c.gridRow + c.gridH > maxRow) maxRow = c.gridRow + c.gridH;
+      if (c.gridCol + c.gridW > maxCol) maxCol = c.gridCol + c.gridW;
     }
 
     // Rebase children to container-relative coordinates
@@ -393,6 +397,8 @@ function groupIntoContainers(
       ...c,
       x: c.x - minX,
       y: c.y - minY,
+      gridRow: c.gridRow - minRow,
+      gridCol: c.gridCol - minCol,
     }));
 
     result.push({
@@ -406,10 +412,10 @@ function groupIntoContainers(
       content: null,
       clip: true,
       dirty: false,
-      gridRow: 0,
-      gridCol: 0,
-      gridW: 0,
-      gridH: 0,
+      gridRow: minRow,
+      gridCol: minCol,
+      gridW: maxCol - minCol,
+      gridH: maxRow - minRow,
     });
   }
 
