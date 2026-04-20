@@ -200,13 +200,18 @@ export function gridSerialize(
   // Phase B.5 — repair junction characters where frame borders meet
   repairJunctions(grid);
 
-  // Phase B.6 — blank wire chars that Phase B didn't explicitly write.
-  // After the two-pass (blank all bboxes + write all cells), any remaining
-  // wire char NOT in cellsToWrite is an orphan: either from originalGrid
-  // (misaligned ASCII art) or from child overflow past container boundary.
-  if (frames.some(f => f.dirty)) {
+  // Phase B.6 — blank orphan wire chars in rows touched by dirty frames.
+  // Only scan rows that were blanked+rewritten by Phase B (dirty frame rows).
+  // Wire chars NOT in cellsToWrite in these rows are orphans from child overflow
+  // or misaligned ASCII art.
+  {
     const WIRE = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"]);
-    for (let r = 0; r < grid.length; r++) {
+    const dirtyRows = new Set<number>();
+    for (const bb of bboxesToBlank) {
+      for (let r = bb.r1; r < bb.r2; r++) dirtyRows.add(r);
+    }
+    for (const r of dirtyRows) {
+      if (r < 0 || r >= grid.length) continue;
       for (let c = 0; c < grid[r].length; c++) {
         if (!WIRE.has(grid[r][c])) continue;
         if (!cellsToWrite.has(`${r},${c}`)) {

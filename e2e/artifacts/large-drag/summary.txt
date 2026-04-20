@@ -2,7 +2,7 @@ Test: large-drag
 Input lines: 13
 Output lines: 27
 Markdown match: false
-Visual diff: 0.13%
+Visual diff: 0.00%
 Ghosts: 0
 Render failures: 0
 Prose issues: 0
@@ -23,15 +23,6 @@ Markdown diff:
   L7:
     - "Middle"
     + "Bottom"
-  L9:
-    - "┌────┐"
-    + ""
-  L10:
-    - "│ B  │"
-    + "  B"
-  L11:
-    - "└────┘"
-    + ""
   L13:
     - "Bottom"
     + ""
@@ -79,4 +70,4 @@ Markdown diff:
     + "└────┘"
 
 Prose doc after reload: 1 lines
-Frames before: 4  Frames after: 2
+Frames before: 4  Frames after: 4
