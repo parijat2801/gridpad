@@ -10,12 +10,12 @@
               └──────────┘ └──────────┘ └──────────┘ └──────────┘
 
               ┌────────────────────────────────────────────────────┐
-              │  Recent                                            │
+              │  Recent Activity                                   │
               ├────────────────────────────────────────────────────┤
-              │  User                                    2m        │
-              │  Order                                   15m       │
-              │  Product                                 1h        │
-              │  Report                                  3h        │
+              │  User "alice" logged in                  2m ago    │
+              │  Order #4521 shipped                     15m ago   │
+              │  Product "Widget Pro" updated            1h ago    │
+              │  Report generated                        3h ago    │
               └────────────────────────────────────────────────────┘
 
                                                                        │

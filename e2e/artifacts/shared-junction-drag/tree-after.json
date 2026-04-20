@@ -32,10 +32,10 @@
   {
     "depth": 2,
     "contentType": "text",
-    "text": "Bottom",
+    "text": "Bottom L",
     "absX": 105.9609375,
     "absY": 66.84375,
-    "w": 57.796875,
+    "w": 77.0625,
     "h": 13.368749999999999,
     "childCount": 0
   },
@@ -62,10 +62,10 @@
   {
     "depth": 2,
     "contentType": "text",
-    "text": "Bottom",
+    "text": "Bottom R",
     "absX": 221.5546875,
     "absY": 66.84375,
-    "w": 57.796875,
+    "w": 77.0625,
     "h": 13.368749999999999,
     "childCount": 0
   },

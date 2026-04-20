@@ -3,6 +3,6 @@ Header
 ┌───────────┐
 │  Left     │
 └───────────┘
-   Bottom
+   Bottom L
 
 Footer

@@ -3,7 +3,7 @@ Header
          ┌───────────┬───────────┐
          │  Left     │  Right    │
          ├───────────┼───────────┤
-         │  Bottom   │  Bottom   │
+         │  Bottom L │  Bottom R │
          └───────────┴───────────┘
 
 Footer

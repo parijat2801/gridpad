@@ -11,12 +11,12 @@ A classic three-column web app. Drag the sidebar or panels to watch text reflow 
 
 
   ┌───────────────────────────────────────────────────────┐
-  │                      My                               │
+  │                      My App                           │
   ├───────────┬───────────────────────────┬───────────────┤
-  │ Nav       │  Main                     │  Details      │
+  │ Nav       │  Main Content             │  Details      │
   │           │                           │               │
-  │ Home      │  ┌─────────────────────┐  │  User:        │
-  │ Search    │  │  Revenue Chart      │  │  Role:        │
+  │ Home      │  ┌─────────────────────┐  │  User: Alice  │
+  │ Search    │  │  Revenue Chart      │  │  Role: Admin  │
   │ Settings  │  │  ████▓▓░░           │  │               │
   │ Help      │  └─────────────────────┘  │  ┌─────────┐  │
   │           │                           │  │ Actions │  │
@@ -39,10 +39,10 @@ A phone-sized screen with header, content area, and bottom navigation bar.
 
 
   ┌──────────────────┐
-  │   My        ≡    │
+  │   My App    ≡    │
   ├──────────────────┤
   │                  │
-  │  Welcome         │
+  │  Welcome back!   │
   │                  │
   │  ┌────────────┐  │
   │  │  Profile   │  │
@@ -80,7 +80,7 @@ A form wireframe. Double-click the text labels inside frames to edit them inline
 
 
   ┌──────────────────────────┐
-  │      Create              │
+  │      Create Account      │
   ├──────────────────────────┤
   │                          │
   │  Name:  ┌─────────────┐  │

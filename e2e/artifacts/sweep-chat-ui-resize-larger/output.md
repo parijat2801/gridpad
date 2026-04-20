@@ -1,11 +1,11 @@
 # Messaging
 
 ┌───────────┬──────────────────────────────────────────┬──────────────┐
-│ Contacts  │  Chat:                                   │  Details     │
+│ Contacts  │  Chat: Alice                             │  Details     │
 │           │                                          │              │
-│ ┌───────┐ │  ┌────────────────────────────────────┐  │  Name:       │
-│ │ Alice │ │  │  Hey! How's the project going?     │  │  Role:       │
-│ └───────┘ │  │                           10:23 AM │  │  Status:     │
+│ ┌───────┐ │  ┌────────────────────────────────────┐  │  Name: Alice │
+│ │ Alice │ │  │  Hey! How's the project going?     │  │  Role: Dev   │
+│ └───────┘ │  │                           10:23 AM │  │  Status: On  │
 │ ┌───────┐ │  └────────────────────────────────────┘  │              │
 │ │ Bob   │ │  ┌────────────────────────────────────┐  │  ┌────────┐ ││
 │ └───────┘ │  │  Great! Just pushed the fix.       │  │  │ Call   │ ││

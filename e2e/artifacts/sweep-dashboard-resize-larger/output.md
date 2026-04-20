@@ -1,12 +1,12 @@
 ## Dashboard
 
 ┌───────────────────────────────────────────────────────┐
-│                      My                               │
+│                      My App                           │
 ├───────────┬───────────────────────────┬───────────────┤
-│ Nav       │  Main                     │  Details      │
+│ Nav       │  Main Content             │  Details      │
 │           │                           │               │
-│ Home      │  ┌─────────────────────┐  │  User:        │
-│ Search    │  │  Revenue Chart      │  │  Role:        │
+│ Home      │  ┌─────────────────────┐  │  User: Alice  │
+│ Search    │  │  Revenue Chart      │  │  Role: Admin  │
 │ Settings  │  └─────────────────────┘  │               │
 │ Help      │                           │  ┌─────────┐  │
 │           │  ┌──────────┐ ┌────────┐  │  │ Actions │  │

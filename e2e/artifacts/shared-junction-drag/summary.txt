@@ -5,8 +5,8 @@ Markdown match: false
 Visual diff: 0.00%
 Ghosts: 0
 Render failures: 2
-  Frame at (106,67) 58x13: no visible pixels (0.0% lit)
-  Frame at (222,67) 58x13: no visible pixels (0.0% lit)
+  Frame at (106,67) 77x13: no visible pixels (0.0% lit)
+  Frame at (222,67) 77x13: no visible pixels (0.0% lit)
 Prose issues: 0
 Prose-frame overlaps: 0
 Frame tree diffs: 0
@@ -24,7 +24,7 @@ Markdown diff:
     + "        ├───────────┼───────────┤"
   L6:
     - "│  Bottom L │  Bottom R │"
-    + "        │  Bottom   │  Bottom   │"
+    + "        │  Bottom L │  Bottom R │"
   L7:
     - "└───────────┴───────────┘"
     + "        └───────────┴───────────┘"

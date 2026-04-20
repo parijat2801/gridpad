@@ -200,6 +200,22 @@ export function gridSerialize(
   // Phase B.5 — repair junction characters where frame borders meet
   repairJunctions(grid);
 
+  // Phase B.6 — blank wire chars that Phase B didn't explicitly write.
+  // After the two-pass (blank all bboxes + write all cells), any remaining
+  // wire char NOT in cellsToWrite is an orphan: either from originalGrid
+  // (misaligned ASCII art) or from child overflow past container boundary.
+  if (frames.some(f => f.dirty)) {
+    const WIRE = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"]);
+    for (let r = 0; r < grid.length; r++) {
+      for (let c = 0; c < grid[r].length; c++) {
+        if (!WIRE.has(grid[r][c])) continue;
+        if (!cellsToWrite.has(`${r},${c}`)) {
+          grid[r][c] = " ";
+        }
+      }
+    }
+  }
+
   // Phase C — write prose.
   // If any frame moved (dirty), reflow prose into rows not occupied by frames.
   // If no frame moved, use original proseSegmentMap positions (preserves round-trip).

@@ -139,26 +139,30 @@ export function findGhosts(
   return ghosts;
 }
 
-/** Compute frame grid bboxes from the full frame tree (all levels) for ghost detection.
- * Uses Math.round((absY + h) / ch) for bottom edge (not row + gridH) to match
- * the serializer's bbox calculation and avoid 1-cell rounding mismatches. */
+/** Compute frame grid bboxes from the full frame tree for ghost detection.
+ * Uses grid coords directly (no Math.round) to match the serializer exactly. */
 export function computeFrameGridBboxes(
-  tree: Array<{ absX: number; absY: number; w: number; h: number; children?: any[] }>,
+  tree: Array<{ gridRow?: number; gridCol?: number; gridW?: number; gridH?: number; absX: number; absY: number; w: number; h: number; children?: any[] }>,
   cw: number, ch: number,
 ): Array<{ row: number; col: number; w: number; h: number }> {
   const bboxes: Array<{ row: number; col: number; w: number; h: number }> = [];
   const collect = (nodes: any[]) => {
     for (const n of nodes) {
-      const r1 = Math.round(n.absY / ch);
-      const c1 = Math.round(n.absX / cw);
-      const r2 = Math.round((n.absY + n.h) / ch);
-      const c2 = Math.round((n.absX + n.w) / cw);
-      bboxes.push({
-        row: r1,
-        col: c1,
-        w: Math.max(1, c2 - c1),
-        h: Math.max(1, r2 - r1),
-      });
+      // Use grid coords when available (grid-first frames), fall back to pixel conversion
+      if (n.gridRow != null && n.gridW != null && n.gridW > 0) {
+        bboxes.push({
+          row: n.gridRow,
+          col: n.gridCol,
+          w: n.gridW,
+          h: Math.max(1, n.gridH),
+        });
+      } else {
+        const r1 = Math.round(n.absY / ch);
+        const c1 = Math.round(n.absX / cw);
+        const r2 = Math.round((n.absY + n.h) / ch);
+        const c2 = Math.round((n.absX + n.w) / cw);
+        bboxes.push({ row: r1, col: c1, w: Math.max(1, c2 - c1), h: Math.max(1, r2 - r1) });
+      }
       if (n.children) collect(n.children);
     }
   };
