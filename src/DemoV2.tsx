@@ -625,7 +625,8 @@ export default function DemoV2() {
     drawPreviewRef.current = null;
     if (tool === "rect" && x2 - x1 >= cw && y2 - y1 >= ch) {
       const f = createRectFrame({ gridW: Math.max(2, Math.round((x2 - x1) / cw)), gridH: Math.max(2, Math.round((y2 - y1) / ch)), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
-      stateRef.current = applyAddFrame(stateRef.current, { ...f, x: x1, y: y1 });
+      const gridR = Math.round(y1 / ch), gridC = Math.round(x1 / cw);
+      stateRef.current = applyAddFrame(stateRef.current, { ...f, x: gridC * cw, y: gridR * ch, gridRow: gridR, gridCol: gridC });
       framesRef.current = getFrames(stateRef.current); scheduleAutosave();
     } else if (tool === "line") {
       const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
@@ -688,18 +689,22 @@ export default function DemoV2() {
         },
         /** Get full frame tree with all children, positions, and content */
         getFrameTree: () => {
-          const collect = (fs: Frame[], offX: number, offY: number): unknown[] =>
+          const collect = (fs: Frame[], offX: number, offY: number, offRow: number, offCol: number): unknown[] =>
             fs.map(f => ({
               id: f.id,
               absX: offX + f.x, absY: offY + f.y,
               w: f.w, h: f.h,
+              gridRow: offRow + f.gridRow,
+              gridCol: offCol + f.gridCol,
+              gridW: f.gridW,
+              gridH: f.gridH,
               contentType: f.content?.type ?? "container",
               text: f.content?.text ?? null,
               dirty: f.dirty,
               childCount: f.children.length,
-              children: collect(f.children, offX + f.x, offY + f.y),
+              children: collect(f.children, offX + f.x, offY + f.y, offRow + f.gridRow, offCol + f.gridCol),
             }));
-          return collect(framesRef.current, 0, 0);
+          return collect(framesRef.current, 0, 0, 0, 0);
         },
         /** Get current prose text from CM doc */
         getProseDoc: () => getDoc(stateRef.current),
