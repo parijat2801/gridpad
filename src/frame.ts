@@ -218,8 +218,19 @@ export function hitTestFrames(frames: Frame[], px: number, py: number): Frame | 
 
 // ── moveFrame ──────────────────────────────────────────────
 
-export function moveFrame(frame: Frame, delta: { dx: number; dy: number }): Frame {
-  return { ...frame, x: frame.x + delta.dx, y: frame.y + delta.dy };
+export function moveFrame(
+  frame: Frame,
+  delta: { dCol: number; dRow: number; charWidth: number; charHeight: number },
+): Frame {
+  const gridRow = frame.gridRow + delta.dRow;
+  const gridCol = frame.gridCol + delta.dCol;
+  return {
+    ...frame,
+    gridRow,
+    gridCol,
+    x: gridCol * delta.charWidth,
+    y: gridRow * delta.charHeight,
+  };
 }
 
 /** Snap a pixel value to the nearest grid boundary. */
@@ -231,15 +242,12 @@ export function snapToGrid(px: number, cellSize: number): number {
 
 export function resizeFrame(
   frame: Frame,
-  size: { w: number; h: number },
+  size: { gridW: number; gridH: number },
   charWidth: number,
   charHeight: number,
 ): Frame {
-  const minW = 2 * charWidth;
-  const minH = 2 * charHeight;
-  // Snap dimensions to grid boundaries so Math.round(w/cw) is always exact
-  const gridW = Math.max(2, Math.round(Math.max(minW, size.w) / charWidth));
-  const gridH = Math.max(2, Math.round(Math.max(minH, size.h) / charHeight));
+  const gridW = Math.max(2, size.gridW);
+  const gridH = Math.max(2, size.gridH);
   const w = gridW * charWidth;
   const h = gridH * charHeight;
 
@@ -250,7 +258,7 @@ export function resizeFrame(
     content = { ...content, cells };
   }
 
-  const resized = { ...frame, w, h, content };
+  const resized = { ...frame, w, h, gridW, gridH, content };
   if (content?.type === "rect" && frame.children.length > 0) {
     return layoutTextChildren(resized, charWidth, charHeight);
   }

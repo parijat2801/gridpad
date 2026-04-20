@@ -1,6 +1,6 @@
 // src/frame.test.ts
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { framesFromScan, createFrame, createRectFrame, createTextFrame, createLineFrame, type Frame } from "./frame";
+import { framesFromScan, createFrame, createRectFrame, createTextFrame, createLineFrame, moveFrame, resizeFrame, type Frame } from "./frame";
 import { scan } from "./scanner";
 import { scanToFrames } from "./scanToFrames";
 
@@ -176,5 +176,24 @@ describe("grid-first frames", () => {
     expect(container!.gridH).toBeGreaterThan(0);
     expect(container!.gridRow).toBeGreaterThanOrEqual(0);
     expect(container!.gridCol).toBeGreaterThanOrEqual(0);
+  });
+
+  it("moveFrame updates grid coords by cell delta", () => {
+    const f = createRectFrame({ gridW: 8, gridH: 4, style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: CW, charHeight: CH });
+    const placed = { ...f, gridRow: 5, gridCol: 3, x: 3 * CW, y: 5 * CH };
+    const moved = moveFrame(placed, { dCol: 2, dRow: 1, charWidth: CW, charHeight: CH });
+    expect(moved.gridRow).toBe(6);
+    expect(moved.gridCol).toBe(5);
+    expect(moved.x).toBeCloseTo(5 * CW);
+    expect(moved.y).toBeCloseTo(6 * CH);
+  });
+
+  it("resizeFrame updates grid dimensions", () => {
+    const f = createRectFrame({ gridW: 8, gridH: 4, style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: CW, charHeight: CH });
+    const resized = resizeFrame(f, { gridW: 10, gridH: 6 }, CW, CH);
+    expect(resized.gridW).toBe(10);
+    expect(resized.gridH).toBe(6);
+    expect(resized.w).toBeCloseTo(10 * CW);
+    expect(resized.h).toBeCloseTo(6 * CH);
   });
 });

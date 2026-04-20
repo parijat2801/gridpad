@@ -563,7 +563,9 @@ export default function DemoV2() {
       else if (h === "tm") { newH = sh - dy; newDy = dy; }
       else if (h === "mr") { newW = sw + dx; }
       else if (h === "ml") { newW = sw - dx; newDx = dx; }
-      const resized = resizeFrame(found.frame, { w: newW, h: newH }, cw, ch);
+      const newGridW = Math.max(2, Math.round(newW / cw));
+      const newGridH = Math.max(2, Math.round(newH / ch));
+      const resized = resizeFrame(found.frame, { gridW: newGridW, gridH: newGridH }, cw, ch);
       const anchorX = drag.startFrameX + (newDx !== 0 ? drag.startFrameW : 0);
       const anchorY = drag.startFrameY + (newDy !== 0 ? drag.startFrameH : 0);
       const newAbsX = newDx !== 0 ? anchorX - resized.w : drag.startFrameX;
@@ -571,9 +573,11 @@ export default function DemoV2() {
       const parentOffX = found.absX - found.frame.x, parentOffY = found.absY - found.frame.y;
       const moveDx = newAbsX - parentOffX - found.frame.x;
       const moveDy = newAbsY - parentOffY - found.frame.y;
+      const moveGridDCol = Math.round(moveDx / cw);
+      const moveGridDRow = Math.round(moveDy / ch);
       const effects = [
-        resizeFrameEffect.of({ id: drag.frameId, w: newW, h: newH, charWidth: cw, charHeight: ch }),
-        moveFrameEffect.of({ id: drag.frameId, dx: moveDx, dy: moveDy }),
+        resizeFrameEffect.of({ id: drag.frameId, gridW: newGridW, gridH: newGridH, charWidth: cw, charHeight: ch }),
+        moveFrameEffect.of({ id: drag.frameId, dCol: moveGridDCol, dRow: moveGridDRow, charWidth: cw, charHeight: ch }),
       ];
       stateRef.current = stateRef.current.update({
         effects,
@@ -583,14 +587,15 @@ export default function DemoV2() {
     } else {
       // Compute target position from drag start + mouse delta, snapped to grid
       const cw = cwRef.current, ch = chRef.current;
-      const targetX = Math.round(Math.max(0, drag.startFrameX + dx) / cw) * cw;
-      const targetY = Math.round(Math.max(0, drag.startFrameY + dy) / ch) * ch;
-      // Delta from current frame position to target
-      const frameDx = targetX - found.absX;
-      const frameDy = targetY - found.absY;
-      if (frameDx !== 0 || frameDy !== 0) {
+      const targetCol = Math.round(Math.max(0, drag.startFrameX + dx) / cw);
+      const targetRow = Math.round(Math.max(0, drag.startFrameY + dy) / ch);
+      const currentCol = Math.round(found.absX / cw);
+      const currentRow = Math.round(found.absY / ch);
+      const dCol = targetCol - currentCol;
+      const dRow = targetRow - currentRow;
+      if (dCol !== 0 || dRow !== 0) {
         stateRef.current = stateRef.current.update({
-          effects: moveFrameEffect.of({ id: drag.frameId, dx: frameDx, dy: frameDy }),
+          effects: moveFrameEffect.of({ id: drag.frameId, dCol, dRow, charWidth: cw, charHeight: ch }),
           annotations: [Transaction.addToHistory.of(isFirstDragStep)],
         }).state;
         framesRef.current = getFrames(stateRef.current);
@@ -1005,10 +1010,11 @@ export default function DemoV2() {
             const segMap = getProseSegmentMap(stateRef.current);
             const mergeGridRow = segMap[beforeCursor.row]?.row ?? beforeCursor.row;
             const ch = chRef.current;
+            const cw = cwRef.current;
             for (const f of framesRef.current) {
               if (f.y >= mergeGridRow * ch) {
                 stateRef.current = stateRef.current.update({
-                  effects: moveFrameEffect.of({ id: f.id, dx: 0, dy: -ch }),
+                  effects: moveFrameEffect.of({ id: f.id, dCol: 0, dRow: -1, charWidth: cw, charHeight: ch }),
                 }).state;
               }
             }
@@ -1033,10 +1039,11 @@ export default function DemoV2() {
           const segMap = getProseSegmentMap(stateRef.current);
           const editGridRow = segMap[beforeRow]?.row ?? beforeRow;
           const ch = chRef.current;
+          const cw = cwRef.current;
           for (const f of framesRef.current) {
             if (f.y >= editGridRow * ch) {
               stateRef.current = stateRef.current.update({
-                effects: moveFrameEffect.of({ id: f.id, dx: 0, dy: ch }),
+                effects: moveFrameEffect.of({ id: f.id, dCol: 0, dRow: 1, charWidth: cw, charHeight: ch }),
               }).state;
             }
           }

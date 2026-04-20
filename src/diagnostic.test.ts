@@ -228,7 +228,7 @@ describe("diagnostic: ghosts from shared walls", () => {
 
     // Try dragging the top-level frame (container) right by 2 cells
     const topFrame = frames[0];
-    const mutatedState = applyMoveFrame(loaded.state, topFrame.id, CW * 2, 0);
+    const mutatedState = applyMoveFrame(loaded.state, topFrame.id, 2, 0, CW, CH);
     const save = fullSave(mutatedState, loaded.originalGrid, loaded.frameBboxSnapshot);
 
     console.log("=== SAVED AFTER DRAG RIGHT 2 CELLS ===");
@@ -256,7 +256,7 @@ describe("diagnostic: ghosts from shared walls", () => {
   it("junction: drag container down by 2 rows", () => {
     const result = convergenceCheck(JUNCTION, (loaded) => {
       const frames = getFrames(loaded.state);
-      return applyMoveFrame(loaded.state, frames[0].id, 0, CH * 2);
+      return applyMoveFrame(loaded.state, frames[0].id, 0, 2, CW, CH);
     });
 
     console.log("=== JUNCTION DRAG DOWN ===");
@@ -322,9 +322,7 @@ describe("diagnostic: frame count after resize", () => {
 
     // Resize the top-level frame smaller (shrink by 3 cells width, 2 cells height)
     const topFrame = frames[0];
-    const newW = topFrame.w - CW * 3;
-    const newH = topFrame.h - CH * 2;
-    const mutatedState = applyResizeFrame(loaded.state, topFrame.id, newW, newH, CW, CH);
+    const mutatedState = applyResizeFrame(loaded.state, topFrame.id, topFrame.gridW - 3, topFrame.gridH - 2, CW, CH);
 
     const save = fullSave(mutatedState, loaded.originalGrid, loaded.frameBboxSnapshot);
 
@@ -404,7 +402,7 @@ describe("diagnostic: frame count after resize", () => {
     const topFrame = frames[0];
     const mutatedState = applyResizeFrame(
       loaded.state, topFrame.id,
-      topFrame.w + CW * 3, topFrame.h + CH * 1,
+      topFrame.gridW + 3, topFrame.gridH + 1,
       CW, CH,
     );
 
@@ -447,7 +445,7 @@ describe("diagnostic: frame count after resize", () => {
   it("junction: drag right, check frame count", () => {
     const result = convergenceCheck(JUNCTION, (loaded) => {
       const frames = getFrames(loaded.state);
-      return applyMoveFrame(loaded.state, frames[0].id, CW * 5, 0);
+      return applyMoveFrame(loaded.state, frames[0].id, 5, 0, CW, CH);
     });
 
     console.log("=== JUNCTION DRAG RIGHT ===");
@@ -567,7 +565,7 @@ describe("diagnostic: prose editing serialization", () => {
     let shifted = s;
     for (const f of getFrames(s)) {
       if (f.y >= editGridRow * CH) {
-        shifted = applyMoveFrame(shifted, f.id, 0, CH);
+        shifted = applyMoveFrame(shifted, f.id, 0, 1, CW, CH);
       }
     }
 
@@ -628,7 +626,7 @@ describe("diagnostic: complex fixture ghosts", () => {
 
     // Drag right by 3 cells
     const topFrame = frames[0];
-    const mutated = applyMoveFrame(loaded.state, topFrame.id, CW * 3, 0);
+    const mutated = applyMoveFrame(loaded.state, topFrame.id, 3, 0, CW, CH);
     const save = fullSave(mutated, loaded.originalGrid, loaded.frameBboxSnapshot);
 
     console.log("=== SAVED AFTER DRAG RIGHT 3 CELLS ===");
@@ -654,7 +652,7 @@ describe("diagnostic: complex fixture ghosts", () => {
   it("CRM-simple: drag down by 2 rows", () => {
     const result = convergenceCheck(CRM_SIMPLE, (loaded) => {
       const frames = getFrames(loaded.state);
-      return applyMoveFrame(loaded.state, frames[0].id, 0, CH * 2);
+      return applyMoveFrame(loaded.state, frames[0].id, 0, 2, CW, CH);
     });
 
     console.log("=== CRM DRAG DOWN ===");
@@ -723,7 +721,7 @@ describe("diagnostic: default text dashboard drag", () => {
     const result = convergenceCheck(DASHBOARD, (loaded) => {
       const frames = getFrames(loaded.state);
       // Find the dashboard container (should be the first/only top-level frame)
-      return applyMoveFrame(loaded.state, frames[0].id, CW * 5, 0);
+      return applyMoveFrame(loaded.state, frames[0].id, 5, 0, CW, CH);
     });
 
     console.log("=== DASHBOARD DRAG RIGHT 5 ===");
@@ -786,8 +784,8 @@ describe.skip("diagnostic: fractional pixel moves", () => {
 
     const result = convergenceCheck(DASHBOARD, (ld) => {
       const frames = getFrames(ld.state);
-      // 50px ÷ 9.6 = 5.208 cells — fractional!
-      return applyMoveFrame(ld.state, frames[0].id, 50, 0);
+      // 50px ÷ 9.6 = 5.208 cells — rounds to 5
+      return applyMoveFrame(ld.state, frames[0].id, Math.round(50 / CW), 0, CW, CH);
     });
 
     console.log("=== DASHBOARD DRAG 50px RIGHT (fractional) ===");
@@ -807,8 +805,8 @@ describe.skip("diagnostic: fractional pixel moves", () => {
   it("dashboard: drag 80px down (fractional cells)", () => {
     const result = convergenceCheck(DASHBOARD, (loaded) => {
       const frames = getFrames(loaded.state);
-      // 80px ÷ 18.4 = 4.35 rows — fractional!
-      return applyMoveFrame(loaded.state, frames[0].id, 0, 80);
+      // 80px ÷ 18.4 = 4.35 rows — rounds to 4
+      return applyMoveFrame(loaded.state, frames[0].id, 0, Math.round(80 / CH), CW, CH);
     });
 
     console.log("=== DASHBOARD DRAG 80px DOWN (fractional) ===");
@@ -824,8 +822,8 @@ describe.skip("diagnostic: fractional pixel moves", () => {
     const frames = getFrames(loaded.state);
     const topFrame = frames[0];
 
-    // e2e resizeSelected(p, 40, 20) resizes by pixel amounts
-    const mutated = applyResizeFrame(loaded.state, topFrame.id, topFrame.w + 40, topFrame.h + 20, CW, CH);
+    // e2e resizeSelected(p, 40, 20) resizes by pixel amounts → convert to grid units
+    const mutated = applyResizeFrame(loaded.state, topFrame.id, Math.round((topFrame.w + 40) / CW), Math.round((topFrame.h + 20) / CH), CW, CH);
     const save1 = fullSave(mutated, loaded.originalGrid, loaded.frameBboxSnapshot);
 
     console.log("=== DASHBOARD RESIZE +40,+20 ===");
@@ -848,7 +846,7 @@ describe.skip("diagnostic: fractional pixel moves", () => {
     const frames = getFrames(loaded.state);
     const topFrame = frames[0];
 
-    const mutated = applyResizeFrame(loaded.state, topFrame.id, topFrame.w - 30, topFrame.h - 20, CW, CH);
+    const mutated = applyResizeFrame(loaded.state, topFrame.id, Math.round((topFrame.w - 30) / CW), Math.round((topFrame.h - 20) / CH), CW, CH);
     const save1 = fullSave(mutated, loaded.originalGrid, loaded.frameBboxSnapshot);
 
     console.log("=== DASHBOARD RESIZE -30,-20 ===");
@@ -930,7 +928,7 @@ describe("diagnostic: snapshot coverage", () => {
     const topFrame = frames[0];
 
     // Move the container
-    const moved = applyMoveFrame(state, topFrame.id, CW * 2, 0);
+    const moved = applyMoveFrame(state, topFrame.id, 2, 0, CW, CH);
     const movedFrames = getFrames(moved);
 
     console.log("=== DIRTY FLAGS AFTER MOVE ===");
@@ -1008,7 +1006,7 @@ describe("TDD: fix serialize ghosts", () => {
 
       const result = convergenceCheck(DASHBOARD, (loaded) => {
         const frames = getFrames(loaded.state);
-        return applyMoveFrame(loaded.state, frames[0].id, 50, 0); // fractional
+        return applyMoveFrame(loaded.state, frames[0].id, Math.round(50 / CW), 0, CW, CH); // fractional → rounds to 5
       });
       expect(result.ghosts1).toEqual([]);
     });
@@ -1036,7 +1034,7 @@ describe("TDD: fix serialize ghosts", () => {
 
       const result = convergenceCheck(DASHBOARD, (loaded) => {
         const frames = getFrames(loaded.state);
-        return applyMoveFrame(loaded.state, frames[0].id, 0, 80); // fractional
+        return applyMoveFrame(loaded.state, frames[0].id, 0, Math.round(80 / CH), CW, CH); // fractional → rounds to 4
       });
       expect(result.ghosts1).toEqual([]);
     });
@@ -1061,7 +1059,7 @@ describe("TDD: fix serialize ghosts", () => {
       const topFrame = frames[0];
       const mutated = applyResizeFrame(
         loaded.state, topFrame.id,
-        topFrame.w + CW * 3, topFrame.h + CH * 1,
+        topFrame.gridW + 3, topFrame.gridH + 1,
         CW, CH,
       );
       const save = fullSave(mutated, loaded.originalGrid, loaded.frameBboxSnapshot);
@@ -1087,7 +1085,7 @@ describe("TDD: fix serialize ghosts", () => {
       const topFrame = frames[0];
       const mutated = applyResizeFrame(
         loaded.state, topFrame.id,
-        topFrame.w + CW * 3, topFrame.h + CH * 1,
+        topFrame.gridW + 3, topFrame.gridH + 1,
         CW, CH,
       );
       const save = fullSave(mutated, loaded.originalGrid, loaded.frameBboxSnapshot);
@@ -1117,7 +1115,7 @@ describe("TDD: fix serialize ghosts", () => {
       const topFrame = frames[0];
       const mutated = applyResizeFrame(
         loaded.state, topFrame.id,
-        topFrame.w - CW * 3, topFrame.h - CH * 2,
+        topFrame.gridW - 3, topFrame.gridH - 2,
         CW, CH,
       );
       // Save → reload → save → reload → save. Must converge within 2 cycles.
@@ -1138,7 +1136,7 @@ describe("TDD: fix serialize ghosts", () => {
       const topFrame = frames[0];
       const mutated = applyResizeFrame(
         loaded.state, topFrame.id,
-        topFrame.w - CW * 3, topFrame.h - CH * 2,
+        topFrame.gridW - 3, topFrame.gridH - 2,
         CW, CH,
       );
       const save = fullSave(mutated, loaded.originalGrid, loaded.frameBboxSnapshot);

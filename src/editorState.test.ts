@@ -227,10 +227,13 @@ describe("moveCursorTo", () => {
 // ── Task 3: Frame operations ─────────────────────────────────────────────────
 
 describe("applyMoveFrame", () => {
+  const CW = 5, CH = 10;
+
   it("moves a frame by delta", () => {
-    const frame = createFrame({ x: 10, y: 20, w: 100, h: 50 });
+    // gridCol=2, gridRow=2 → x=10, y=20; move dCol=1, dRow=1 → x=15, y=30
+    const frame = { ...createFrame({ x: 10, y: 20, w: 100, h: 50 }), gridCol: 2, gridRow: 2 };
     const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
-    const s1 = applyMoveFrame(s0, frame.id, 5, 10);
+    const s1 = applyMoveFrame(s0, frame.id, 1, 1, CW, CH);
     const frames = getFrames(s1);
     expect(frames[0].x).toBe(15);
     expect(frames[0].y).toBe(30);
@@ -238,9 +241,10 @@ describe("applyMoveFrame", () => {
 
   it("does not affect other frames", () => {
     const f1 = createFrame({ x: 0, y: 0, w: 50, h: 50 });
+    // gridCol=0 → after move dCol=1: x=5
     const f2 = createFrame({ x: 100, y: 100, w: 50, h: 50 });
     const s0 = createEditorState({ prose: "", frames: [f1, f2], proseSegmentMap: [] });
-    const s1 = applyMoveFrame(s0, f1.id, 5, 5);
+    const s1 = applyMoveFrame(s0, f1.id, 1, 1, CW, CH);
     const frames = getFrames(s1);
     const moved = frames.find((f) => f.id === f1.id)!;
     const unchanged = frames.find((f) => f.id === f2.id)!;
@@ -249,9 +253,10 @@ describe("applyMoveFrame", () => {
   });
 
   it("negative delta moves frame left/up", () => {
-    const frame = createFrame({ x: 50, y: 50, w: 100, h: 50 });
+    // gridCol=10, gridRow=5 → x=50, y=50; move dCol=-2, dRow=-2 → x=40, y=30
+    const frame = { ...createFrame({ x: 50, y: 50, w: 100, h: 50 }), gridCol: 10, gridRow: 5 };
     const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
-    const s1 = applyMoveFrame(s0, frame.id, -10, -20);
+    const s1 = applyMoveFrame(s0, frame.id, -2, -2, CW, CH);
     const frames = getFrames(s1);
     expect(frames[0].x).toBe(40);
     expect(frames[0].y).toBe(30);
@@ -262,7 +267,8 @@ describe("applyResizeFrame", () => {
   it("resizes a frame to new dimensions", () => {
     const frame = createFrame({ x: 0, y: 0, w: 100, h: 50 });
     const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
-    const s1 = applyResizeFrame(s0, frame.id, 200, 100, 10, 20);
+    // gridW=20, gridH=5, charWidth=10, charHeight=20 → w=200, h=100
+    const s1 = applyResizeFrame(s0, frame.id, 20, 5, 10, 20);
     const frames = getFrames(s1);
     expect(frames[0].w).toBe(200);
     expect(frames[0].h).toBe(100);
@@ -271,7 +277,7 @@ describe("applyResizeFrame", () => {
   it("enforces minimum size", () => {
     const frame = createFrame({ x: 0, y: 0, w: 100, h: 50 });
     const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
-    // charWidth=10, charHeight=20 → minW=20, minH=40
+    // gridW=1, gridH=1 → clamped to min 2, charWidth=10, charHeight=20 → minW=20, minH=40
     const s1 = applyResizeFrame(s0, frame.id, 1, 1, 10, 20);
     const frames = getFrames(s1);
     expect(frames[0].w).toBeGreaterThanOrEqual(20);
@@ -441,25 +447,27 @@ describe("delete clears selection and textEdit (Phase 1)", () => {
 
 describe("drag undo — history=false then history=true (Phase 1)", () => {
   it("move: first step with history=true captures pre-drag state for undo", () => {
-    const frame = createFrame({ x: 10, y: 20, w: 100, h: 50 });
+    // gridCol=2, gridRow=2 with charWidth=5, charHeight=10 → x=10, y=20
+    const frame = { ...createFrame({ x: 10, y: 20, w: 100, h: 50 }), gridCol: 2, gridRow: 2 };
     let state = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
+    const CW = 5, CH = 10;
 
     // First drag step — history=true (captures pre-drag snapshot)
     state = state.update({
-      effects: moveFrameEffect.of({ id: frame.id, dx: 5, dy: 5 }),
+      effects: moveFrameEffect.of({ id: frame.id, dCol: 1, dRow: 1, charWidth: CW, charHeight: CH }),
       annotations: Transaction.addToHistory.of(true),
     }).state;
     expect(getFrames(state)[0].x).toBe(15);
 
     // Subsequent drag steps — history=false
     state = state.update({
-      effects: moveFrameEffect.of({ id: frame.id, dx: 10, dy: 10 }),
+      effects: moveFrameEffect.of({ id: frame.id, dCol: 2, dRow: 2, charWidth: CW, charHeight: CH }),
       annotations: Transaction.addToHistory.of(false),
     }).state;
     expect(getFrames(state)[0].x).toBe(25);
 
     state = state.update({
-      effects: moveFrameEffect.of({ id: frame.id, dx: 5, dy: 5 }),
+      effects: moveFrameEffect.of({ id: frame.id, dCol: 1, dRow: 1, charWidth: CW, charHeight: CH }),
       annotations: Transaction.addToHistory.of(false),
     }).state;
     expect(getFrames(state)[0].x).toBe(30);
@@ -474,15 +482,15 @@ describe("drag undo — history=false then history=true (Phase 1)", () => {
     const frame = createFrame({ x: 0, y: 0, w: 100, h: 100 });
     let state = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
 
-    // First resize step — history=true
+    // First resize step — history=true; gridW=12, gridH=6 → w=120, h=120 with cw=10,ch=20
     state = state.update({
-      effects: resizeFrameEffect.of({ id: frame.id, w: 120, h: 120, charWidth: 10, charHeight: 20 }),
+      effects: resizeFrameEffect.of({ id: frame.id, gridW: 12, gridH: 6, charWidth: 10, charHeight: 20 }),
       annotations: Transaction.addToHistory.of(true),
     }).state;
 
-    // Subsequent resize steps — history=false
+    // Subsequent resize steps — history=false; gridW=15, gridH=7 → w=150, h=140
     state = state.update({
-      effects: resizeFrameEffect.of({ id: frame.id, w: 150, h: 150, charWidth: 10, charHeight: 20 }),
+      effects: resizeFrameEffect.of({ id: frame.id, gridW: 15, gridH: 7, charWidth: 10, charHeight: 20 }),
       annotations: Transaction.addToHistory.of(false),
     }).state;
 
@@ -541,9 +549,10 @@ describe("undo/redo frame operations", () => {
   // (not yet wired up). These tests document the current observable behavior.
 
   it("applyMoveFrame: frame is updated immediately", () => {
-    const frame = createFrame({ x: 10, y: 20, w: 100, h: 50 });
+    // gridCol=2, gridRow=2 with cw=5, ch=10 → x=10, y=20; move dCol=1, dRow=1 → x=15, y=30
+    const frame = { ...createFrame({ x: 10, y: 20, w: 100, h: 50 }), gridCol: 2, gridRow: 2 };
     const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
-    const s1 = applyMoveFrame(s0, frame.id, 5, 10);
+    const s1 = applyMoveFrame(s0, frame.id, 1, 1, 5, 10);
     expect(getFrames(s1)[0].x).toBe(15);
     expect(getFrames(s1)[0].y).toBe(30);
   });
@@ -563,16 +572,17 @@ describe("undo/redo frame operations", () => {
   });
 
   it("frame move is recorded in undo stack via invertedEffects", () => {
-    const frame = createFrame({ x: 10, y: 20, w: 100, h: 50 });
+    const frame = { ...createFrame({ x: 10, y: 20, w: 100, h: 50 }), gridCol: 2, gridRow: 2 };
     const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
-    const s1 = applyMoveFrame(s0, frame.id, 5, 10);
+    const s1 = applyMoveFrame(s0, frame.id, 1, 1, 5, 10);
     expect(undoDepth(s1)).toBeGreaterThan(0);
   });
 
   it("editorUndo reverts frame move", () => {
-    const frame = createFrame({ x: 10, y: 20, w: 100, h: 50 });
+    // gridCol=2, gridRow=2 with cw=5, ch=10 → x=10, y=20; move dCol=1, dRow=1 → x=15
+    const frame = { ...createFrame({ x: 10, y: 20, w: 100, h: 50 }), gridCol: 2, gridRow: 2 };
     const s0 = createEditorState({ prose: "", frames: [frame], proseSegmentMap: [] });
-    const s1 = applyMoveFrame(s0, frame.id, 5, 10);
+    const s1 = applyMoveFrame(s0, frame.id, 1, 1, 5, 10);
     expect(getFrames(s1)[0].x).toBe(15);
     const s2 = editorUndo(s1);
     expect(getFrames(s2)[0].x).toBe(10);
@@ -588,8 +598,8 @@ describe("interleaved undo — type then move frame", () => {
     const s1 = proseInsert(s0, { row: 0, col: 5 }, "!");
     expect(getDoc(s1)).toBe("hello!");
 
-    // Step 2: move frame
-    const s2 = applyMoveFrame(s1, frame.id, 10, 0);
+    // Step 2: move frame by dCol=2, dRow=0 with cw=5, ch=10 → x=10
+    const s2 = applyMoveFrame(s1, frame.id, 2, 0, 5, 10);
     expect(getFrames(s2)[0].x).toBe(10);
 
     // Step 3: undo → most recent was frame move → frame reverts
@@ -999,14 +1009,15 @@ describe("dirty flag on Frame (Phase 2)", () => {
   it("moveFrameEffect sets dirty = true on moved frame", () => {
     const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
     const s0 = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
-    const s1 = applyMoveFrame(s0, f.id, 10, 10);
+    const s1 = applyMoveFrame(s0, f.id, 1, 1, 10, 10);
     expect((getFrames(s1)[0]).dirty).toBe(true);
   });
 
   it("resizeFrameEffect sets dirty = true on resized frame", () => {
     const f = createFrame({ x: 0, y: 0, w: 100, h: 100 });
     const s0 = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
-    const s1 = applyResizeFrame(s0, f.id, 200, 200, 10, 20);
+    // gridW=10, gridH=10 with cw=10, ch=20 → w=100, h=200
+    const s1 = applyResizeFrame(s0, f.id, 10, 10, 10, 20);
     expect((getFrames(s1)[0]).dirty).toBe(true);
   });
 
@@ -1017,7 +1028,7 @@ describe("dirty flag on Frame (Phase 2)", () => {
       children: [child],
     };
     const s0 = createEditorState({ prose: "", frames: [container], proseSegmentMap: [] });
-    const s1 = applyMoveFrame(s0, child.id, 5, 5);
+    const s1 = applyMoveFrame(s0, child.id, 1, 1, 5, 5);
     const frames = getFrames(s1);
     expect((frames[0]).dirty).toBe(true);
     expect((frames[0].children[0]).dirty).toBe(true);
@@ -1027,7 +1038,7 @@ describe("dirty flag on Frame (Phase 2)", () => {
     const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
     const s0 = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     expect((getFrames(s0)[0]).dirty).toBe(false);
-    const s1 = applyMoveFrame(s0, f.id, 10, 10);
+    const s1 = applyMoveFrame(s0, f.id, 1, 1, 10, 10);
     expect((getFrames(s1)[0]).dirty).toBe(true);
     const s2 = editorUndo(s1);
     expect((getFrames(s2)[0]).dirty).toBe(false);

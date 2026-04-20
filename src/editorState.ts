@@ -30,14 +30,16 @@ export interface CursorPos {
 
 export const moveFrameEffect = StateEffect.define<{
   id: string;
-  dx: number;
-  dy: number;
+  dCol: number;
+  dRow: number;
+  charWidth: number;
+  charHeight: number;
 }>();
 
 export const resizeFrameEffect = StateEffect.define<{
   id: string;
-  w: number;
-  h: number;
+  gridW: number;
+  gridH: number;
   charWidth: number;
   charHeight: number;
 }>();
@@ -99,7 +101,7 @@ const framesField = StateField.define<Frame[]>({
         return clearDirty(result);
       } else if (e.is(moveFrameEffect)) {
         const applyMove = (f: Frame): Frame => {
-          if (f.id === e.value.id) return moveFrame(f, { dx: e.value.dx, dy: e.value.dy });
+          if (f.id === e.value.id) return moveFrame(f, { dCol: e.value.dCol, dRow: e.value.dRow, charWidth: e.value.charWidth, charHeight: e.value.charHeight });
           if (f.children.length > 0) return { ...f, children: f.children.map(applyMove) };
           return f;
         };
@@ -107,7 +109,7 @@ const framesField = StateField.define<Frame[]>({
         result = markDirtyById(result, e.value.id).frames;
       } else if (e.is(resizeFrameEffect)) {
         const applyResize = (f: Frame): Frame => {
-          if (f.id === e.value.id) return resizeFrame(f, { w: e.value.w, h: e.value.h }, e.value.charWidth, e.value.charHeight);
+          if (f.id === e.value.id) return resizeFrame(f, { gridW: e.value.gridW, gridH: e.value.gridH }, e.value.charWidth, e.value.charHeight);
           if (f.children.length > 0) return { ...f, children: f.children.map(applyResize) };
           return f;
         };
@@ -527,11 +529,13 @@ export function proseMoveDown(state: EditorState): EditorState {
 export function applyMoveFrame(
   state: EditorState,
   id: string,
-  dx: number,
-  dy: number,
+  dCol: number,
+  dRow: number,
+  charWidth: number,
+  charHeight: number,
 ): EditorState {
   return state.update({
-    effects: moveFrameEffect.of({ id, dx, dy }),
+    effects: moveFrameEffect.of({ id, dCol, dRow, charWidth, charHeight }),
     annotations: Transaction.addToHistory.of(true),
   }).state;
 }
@@ -539,13 +543,13 @@ export function applyMoveFrame(
 export function applyResizeFrame(
   state: EditorState,
   id: string,
-  w: number,
-  h: number,
+  gridW: number,
+  gridH: number,
   charWidth: number,
   charHeight: number,
 ): EditorState {
   return state.update({
-    effects: resizeFrameEffect.of({ id, w, h, charWidth, charHeight }),
+    effects: resizeFrameEffect.of({ id, gridW, gridH, charWidth, charHeight }),
     annotations: Transaction.addToHistory.of(true),
   }).state;
 }

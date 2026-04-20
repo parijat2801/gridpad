@@ -157,7 +157,7 @@ describe("round-trip: after edits", () => {
     // Snapshot bboxes before moving
     const origBboxes = snapshotFrameBboxes(getFrames(state), CW, CH);
     const container = getFrames(state)[0];
-    state = applyMoveFrame(state, container.id, CW * 2, 0);
+    state = applyMoveFrame(state, container.id, 2, 0, CW, CH);
     const result = gridSerialize(
       getFrames(state), getDoc(state),
       getProseSegmentMap(state), originalGrid, CW, CH,

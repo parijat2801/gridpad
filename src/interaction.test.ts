@@ -41,28 +41,28 @@ beforeAll(() => {
 
 describe("drag: incremental moves", () => {
   it("3 sequential move deltas land frame at correct position", () => {
-    const f = createFrame({ x: 100, y: 200, w: 80, h: 40 });
+    // Use cw=5, ch=5 so gridCol=20, gridRow=40 corresponds to x=100, y=200
+    const CW = 5, CH = 5;
+    const f = { ...createFrame({ x: 100, y: 200, w: 80, h: 40 }), gridCol: 20, gridRow: 40 };
     let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
-    const startX = 100, startY = 200;
 
-    // Simulate 3 mousemove events, each 5px further
-    for (let i = 1; i <= 3; i++) {
-      const current = getFrames(state)[0];
-      const targetX = startX + i * 5;
-      const targetY = startY + i * 5;
-      state = applyMoveFrame(state, f.id, targetX - current.x, targetY - current.y);
+    // Simulate 3 mousemove events, each 1 cell (5px) further
+    for (let i = 0; i < 3; i++) {
+      state = applyMoveFrame(state, f.id, 1, 1, CW, CH);
     }
 
     const final = getFrames(state)[0];
-    expect(final.x).toBe(115); // 100 + 3*5
-    expect(final.y).toBe(215); // 200 + 3*5
+    expect(final.x).toBe(115); // (20+3)*5 = 115
+    expect(final.y).toBe(215); // (40+3)*5 = 215
   });
 
   it("drag to negative coordinates clamps at 0", () => {
-    const f = createFrame({ x: 5, y: 5, w: 80, h: 40 });
+    // Use cw=5, ch=5 so gridCol=1, gridRow=1 corresponds to x=5, y=5
+    const CW = 5, CH = 5;
+    const f = { ...createFrame({ x: 5, y: 5, w: 80, h: 40 }), gridCol: 1, gridRow: 1 };
     let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
-    // Move far left/up
-    state = applyMoveFrame(state, f.id, -100, -100);
+    // Move far left/up: dCol=-20, dRow=-20 → x=(1-20)*5=-95, y=-95
+    state = applyMoveFrame(state, f.id, -20, -20, CW, CH);
     const final = getFrames(state)[0];
     // moveFrame doesn't clamp — DemoV2 does Math.max(0, ...) before dispatching
     // So moveFrame itself allows negative. This test documents the behavior.
