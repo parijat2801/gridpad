@@ -258,8 +258,42 @@ export function resizeFrame(
     content = { ...content, cells };
   }
 
-  const resized = { ...frame, w, h, gridW, gridH, content };
-  if (content?.type === "rect" && frame.children.length > 0) {
+  // Clamp children to fit within new bounds
+  const clampedChildren = frame.children.map(child => {
+    let cr = child.gridRow;
+    let cc = child.gridCol;
+    let cw2 = child.gridW;
+    let ch2 = child.gridH;
+    // Clamp position to stay within parent
+    if (cr + ch2 > gridH) {
+      cr = Math.max(0, gridH - ch2);
+      if (cr + ch2 > gridH) ch2 = gridH - cr;
+    }
+    if (cc + cw2 > gridW) {
+      cc = Math.max(0, gridW - cw2);
+      if (cc + cw2 > gridW) cw2 = gridW - cc;
+    }
+    if (cr === child.gridRow && cc === child.gridCol && cw2 === child.gridW && ch2 === child.gridH) {
+      return child;
+    }
+    // Regenerate cells if rect was resized
+    let newContent = child.content;
+    if (newContent?.type === "rect" && newContent.style && (cw2 !== child.gridW || ch2 !== child.gridH)) {
+      const bbox: Bbox = { row: 0, col: 0, w: cw2, h: ch2 };
+      newContent = { ...newContent, cells: regenerateCells(bbox, newContent.style) };
+    }
+    return {
+      ...child,
+      gridRow: cr, gridCol: cc, gridW: cw2, gridH: ch2,
+      x: cc * charWidth, y: cr * charHeight,
+      w: cw2 * charWidth, h: ch2 * charHeight,
+      content: newContent,
+      dirty: true,
+    };
+  });
+
+  const resized = { ...frame, w, h, gridW, gridH, content, children: clampedChildren };
+  if (content?.type === "rect" && resized.children.length > 0) {
     return layoutTextChildren(resized, charWidth, charHeight);
   }
   return resized;
@@ -326,10 +360,28 @@ export function framesFromScan(
   // Text frames that belong inside rects have already been moved to children.
   const shaped = cleaned.filter((f) => f.content?.type !== "text");
 
+  // Filter out orphan line frames — single-cell lines (│ or ─) that aren't
+  // adjacent to any rect. These come from misaligned ASCII art where a wire
+  // char extends past the wireframe boundary. Including them inflates container
+  // bounds and causes ghost chars after moves.
+  const rects = shaped.filter(f => f.content?.type === "rect");
+  const isOrphanLine = (f: Frame): boolean => {
+    if (f.content?.type !== "line") return false;
+    if (f.gridW > 1 && f.gridH > 1) return false; // multi-cell line, keep
+    // Check if any rect is adjacent (shares a row/col boundary)
+    for (const r of rects) {
+      const touchH = f.gridRow < r.gridRow + r.gridH + 1 && f.gridRow + f.gridH > r.gridRow - 1;
+      const touchV = f.gridCol < r.gridCol + r.gridW + 1 && f.gridCol + f.gridW > r.gridCol - 1;
+      if (touchH && touchV) return false; // adjacent to a rect — keep
+    }
+    return true; // isolated — orphan
+  };
+  const noOrphans = shaped.filter(f => !isOrphanLine(f));
+
   // Group overlapping/adjacent top-level frames into container frames.
   // This restores the "click container → drag whole wireframe" UX that
   // framesFromRegions provided via region-based grouping.
-  return groupIntoContainers(shaped, charWidth, charHeight);
+  return groupIntoContainers(noOrphans, charWidth, charHeight);
 }
 
 /**

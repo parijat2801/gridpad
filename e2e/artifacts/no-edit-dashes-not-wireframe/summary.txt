@@ -11,4 +11,4 @@ Frame tree diffs: 0
 Invariant failures: 0
 
 Prose doc after reload: 1 lines
-Frames before: 7  Frames after: 7
+Frames before: 0  Frames after: 0
