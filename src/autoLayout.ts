@@ -46,7 +46,7 @@ export function layoutTextChildren(
     else y = charHeight + (innerH - child.h) / 2 + vAlign.offset;
     y = Math.max(0, y);
 
-    return { ...child, x, y };
+    return { ...child, x, y, gridRow: Math.round(y / charHeight), gridCol: Math.round(x / charWidth) };
   });
 
   return { ...frame, children: newChildren };
@@ -138,6 +138,7 @@ export function mergeAdjacentTexts(parent: Frame, charWidth: number, charHeight:
         current = {
           ...current,
           w: mergedW,
+          gridW: codepoints.length,
           content: { ...current.content!, text: mergedText, cells },
         };
         i++;
