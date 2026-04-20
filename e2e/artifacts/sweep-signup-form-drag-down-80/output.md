@@ -7,7 +7,7 @@ Terms and conditions below.
 
 
 ┌──────────────────────────┐
-│      Create Account      │
+│      Create              │
 ├──────────────────────────┤
 │                          │
 │  Name:  ┌─────────────┐  │

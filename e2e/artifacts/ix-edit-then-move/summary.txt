@@ -2,7 +2,7 @@ Test: ix-edit-then-move
 Input lines: 8
 Output lines: 8
 Markdown match: false
-Visual diff: 0.28%
+Visual diff: 0.19%
 Ghosts: 0
 Render failures: 0
 Prose issues: 0

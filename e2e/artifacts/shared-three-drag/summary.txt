@@ -2,7 +2,7 @@ Test: shared-three-drag
 Input lines: 8
 Output lines: 8
 Markdown match: false
-Visual diff: 0.18%
+Visual diff: 0.00%
 Ghosts: 0
 Render failures: 0
 Prose issues: 0

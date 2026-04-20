@@ -2,7 +2,7 @@ Test: add-rect
 Input lines: 5
 Output lines: 11
 Markdown match: false
-Visual diff: 0.25%
+Visual diff: 0.00%
 Ghosts: 0
 Render failures: 0
 Prose issues: 0

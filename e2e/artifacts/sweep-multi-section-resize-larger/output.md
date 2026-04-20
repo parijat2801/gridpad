@@ -5,8 +5,8 @@
 The header should be responsive and collapse on mobile.
 
 ┌────────────────────────────────────────────┐
+│  Logo    Navigation     Search   User      │
 │                                            │
-│  Logo    Navigation         Search   User  │
 └────────────────────────────────────────────┘
 
 ## Content Area

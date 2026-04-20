@@ -2,7 +2,7 @@ Test: ix-resize-then-move
 Input lines: 8
 Output lines: 10
 Markdown match: false
-Visual diff: 0.14%
+Visual diff: 0.00%
 Ghosts: 0
 Render failures: 0
 Prose issues: 0

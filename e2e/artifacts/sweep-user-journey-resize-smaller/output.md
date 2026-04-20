@@ -5,10 +5,10 @@
          │  Page        │
          └──────────────┘
 
-         ┌──────────────┐
-     ────┤  Sign Up     ├────
-    │    │  Form        │    │
-    │    └──────│───────┘    │
+
+     ────
+
+                │
     ┌           Sign Up          ┐
   Email                   Google
   Verify                   OAuth

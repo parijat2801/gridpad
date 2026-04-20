@@ -17,7 +17,7 @@
     "absY": 26.737499999999997,
     "w": 125.2265625,
     "h": 40.106249999999996,
-    "childCount": 1
+    "childCount": 2
   },
   {
     "depth": 2,
@@ -30,6 +30,16 @@
     "childCount": 0
   },
   {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Bottom",
+    "absX": 77.0625,
+    "absY": 66.84375,
+    "w": 57.796875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
     "depth": 1,
     "contentType": "rect",
     "text": null,
@@ -37,7 +47,7 @@
     "absY": 26.737499999999997,
     "w": 125.2265625,
     "h": 40.106249999999996,
-    "childCount": 1
+    "childCount": 2
   },
   {
     "depth": 2,
@@ -46,6 +56,16 @@
     "absX": 192.65625,
     "absY": 40.106249999999996,
     "w": 48.1640625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Bottom",
+    "absX": 192.65625,
+    "absY": 66.84375,
+    "w": 57.796875,
     "h": 13.368749999999999,
     "childCount": 0
   },

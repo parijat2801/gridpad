@@ -3,16 +3,16 @@
      ┌──────────────────────────────────────────────────────────────────────────────┐
      │  Containers                                                                  │
      ├────────┬────────────┬──────────────┬──────────────┬──────────┬───────────────┤
-     │  Name  │ Container  │    Image     │   Port(s)    │  CPU (%) │ Last started  │
+     │  Name  │ Container  │    Image     │   Port(s)    │  CPU     │ Last          │
      ├────────┼────────────┼──────────────┼──────────────┼──────────┼───────────────┤
-     │        │            │              │              │          │               │
-     │ direct │ 7504a956   │ colex-plat   │ 6684:8055    │  0.59%   │ 12 hours ago  │
-     │ tools  │ 226cbb93   │ colex-plat   │ 8201:8201    │  0.29%   │ 12 hours ago  │
-     │ postgr │ e053f9af   │ postgres:15  │ 5432:5432    │  0%      │ 12 hours ago  │
+     │ front  │ 174a2db6   │ colex-plat   │ 3342:5173    │  0.66%   │ 12            │
+     │ direct │ 7504a956   │ colex-plat   │ 6684:8055    │  0.59%   │ 12            │
+     │ tools  │ 226cbb93   │ colex-plat   │ 8201:8201    │  0.29%   │ 12            │
+     │ postgr │ e053f9af   │ postgres:15  │ 5432:5432    │  0%      │ 12            │
      ├────────┼────────────┼──────────────┼──────────────┼──────────┼───────────────┤
-     │ front  │ fbe4666d   │ colex-front  │ 3443:5173    │  0.08%   │ 12 hours ago  │
-     │ direct │ 2a1555d1   │ colex-direc  │ 6785:8055    │  0.7%    │ 12 hours ago  │
-     │ tools  │ 6231683b   │ colex-tools  │ 8301:8201    │  0.4%    │ 12 hours ago  │
+     │ front  │ fbe4666d   │ colex-front  │ 3443:5173    │  0.08%   │ 12            │
+     │ direct │ 2a1555d1   │ colex-direc  │ 6785:8055    │  0.7%    │ 12            │
+     │ tools  │ 6231683b   │ colex-tools  │ 8301:8201    │  0.4%    │ 12            │
      └────────┴────────────┴──────────────┴──────────────┴──────────┴───────────────┘
 
 Status: 7 containers running, 0 stopped.

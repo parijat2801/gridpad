@@ -7,12 +7,12 @@ Some text below the dashboard.
 
 
 ┌───────────────────────────────────────────────────────┐
-│                      My App                           │
+│                      My                               │
 ├───────────┬───────────────────────────┬───────────────┤
-│ Nav       │                           │               │
+│ Nav       │  Main                     │  Details      │
 │           │                           │               │
-│ Home      │  ┌─────────────────────┐  │  User: Alice  │
-│ Search    │  │  Revenue Chart      │  │  Role: Admin  │
+│ Home      │  ┌─────────────────────┐  │  User:        │
+│ Search    │  │  Revenue Chart      │  │  Role:        │
 │ Settings  │  └─────────────────────┘  │               │
 │ Help      │                           │  ┌─────────┐  │
 │           │  ┌──────────┐ ┌────────┐  │  │ Actions │  │

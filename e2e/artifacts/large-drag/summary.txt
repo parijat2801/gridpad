@@ -2,7 +2,7 @@ Test: large-drag
 Input lines: 13
 Output lines: 27
 Markdown match: false
-Visual diff: 0.09%
+Visual diff: 0.00%
 Ghosts: 0
 Render failures: 0
 Prose issues: 0

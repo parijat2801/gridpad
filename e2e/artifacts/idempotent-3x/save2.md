@@ -39,7 +39,7 @@ A phone-sized screen with header, content area, and bottom navigation bar.
 
 
 ┌──────────────────┐
-│    My App    ≡    │
+│   My App    ≡    │
 ├──────────────────┤
 │                  │
 │  Welcome back!   │

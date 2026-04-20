@@ -1,24 +1,24 @@
 # CRM Workspace
 
 ┌────────────┬──────────────────────────────────────────────┬───────────────────┐
-│ Navigation │  Customer Information Available              │  AI Assistant     │
+│ Navigation │  Customer                                    │  AI               │
 │            │                                              │                   │
-│ ┌────────┐ │  ┌────────────────────────────────────────┐  │  Context: Facade  │
-│ │Customer│ │  │  Enter Customer Details          Done  │  │  Manual Test      │
+│ ┌────────┐ │  ┌────────────────────────────────────────┐  │  Context:         │
+│ │Customer│ │  │  Enter Customer Details          Done  │  │  Manual           │
 │ │Info    │ │  ├────────────────────────────────────────┤  │                   │
-│ └────────┘ │  │                                        │  │  picks up the     │
-│ ┌────────┐ │  │  Customer Name *                       │  │  new data.        │
+│ └────────┘ │  │                                        │  │  picks            │
+│ ┌────────┐ │  │  Customer Name *                       │  │  new              │
 │ │Active  │ │  │  ┌──────────────────────────────────┐  │  │                   │
 │ │Supplie │ │  │  │ Maddie                           │  │  │  ┌─────────────┐ ││
 │ └────────┘ │  │  └──────────────────────────────────┘  │  │  │  Complete   │ ││
 │ ┌────────┐ │  │                                        │  │  └─────────────┘ ││
 │ │Test    │ │  │  Company                               │  │                   │
-│ │Analysi │ │  │  ┌──────────────────────────────────┐  │  │  invalidate data  │
-│ └────────┘ │  │  │ Thirupathy                       │  │  │  for customer     │
+│ │Analysi │ │  │  ┌──────────────────────────────────┐  │  │  invalidate       │
+│ └────────┘ │  │  │ Thirupathy                       │  │  │  for              │
 │            │  │  └──────────────────────────────────┘  │  │  information      │
 │            │  │                                        │  │                   │
 │            │  │  Email *                               │  │    ─────────────  │
-│            │  │  ┌──────────────────────────────────┐  │  │  │ Complete       │
+│            │  │  ┌──────────────────────────────────┐  │  │  │                │
 │            │  │  │ maddie@isamazing.com             │  │  │    ─────────────  │
 │            │  │  └──────────────────────────────────┘  │  │                   │
 │            │  │                                        │  │                   │

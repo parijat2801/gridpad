@@ -2,7 +2,7 @@ Test: ix-resize-shrink
 Input lines: 8
 Output lines: 7
 Markdown match: false
-Visual diff: 0.16%
+Visual diff: 0.00%
 Ghosts: 0
 Render failures: 0
 Prose issues: 0

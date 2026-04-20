@@ -2,7 +2,7 @@ Test: resize-expand
 Input lines: 8
 Output lines: 11
 Markdown match: false
-Visual diff: 0.08%
+Visual diff: 0.00%
 Ghosts: 0
 Render failures: 0
 Prose issues: 0

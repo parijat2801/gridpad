@@ -7,10 +7,10 @@ Description of the mobile app.
 
 
 ┌──────────────────┐
-│    My App    ≡   │
+│    My        ≡   │
 ├──────────────────┤
 │                  │
-│  Welcome back!   │
+│  Welcome         │
 │                  │
 │  ┌────────────┐  │
 │  │  Profile   │  │
@@ -20,5 +20,5 @@ Description of the mobile app.
 │  └────────────┘  │
 │                  │
 ├──────────────────┤
-│ Home Star Mail   │
+│ Home             │
 └──────────────────┘

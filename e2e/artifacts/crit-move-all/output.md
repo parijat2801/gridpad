@@ -11,12 +11,12 @@ A classic three-column web app. Drag the sidebar or panels to watch text reflow 
 
 
   ┌───────────────────────────────────────────────────────┐
-  │                      My App                           │
+  │                      My                               │
   ├───────────┬───────────────────────────┬───────────────┤
-  │ Nav       │                           │               │
+  │ Nav       │  Main                     │  Details      │
   │           │                           │               │
-  │ Home      │  ┌─────────────────────┐  │  User: Alice  │
-  │ Search    │  │  Revenue Chart      │  │  Role: Admin  │
+  │ Home      │  ┌─────────────────────┐  │  User:        │
+  │ Search    │  │  Revenue Chart      │  │  Role:        │
   │ Settings  │  │  ████▓▓░░           │  │               │
   │ Help      │  └─────────────────────┘  │  ┌─────────┐  │
   │           │                           │  │ Actions │  │
@@ -39,10 +39,10 @@ A phone-sized screen with header, content area, and bottom navigation bar.
 
 
   ┌──────────────────┐
-  │    My App    ≡   │
+  │   My        ≡    │
   ├──────────────────┤
   │                  │
-  │  Welcome back!   │
+  │  Welcome         │
   │                  │
   │  ┌────────────┐  │
   │  │  Profile   │  │
@@ -54,7 +54,6 @@ A phone-sized screen with header, content area, and bottom navigation bar.
   ├──────────────────┤
   │ ⌂    ☆    ✉    ⚙ │
   └──────────────────┘
-                    │
 
 
 
@@ -63,10 +62,10 @@ A phone-sized screen with header, content area, and bottom navigation bar.
 A simple flowchart showing navigation between screens. Drag the boxes to rearrange the flow.
 
 
+
   ┌─────────┐    ┌───────────┐    ┌──────────┐    ┌──────────┐
   │  Login  ├────┤ Dashboard ├────┤ Settings ├────┤  Logout  │
   └─────────┘    └───────────┘    └──────────┘    └──────────┘
-
 
 
 
@@ -79,8 +78,9 @@ Every element on this page is interactive. Wireframes are detected from plain AS
 A form wireframe. Double-click the text labels inside frames to edit them inline.
 
 
+
   ┌──────────────────────────┐
-  │      Create Account      │
+  │      Create              │
   ├──────────────────────────┤
   │                          │
   │  Name:  ┌─────────────┐  │
