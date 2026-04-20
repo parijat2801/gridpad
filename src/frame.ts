@@ -201,6 +201,11 @@ export function moveFrame(frame: Frame, delta: { dx: number; dy: number }): Fram
   return { ...frame, x: frame.x + delta.dx, y: frame.y + delta.dy };
 }
 
+/** Snap a pixel value to the nearest grid boundary. */
+export function snapToGrid(px: number, cellSize: number): number {
+  return Math.round(px / cellSize) * cellSize;
+}
+
 // ── resizeFrame ────────────────────────────────────────────
 
 export function resizeFrame(
@@ -211,13 +216,14 @@ export function resizeFrame(
 ): Frame {
   const minW = 2 * charWidth;
   const minH = 2 * charHeight;
-  const w = Math.max(minW, size.w);
-  const h = Math.max(minH, size.h);
+  // Snap dimensions to grid boundaries so Math.round(w/cw) is always exact
+  const gridW = Math.max(2, Math.round(Math.max(minW, size.w) / charWidth));
+  const gridH = Math.max(2, Math.round(Math.max(minH, size.h) / charHeight));
+  const w = gridW * charWidth;
+  const h = gridH * charHeight;
 
   let content = frame.content;
   if (content?.type === "rect" && content.style) {
-    const gridW = Math.round(w / charWidth);
-    const gridH = Math.round(h / charHeight);
     const bbox: Bbox = { row: 0, col: 0, w: gridW, h: gridH };
     const cells = regenerateCells(bbox, content.style);
     content = { ...content, cells };

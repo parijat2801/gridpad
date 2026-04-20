@@ -15,7 +15,6 @@ import {
   dragSelected,
   resizeSelected,
   clickProse,
-  getFrames,
   getFrameTree,
   findGhostsFromPage,
   checkInvariants,

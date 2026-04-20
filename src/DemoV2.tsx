@@ -581,9 +581,10 @@ export default function DemoV2() {
       }).state;
       framesRef.current = getFrames(stateRef.current);
     } else {
-      // Compute target position from drag start + mouse delta
-      const targetX = Math.max(0, drag.startFrameX + dx);
-      const targetY = Math.max(0, drag.startFrameY + dy);
+      // Compute target position from drag start + mouse delta, snapped to grid
+      const cw = cwRef.current, ch = chRef.current;
+      const targetX = Math.round(Math.max(0, drag.startFrameX + dx) / cw) * cw;
+      const targetY = Math.round(Math.max(0, drag.startFrameY + dy) / ch) * ch;
       // Delta from current frame position to target
       const frameDx = targetX - found.absX;
       const frameDy = targetY - found.absY;
