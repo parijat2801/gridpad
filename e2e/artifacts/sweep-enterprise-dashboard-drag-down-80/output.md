@@ -7,7 +7,7 @@
 
 Assign capacity based on sprint velocity and current commitments.
 
-                                                                                          │
+                                                              │                                                                                        │
 ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐
 │  Revenue    │  Customers  │  Churn      │  NPS Score  │  MRR Growth │
 │  $2.4M      │  12,847     │  2.3%       │  72         │  +8.4%      │
@@ -28,14 +28,14 @@ Assign capacity based on sprint velocity and current commitments.
 │ Carol    │  ┌──────────────────────────────────────────────┐ ┌────────────────────────┐ │
 │ (10 pts) │  │ UI-501 (6pts)                                │ │ UI-502 (4pts)          │ │
 │          │  │ Dashboard redesign                           │ │ Mobile responsive      │ │
-│          │  │  ┌─────────────┐ ┌─────────────┐            │ │  ┌──────────────────┐  │ │
-│          │  │  │ KPI cards   │ │ Chart panel │            │ │  │ Breakpoint tests │  │ │
-│          │  │  └─────────────┘ └─────────────┘            │ │  └──────────────────┘  │ │
+│          │  │  ┌─────────────┐ ┌─────────────┐            │    ┌──────────────────┐  │
+│          │  │  │ KPI cards   │ │ Chart panel │            │    │                  │  │
+│          │  │  └─────────────┘ └─────────────┘            │    └──────────────────┘  │
 │          │  └─────────────────────────────────────────────┴┘ └───────────────────────┴┘
 └──────────┴───────────────────────────────────────────────────────────────────────────────
-                                                                                           ┘
-
-## Risk Register
+                                                              │                                                                  Breakpoint tests      │
+                                                              │                                                                                        │
+                                                                                          │
 ┌─────┬────────────────────────┬──────────┬───────────┬───────────────────────────────────┐
 │  #  │  Risk                  │  Impact  │  Prob     │  Mitigation                       │
 ├─────┼────────────────────────┼──────────┼───────────┼───────────────────────────────────┤
@@ -44,6 +44,9 @@ Assign capacity based on sprint velocity and current commitments.
 │  3  │  Mobile Safari bugs    │  Medium  │  High     │  Dedicated QA sprint              │
 │  4  │  Scope creep on UI-501 │  High    │  Medium   │  Fixed scope doc signed off       │
 └─────┴────────────────────────┴──────────┴───────────┴───────────────────────────────────┘
+                                                                                           ┘
+
+## Risk Register
 
 
 Next planning session: Monday Oct 28.

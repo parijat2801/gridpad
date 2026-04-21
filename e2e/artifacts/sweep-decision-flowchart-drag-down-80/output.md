@@ -27,9 +27,11 @@
 └──┬───────┬──┘
   Yes      No
    │       │
-
+                     │
 ┌──┴────┐ ┌┴────────┐
-│Deploy │ │ Rollback │
-│  Prod │ │          │
+│Deploy │ │ Rollback
+│  Prod │ │
 └───────┘ └──────────┘
+                     │
+
 Review deployment logs after each release.
