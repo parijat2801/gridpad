@@ -200,31 +200,15 @@ export function gridSerialize(
   // Phase B.5 — repair junction characters where frame borders meet
   repairJunctions(grid);
 
-  // Phase B.6 — blank orphan wire chars in rows touched by dirty frames.
-  // Only scan rows that were blanked+rewritten by Phase B (dirty frame rows).
-  // Wire chars NOT in cellsToWrite in these rows are orphans from child overflow
-  // or misaligned ASCII art.
-  {
-    const WIRE = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"]);
-    const dirtyRows = new Set<number>();
-    for (const bb of bboxesToBlank) {
-      for (let r = bb.r1; r < bb.r2; r++) dirtyRows.add(r);
-    }
-    for (const r of dirtyRows) {
-      if (r < 0 || r >= grid.length) continue;
-      for (let c = 0; c < grid[r].length; c++) {
-        if (!WIRE.has(grid[r][c])) continue;
-        if (!cellsToWrite.has(`${r},${c}`)) {
-          grid[r][c] = " ";
-        }
-      }
-    }
-  }
+  // Phase B.6 removed: row-wide wire blanking was too destructive (erased
+  // valid sibling edges). Fixes 1+4 eliminate the orphan sources it masked.
 
   // Phase C — write prose.
   // If any frame moved (dirty), reflow prose into rows not occupied by frames.
   // If no frame moved, use original proseSegmentMap positions (preserves round-trip).
-  const anyDirty = frames.some(f => f.dirty);
+  const anyDirtyRec = (fs: Frame[]): boolean =>
+    fs.some(f => f.dirty || anyDirtyRec(f.children));
+  const anyDirty = anyDirtyRec(frames);
 
   const proseLines = prose.split("\n");
 
@@ -242,22 +226,23 @@ export function gridSerialize(
   } else {
     // Dirty path: reflow prose into rows not occupied by frames
     const frameRows = new Set<number>();
-    for (const f of frames) {
-      for (let r = f.gridRow; r < f.gridRow + f.gridH; r++) frameRows.add(r);
-    }
+    const collectFrameRows = (fs: Frame[], offRow: number) => {
+      for (const f of fs) {
+        const absRow = offRow + f.gridRow;
+        for (let r = absRow; r < absRow + f.gridH; r++) frameRows.add(r);
+        collectFrameRows(f.children, absRow);
+      }
+    };
+    collectFrameRows(frames, 0);
 
-    let maxRow = grid.length;
-    for (const r of frameRows) if (r >= maxRow) maxRow = r + 1;
-    maxRow = Math.max(maxRow, proseLines.length + frameRows.size);
-
-    const availableRows: number[] = [];
-    for (let r = 0; r < maxRow; r++) {
-      if (!frameRows.has(r)) availableRows.push(r);
-    }
-
+    // Monotonic reflow: try to keep each line near its original row,
+    // but never place a line above a previously-placed line (prevents reordering).
+    let minRow = 0;
     for (let i = 0; i < proseLines.length; i++) {
-      if (i >= availableRows.length) availableRows.push(maxRow++);
-      const row = availableRows[i];
+      const origRow = proseSegmentMap[i]?.row ?? minRow;
+      let row = Math.max(origRow, minRow);
+      while (frameRows.has(row)) row++;
+
       const col = proseSegmentMap[i]?.col ?? 0;
       const chars = [...proseLines[i]];
       while (grid.length <= row) grid.push([]);
@@ -265,6 +250,7 @@ export function gridSerialize(
       for (let c = 0; c < chars.length; c++) {
         grid[row][col + c] = chars[c];
       }
+      minRow = row + 1;
     }
   }
 
@@ -349,12 +335,14 @@ function collectFrameCells(
     const r2 = absRow + f.gridH;
     const c2 = absCol + f.gridW;
 
-    // Skip frame entirely if it overflows parent clip rect.
-    if (clipRect && (r1 < clipRect.r1 || c1 < clipRect.c1 || r2 > clipRect.r2 || c2 > clipRect.c2)) {
-      return;
+    // Intersect bbox with clip rect to avoid blanking outside parent bounds
+    const clippedR1 = clipRect ? Math.max(r1, clipRect.r1) : r1;
+    const clippedC1 = clipRect ? Math.max(c1, clipRect.c1) : c1;
+    const clippedR2 = clipRect ? Math.min(r2, clipRect.r2) : r2;
+    const clippedC2 = clipRect ? Math.min(c2, clipRect.c2) : c2;
+    if (clippedR1 < clippedR2 && clippedC1 < clippedC2) {
+      bboxesToBlank.push({ r1: clippedR1, c1: clippedC1, r2: clippedR2, c2: clippedC2 });
     }
-
-    bboxesToBlank.push({ r1, c1, r2, c2 });
 
     // Collect cells, clamped to bbox.
     // Don't overwrite non-space chars with spaces — text content wins over
@@ -363,7 +351,8 @@ function collectFrameCells(
       const ci = key.indexOf(",");
       const r = r1 + Number(key.slice(0, ci));
       const c = c1 + Number(key.slice(ci + 1));
-      if (r >= r1 && r < r2 && c >= c1 && c < c2) {
+      if (r >= r1 && r < r2 && c >= c1 && c < c2 &&
+          (!clipRect || (r >= clipRect.r1 && r < clipRect.r2 && c >= clipRect.c1 && c < clipRect.c2))) {
         const existing = cellsToWrite.get(`${r},${c}`);
         if (ch_ !== " " || !existing || existing === " ") {
           cellsToWrite.set(`${r},${c}`, ch_);

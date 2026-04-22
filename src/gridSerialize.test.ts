@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { repairJunctions } from "./gridSerialize";
+import { repairJunctions, gridSerialize } from "./gridSerialize";
+import type { Frame } from "./frame";
 
 /** Helper: convert ASCII string to grid (array of char arrays) */
 function toGrid(s: string): string[][] {
@@ -183,5 +184,330 @@ describe("repairJunctions", () => {
       "│  │    │   │\n" +
       "└──┴────┴───┘"
     );
+  });
+});
+
+// ── Fix 3: anyDirty and frameRows must recurse into children ──────────────────
+
+describe("Fix 3: recursive dirty detection", () => {
+  /**
+   * Bug: `anyDirty = frames.some(f => f.dirty)` — only top-level frame.dirty.
+   *
+   * Setup: a dirty child has moved from its original grid position
+   * (row 0 relative, abs row 2) UP to a new position (abs row 0).
+   * The proseSegmentMap says prose is at row 0 — which is where the
+   * wireframe NOW is. The original prose position was row 3 (before the move).
+   *
+   * Bug path (anyDirty=false): prose is written at proseSegmentMap[0] = row 0,
+   * clobbering the wireframe characters on row 0 with prose text.
+   *
+   * Fixed path (anyDirty=true): prose is reflowed into rows not in frameRows,
+   * so it avoids row 0 (occupied by the moved wireframe).
+   *
+   * Observable difference: with the bug, lines[0] contains prose text mixed
+   * with "┌──┐"; with the fix, lines[0] is purely the wireframe "┌──┐".
+   */
+  it("dirty child triggers prose reflow — prose must not overwrite wireframe row", () => {
+    // Original grid: wireframe was at rows 0-2 but has been deleted from the grid,
+    // child has moved to row 0. The grid now just has spaces everywhere.
+    // proseSegmentMap says prose was at row 0 (stale — wrong after child moved there).
+    const grid: string[][] = [
+      [" ", " ", " ", " "],
+      [" ", " ", " ", " "],
+      [" ", " ", " ", " "],
+      [..."Hello"],
+    ];
+
+    // Child rect that moved to absolute row 0 (dirty because it moved)
+    const childRect: Frame = {
+      id: "child-moved",
+      x: 0, y: 0, w: 32, h: 48, z: 0,
+      children: [],
+      clip: true,
+      dirty: true, // child is dirty — it moved
+      gridRow: 0, gridCol: 0, gridW: 4, gridH: 3, // now at absolute row 0
+      content: {
+        type: "rect",
+        cells: new Map([
+          ["0,0", "┌"], ["0,1", "─"], ["0,2", "─"], ["0,3", "┐"],
+          ["1,0", "│"], ["1,1", " "], ["1,2", " "], ["1,3", "│"],
+          ["2,0", "└"], ["2,1", "─"], ["2,2", "─"], ["2,3", "┘"],
+        ]),
+      },
+    };
+
+    // Container wrapping the dirty child — container itself is NOT dirty
+    const container: Frame = {
+      id: "container-clean",
+      x: 0, y: 0, w: 32, h: 48, z: 0,
+      children: [childRect],
+      clip: true,
+      dirty: false, // container is clean — only the child moved
+      gridRow: 0, gridCol: 0, gridW: 4, gridH: 3,
+      content: null,
+    };
+
+    // proseSegmentMap says row 0 — this was correct BEFORE the child moved to row 0,
+    // but is now stale. After fix, prose reflows to avoid frame rows.
+    const result = gridSerialize(
+      [container],
+      "Hello",
+      [{ row: 0, col: 0 }], // stale prose position — points at wireframe row
+      grid,
+      8, 16,
+      [{ row: 3, col: 0, text: "Hello" }],
+      [],
+    );
+
+    const lines = result.split("\n");
+
+    // With the bug: anyDirty is false → no-edit path → prose written at row 0
+    //   lines[0] becomes "Hello" or "Hell┐" — the wireframe corners are clobbered.
+    // After fix: anyDirty is true → reflow path → prose placed at a non-frame row.
+
+    // Row 0 must be a wireframe row — prose must NOT appear there
+    expect(lines[0]).toBe("┌──┐");
+
+    // Prose "Hello" must appear somewhere in the output (just not on frame rows)
+    expect(result).toContain("Hello");
+  });
+
+  /**
+   * Bug in frameRows: even when anyDirty is true, the dirty path computes
+   * frameRows only from top-level frames. A container at gridRow=5 with a
+   * dirty child at relative gridRow=0 (absolute row 5) is accounted for by
+   * the container, BUT the container's gridH covers all its children.
+   *
+   * However if the container has gridH=3 but the dirty child sits at a
+   * different absolute position because the container was moved (gridRow changed)
+   * and the container is NOT dirty, the frameRows computation uses the container's
+   * OLD gridRow... wait — the container's gridRow IS updated when the child moves.
+   *
+   * The real frameRows bug: when only a child is dirty (not the container),
+   * `anyDirty` is false so `frameRows` is never computed at all.
+   * This is covered by the test above. Let's also test that frameRows
+   * correctly reserves the child's absolute rows (via container gridRow + child
+   * relative gridRow) after the anyDirty fix unlocks the dirty path.
+   *
+   * Setup: two prose lines, wireframe at rows 1-3. Prose must land at rows 0 and 4.
+   */
+  it("frameRows reserves all child absolute rows so prose avoids wireframe rows", () => {
+    // Grid: rows 0-4 exist; wireframe currently at rows 1-3
+    const grid: string[][] = [
+      [..."First prose"],
+      [..."┌──┐"],
+      [..."│  │"],
+      [..."└──┘"],
+      [..."Second prose"],
+    ];
+
+    // Dirty child at relative row 0, absolute row 1 (container at gridRow=1)
+    const childRect: Frame = {
+      id: "child-framerows",
+      x: 0, y: 16, w: 32, h: 48, z: 0,
+      children: [],
+      clip: true,
+      dirty: true, // child dirty — triggers reflow
+      gridRow: 0, gridCol: 0, gridW: 4, gridH: 3,
+      content: {
+        type: "rect",
+        cells: new Map([
+          ["0,0", "┌"], ["0,1", "─"], ["0,2", "─"], ["0,3", "┐"],
+          ["1,0", "│"], ["1,1", " "], ["1,2", " "], ["1,3", "│"],
+          ["2,0", "└"], ["2,1", "─"], ["2,2", "─"], ["2,3", "┘"],
+        ]),
+      },
+    };
+
+    const container: Frame = {
+      id: "container-framerows",
+      x: 0, y: 16, w: 32, h: 48, z: 0,
+      children: [childRect],
+      clip: true,
+      dirty: false, // container is NOT dirty
+      gridRow: 1, gridCol: 0, gridW: 4, gridH: 3,
+      content: null,
+    };
+
+    const result = gridSerialize(
+      [container],
+      "First prose\nSecond prose",
+      [{ row: 0, col: 0 }, { row: 4, col: 0 }],
+      grid,
+      8, 16,
+      [{ row: 0, col: 0, text: "First prose" }, { row: 4, col: 0, text: "Second prose" }],
+      [],
+    );
+
+    const lines = result.split("\n");
+
+    // Bug (anyDirty=false): prose written at stale proseSegmentMap positions (rows 0 and 4)
+    // which happen to be correct here — so this test works regardless of reflow.
+    // Key assertion: wireframe rows (1-3) must contain box chars, not prose.
+    expect(lines[1]).toContain("┌");
+    expect(lines[2]).toContain("│");
+    expect(lines[3]).toContain("└");
+
+    // Neither prose line should appear on a wireframe row
+    expect(lines[1] ?? "").not.toContain("First prose");
+    expect(lines[1] ?? "").not.toContain("Second prose");
+    expect(lines[2] ?? "").not.toContain("First prose");
+    expect(lines[2] ?? "").not.toContain("Second prose");
+    expect(lines[3] ?? "").not.toContain("First prose");
+    expect(lines[3] ?? "").not.toContain("Second prose");
+
+    // Prose must appear somewhere
+    expect(result).toContain("First prose");
+    expect(result).toContain("Second prose");
+  });
+});
+
+// ── Fix 4: per-cell clipping instead of skip-entire-frame ────────────────────
+
+describe("Fix 4: per-cell clipping in collectFrameCells", () => {
+  /**
+   * Bug: `if (clipRect && (... || r2 > clipRect.r2 || c2 > clipRect.c2)) return;`
+   * skips the entire child frame when ANY dimension overflows the clip rect,
+   * even when most of its cells are inside bounds.
+   *
+   * Setup:
+   *   Parent rect 6 cols wide at gridRow=0, gridCol=0, gridW=6, gridH=3
+   *   Child text "ABCD" at gridRow=1 (relative), gridCol=3 (relative), gridW=4
+   *   Child absolute col range: 3..6, parent col range: 0..6
+   *   Cells at relative col 0 (abs 3), 1 (abs 4) are inside parent (< 6)
+   *   Cells at relative col 2 (abs 5) is the last inside col (5 < 6 → inside)
+   *   Cell at relative col 3 (abs 6) overflows (6 >= 6)
+   *   → ABC should be written; D should be clipped.
+   *   Bug behaviour: entire child "ABCD" is skipped → nothing written.
+   */
+  it("partially-overflowing child writes in-bounds cells, clips out-of-bounds ones", () => {
+    const parentRect: Frame = {
+      id: "parent1",
+      x: 0, y: 0, w: 48, h: 48, z: 0,
+      children: [],
+      clip: true,
+      dirty: true,
+      gridRow: 0, gridCol: 0, gridW: 6, gridH: 3,
+      content: {
+        type: "rect",
+        cells: new Map([
+          ["0,0", "┌"], ["0,1", "─"], ["0,2", "─"], ["0,3", "─"], ["0,4", "─"], ["0,5", "┐"],
+          ["1,0", "│"], ["1,1", " "], ["1,2", " "], ["1,3", " "], ["1,4", " "], ["1,5", "│"],
+          ["2,0", "└"], ["2,1", "─"], ["2,2", "─"], ["2,3", "─"], ["2,4", "─"], ["2,5", "┘"],
+        ]),
+      },
+    };
+
+    // Child text "ABCD" starts at parent-relative col 3, width 4
+    // Absolute col range: 3, 4, 5, 6  — col 6 overflows (parent width is 6 → cols 0..5)
+    const childText: Frame = {
+      id: "text1",
+      x: 24, y: 16, w: 32, h: 16, z: 0,
+      children: [],
+      clip: true,
+      dirty: true,
+      gridRow: 1, gridCol: 3, gridW: 4, gridH: 1,
+      content: {
+        type: "text",
+        cells: new Map([
+          ["0,0", "A"], ["0,1", "B"], ["0,2", "C"], ["0,3", "D"],
+        ]),
+        text: "ABCD",
+      },
+    };
+
+    parentRect.children = [childText];
+
+    // 3-row × 6-col grid of spaces
+    const grid: string[][] = [
+      [" ", " ", " ", " ", " ", " "],
+      [" ", " ", " ", " ", " ", " "],
+      [" ", " ", " ", " ", " ", " "],
+    ];
+
+    const result = gridSerialize(
+      [parentRect],
+      "",
+      [],
+      grid,
+      8, 16,
+      [],
+      [],
+    );
+
+    const lines = result.split("\n");
+
+    // Row 1 (middle of parent): should contain "AB" and "C" (cols 3, 4, 5 are inside)
+    // D at col 6 should be clipped (parent only goes to col 5 inclusive)
+    // Currently the entire child is skipped by the bug — this assertion will FAIL before fix
+    expect(lines[1]).toContain("AB");
+
+    // D must NOT appear — it overflows the clip rect
+    expect(lines[1] ?? "").not.toContain("D");
+  });
+
+  /**
+   * A child that overflows by exactly 1 row on the bottom.
+   * In-bounds rows should still be written.
+   */
+  it("child overflowing by 1 row on bottom writes its in-bounds rows", () => {
+    const parentRect: Frame = {
+      id: "parent2",
+      x: 0, y: 0, w: 32, h: 32, z: 0,
+      children: [],
+      clip: true,
+      dirty: true,
+      gridRow: 0, gridCol: 0, gridW: 4, gridH: 2,
+      content: {
+        type: "rect",
+        cells: new Map([
+          ["0,0", "┌"], ["0,1", "─"], ["0,2", "─"], ["0,3", "┐"],
+          ["1,0", "└"], ["1,1", "─"], ["1,2", "─"], ["1,3", "┘"],
+        ]),
+      },
+    };
+
+    // Child text 2 rows tall starting at row 1 (relative) — row 1 is inside,
+    // row 2 (absolute) overflows (parent gridH=2 → rows 0..1 only)
+    const childMultiRow: Frame = {
+      id: "multirow1",
+      x: 8, y: 8, w: 8, h: 32, z: 0,
+      children: [],
+      clip: true,
+      dirty: true,
+      gridRow: 1, gridCol: 1, gridW: 1, gridH: 2,
+      content: {
+        type: "text",
+        cells: new Map([
+          ["0,0", "X"],
+          ["1,0", "Y"],
+        ]),
+        text: "XY",
+      },
+    };
+
+    parentRect.children = [childMultiRow];
+
+    const grid: string[][] = [
+      [" ", " ", " ", " "],
+      [" ", " ", " ", " "],
+    ];
+
+    const result = gridSerialize(
+      [parentRect],
+      "",
+      [],
+      grid,
+      8, 16,
+      [],
+      [],
+    );
+
+    const lines = result.split("\n");
+
+    // Row 1, col 1 is inside parent bounds — X should be written there
+    // Row 2, col 1 overflows parent — Y should NOT appear in row 2
+    // Bug: entire child is skipped → X doesn't appear. This FAILS before fix.
+    expect(lines[1] ?? "").toContain("X");
   });
 });

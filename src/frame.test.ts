@@ -197,3 +197,44 @@ describe("grid-first frames", () => {
     expect(resized.h).toBeCloseTo(6 * CH);
   });
 });
+
+describe("Fix 1: wire chars should not leak into prose", () => {
+  it("scanner should not emit wire-only text runs", () => {
+    // Simulate the CRM bug: a │ at col 5 on only ONE row (not a multi-cell line).
+    // The rect is 5 wide (cols 0-4). Row 2 has │ at col 5 — unclaimed, isolated.
+    // detectTexts currently emits this as ScannedText { content: "│" }.
+    const input = "┌───┐\n│   │\n│   ││\n│   │\n└───┘";
+    // Row 2 has an extra │ at col 5. Rows 0,1,3,4 do NOT have col 5.
+    // So col 5 is isolated — not a multi-cell vertical line, not inside any rect.
+    const result = scan(input);
+    const wireOnlyTexts = result.texts.filter(t =>
+      [...t.content].every(ch => "┌┐└┘│─├┤┬┴┼".includes(ch))
+    );
+    expect(wireOnlyTexts).toEqual([]);
+  });
+
+  it("scanToFrames should not produce prose segments from wire chars", () => {
+    // CRM-like fixture: outer rect with a │ drifted 1 col past right edge
+    const input = "Prose above\n\n┌───┐\n│   │\n│   │ \n│   │\n└───┘\n\nProse below";
+    // Add a │ at col 5 on one row (simulating drift)
+    const lines = input.split("\n");
+    lines[4] = "│   ││"; // │ at col 5, 1 past rect right edge at col 4
+    const modified = lines.join("\n");
+
+    const { proseSegments } = scanToFrames(modified, 8, 16);
+    // No prose segment should contain only wire characters
+    const wireProse = proseSegments.filter(s =>
+      [...s.text.trim()].length > 0 &&
+      [...s.text.trim()].every(ch => "┌┐└┘│─├┤┬┴┼".includes(ch))
+    );
+    expect(wireProse).toEqual([]);
+  });
+
+  it("preserves legitimate text runs that contain wire chars", () => {
+    // A text run like "A│B" should still be detected as text
+    const input = "┌───┐\n│A│B│\n└───┘";
+    const result = scan(input);
+    const mixedTexts = result.texts.filter(t => t.content.includes("│") && /[A-Z]/.test(t.content));
+    expect(mixedTexts.length).toBeGreaterThan(0);
+  });
+});
