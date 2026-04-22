@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { repairJunctions, gridSerialize } from "./gridSerialize";
+import { repairJunctions, gridSerialize, framesToProseGaps } from "./gridSerialize";
 import type { Frame } from "./frame";
 
 /** Helper: convert ASCII string to grid (array of char arrays) */
@@ -247,14 +247,11 @@ describe("Fix 3: recursive dirty detection", () => {
       content: null,
     };
 
-    // proseSegmentMap says row 0 — this was correct BEFORE the child moved to row 0,
-    // but is now stale. After fix, prose reflows to avoid frame rows.
+    // Phase C now derives prose gaps from frame positions — no proseSegmentMap needed.
     const result = gridSerialize(
       [container],
       "Hello",
-      [{ row: 0, col: 0 }], // stale prose position — points at wireframe row
       grid,
-      8, 16,
       [{ row: 3, col: 0, text: "Hello" }],
       [],
     );
@@ -332,9 +329,7 @@ describe("Fix 3: recursive dirty detection", () => {
     const result = gridSerialize(
       [container],
       "First prose\nSecond prose",
-      [{ row: 0, col: 0 }, { row: 4, col: 0 }],
       grid,
-      8, 16,
       [{ row: 0, col: 0, text: "First prose" }, { row: 4, col: 0, text: "Second prose" }],
       [],
     );
@@ -359,6 +354,94 @@ describe("Fix 3: recursive dirty detection", () => {
     // Prose must appear somewhere
     expect(result).toContain("First prose");
     expect(result).toContain("Second prose");
+  });
+});
+
+// ── framesToProseGaps ─────────────────────────────────────────────────────────
+
+// Helper to create a minimal Frame with only the fields framesToProseGaps needs
+function fakeFrame(gridRow: number, gridH: number): any {
+  return {
+    id: `f-${gridRow}`,
+    x: 0, y: 0, w: 0, h: 0, z: 0,
+    children: [],
+    content: null,
+    clip: false,
+    dirty: false,
+    gridRow,
+    gridCol: 0,
+    gridW: 10,
+    gridH,
+  };
+}
+
+describe("framesToProseGaps", () => {
+  it("no frames → single infinite gap from row 0", () => {
+    const gaps = framesToProseGaps([]);
+    expect(gaps).toEqual([{ startRow: 0, endRow: Infinity }]);
+  });
+
+  it("one frame → gap before and gap after", () => {
+    const gaps = framesToProseGaps([fakeFrame(5, 3)]); // frame occupies rows 5-7
+    expect(gaps).toEqual([
+      { startRow: 0, endRow: 4 },    // rows 0-4
+      { startRow: 8, endRow: Infinity }, // rows 8+
+    ]);
+  });
+
+  it("frame at row 0 → no gap before, gap after", () => {
+    const gaps = framesToProseGaps([fakeFrame(0, 3)]); // frame occupies rows 0-2
+    expect(gaps).toEqual([
+      { startRow: 3, endRow: Infinity },
+    ]);
+  });
+
+  it("two non-overlapping frames → three gaps", () => {
+    const gaps = framesToProseGaps([fakeFrame(3, 2), fakeFrame(8, 2)]);
+    // frames occupy rows 3-4 and 8-9
+    expect(gaps).toEqual([
+      { startRow: 0, endRow: 2 },    // rows 0-2
+      { startRow: 5, endRow: 7 },    // rows 5-7
+      { startRow: 10, endRow: Infinity },
+    ]);
+  });
+
+  it("overlapping frames → merged, two gaps", () => {
+    const gaps = framesToProseGaps([fakeFrame(3, 4), fakeFrame(5, 4)]);
+    // frame A rows 3-6, frame B rows 5-8 → merged 3-8
+    expect(gaps).toEqual([
+      { startRow: 0, endRow: 2 },
+      { startRow: 9, endRow: Infinity },
+    ]);
+  });
+
+  it("adjacent frames (touching) → merged", () => {
+    const gaps = framesToProseGaps([fakeFrame(3, 3), fakeFrame(6, 3)]);
+    // frame A rows 3-5, frame B rows 6-8 → merged 3-8
+    expect(gaps).toEqual([
+      { startRow: 0, endRow: 2 },
+      { startRow: 9, endRow: Infinity },
+    ]);
+  });
+
+  it("unsorted frames → sorted by gridRow before processing", () => {
+    const gaps = framesToProseGaps([fakeFrame(8, 2), fakeFrame(3, 2)]);
+    // same as "two non-overlapping" but reverse input order
+    expect(gaps).toEqual([
+      { startRow: 0, endRow: 2 },
+      { startRow: 5, endRow: 7 },
+      { startRow: 10, endRow: Infinity },
+    ]);
+  });
+
+  it("three frames with middle gap only", () => {
+    const gaps = framesToProseGaps([fakeFrame(0, 3), fakeFrame(5, 2), fakeFrame(9, 3)]);
+    // rows 0-2, 5-6, 9-11
+    expect(gaps).toEqual([
+      { startRow: 3, endRow: 4 },
+      { startRow: 7, endRow: 8 },
+      { startRow: 12, endRow: Infinity },
+    ]);
   });
 });
 
@@ -428,9 +511,7 @@ describe("Fix 4: per-cell clipping in collectFrameCells", () => {
     const result = gridSerialize(
       [parentRect],
       "",
-      [],
       grid,
-      8, 16,
       [],
       [],
     );
@@ -496,9 +577,7 @@ describe("Fix 4: per-cell clipping in collectFrameCells", () => {
     const result = gridSerialize(
       [parentRect],
       "",
-      [],
       grid,
-      8, 16,
       [],
       [],
     );

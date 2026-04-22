@@ -109,8 +109,7 @@ function fullSave(
 ): { md: string; state: typeof state; originalGrid: string[][]; frameBboxSnapshot: FrameBbox[] } {
   const md = gridSerialize(
     getFrames(state), getDoc(state),
-    getProseSegmentMap(state), originalGrid,
-    CW, CH,
+    originalGrid,
     getOriginalProseSegments(state),
     frameBboxSnapshot,
   );
@@ -506,8 +505,7 @@ describe("diagnostic: prose editing serialization", () => {
     // Now serialize (no frames moved, so !anyDirty path)
     const md = gridSerialize(
       getFrames(s), getDoc(s),
-      getProseSegmentMap(s), loaded.originalGrid,
-      CW, CH,
+      loaded.originalGrid,
       getOriginalProseSegments(s),
       loaded.frameBboxSnapshot,
     );
@@ -552,8 +550,7 @@ describe("diagnostic: prose editing serialization", () => {
     // Serialize without shifting frames (as the bug may be here)
     const md1 = gridSerialize(
       getFrames(s), getDoc(s),
-      getProseSegmentMap(s), loaded.originalGrid,
-      CW, CH,
+      loaded.originalGrid,
       getOriginalProseSegments(s),
       loaded.frameBboxSnapshot,
     );
@@ -571,8 +568,7 @@ describe("diagnostic: prose editing serialization", () => {
 
     const md2 = gridSerialize(
       getFrames(shifted), getDoc(shifted),
-      getProseSegmentMap(shifted), loaded.originalGrid,
-      CW, CH,
+      loaded.originalGrid,
       getOriginalProseSegments(shifted),
       loaded.frameBboxSnapshot,
     );

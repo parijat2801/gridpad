@@ -211,8 +211,7 @@ export default function DemoV2() {
       const state = stateRef.current;
       const md = gridSerialize(
         getFrames(state), getDoc(state),
-        getProseSegmentMap(state), originalGridRef.current,
-        cwRef.current, chRef.current,
+        originalGridRef.current,
         getOriginalProseSegments(state),
         frameBboxSnapshotRef.current,
       );
@@ -651,8 +650,7 @@ export default function DemoV2() {
           const state = stateRef.current;
           return gridSerialize(
             getFrames(state), getDoc(state),
-            getProseSegmentMap(state), originalGridRef.current,
-            cwRef.current, chRef.current,
+            originalGridRef.current,
             getOriginalProseSegments(state),
             frameBboxSnapshotRef.current,
           );
@@ -663,8 +661,7 @@ export default function DemoV2() {
           const cw = cwRef.current, ch = chRef.current;
           const md = gridSerialize(
             getFrames(state), getDoc(state),
-            getProseSegmentMap(state), originalGridRef.current,
-            cw, ch,
+            originalGridRef.current,
             getOriginalProseSegments(state),
             frameBboxSnapshotRef.current,
           );

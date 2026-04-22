@@ -2,6 +2,39 @@
 import type { Frame } from "./frame";
 import type { ProseSegment } from "./proseSegments";
 
+// ── Prose gap derivation ──────────────────────────────────────
+
+/** Compute row intervals where prose can go — the complement of top-level
+ * frame row ranges. Merges overlapping/adjacent frames before computing gaps. */
+export function framesToProseGaps(
+  frames: Frame[],
+): { startRow: number; endRow: number }[] {
+  if (frames.length === 0) return [{ startRow: 0, endRow: Infinity }];
+
+  // Sort by gridRow, merge overlapping/adjacent intervals
+  const sorted = [...frames].sort((a, b) => a.gridRow - b.gridRow);
+  const merged: { start: number; end: number }[] = [];
+  for (const f of sorted) {
+    const end = f.gridRow + f.gridH; // exclusive
+    if (merged.length > 0 && f.gridRow <= merged[merged.length - 1].end) {
+      merged[merged.length - 1].end = Math.max(merged[merged.length - 1].end, end);
+    } else {
+      merged.push({ start: f.gridRow, end });
+    }
+  }
+
+  // Emit gaps between merged intervals
+  const gaps: { startRow: number; endRow: number }[] = [];
+  if (merged[0].start > 0) {
+    gaps.push({ startRow: 0, endRow: merged[0].start - 1 });
+  }
+  for (let i = 1; i < merged.length; i++) {
+    gaps.push({ startRow: merged[i - 1].end, endRow: merged[i].start - 1 });
+  }
+  gaps.push({ startRow: merged[merged.length - 1].end, endRow: Infinity });
+  return gaps;
+}
+
 // ── Junction repair ────────────────────────────────────────
 
 /** All box-drawing characters we recognize */
@@ -90,10 +123,7 @@ export interface FrameBbox {
 export function gridSerialize(
   frames: Frame[],
   prose: string,
-  proseSegmentMap: { row: number; col: number }[],
   originalGrid: string[][],
-  charWidth: number,
-  charHeight: number,
   originalProseSegments: ProseSegment[],
   originalFrameBboxes?: FrameBbox[],
 ): string {
@@ -203,55 +233,29 @@ export function gridSerialize(
   // Phase B.6 removed: row-wide wire blanking was too destructive (erased
   // valid sibling edges). Fixes 1+4 eliminate the orphan sources it masked.
 
-  // Phase C — write prose.
-  // If any frame moved (dirty), reflow prose into rows not occupied by frames.
-  // If no frame moved, use original proseSegmentMap positions (preserves round-trip).
-  const anyDirtyRec = (fs: Frame[]): boolean =>
-    fs.some(f => f.dirty || anyDirtyRec(f.children));
-  const anyDirty = anyDirtyRec(frames);
-
+  // Phase C — write prose into frame gaps.
+  // Derive gap intervals from current frame positions (always fresh).
+  const gaps = framesToProseGaps(frames);
   const proseLines = prose.split("\n");
 
-  if (!anyDirty) {
-    // No-edit path: write prose at original positions
-    for (let i = 0; i < proseSegmentMap.length && i < proseLines.length; i++) {
-      const { row, col } = proseSegmentMap[i];
-      const chars = [...proseLines[i]];
-      while (grid.length <= row) grid.push([]);
-      while (grid[row].length < col + chars.length) grid[row].push(" ");
-      for (let c = 0; c < chars.length; c++) {
-        grid[row][col + c] = chars[c];
-      }
-    }
-  } else {
-    // Dirty path: reflow prose into rows not occupied by frames
-    const frameRows = new Set<number>();
-    const collectFrameRows = (fs: Frame[], offRow: number) => {
-      for (const f of fs) {
-        const absRow = offRow + f.gridRow;
-        for (let r = absRow; r < absRow + f.gridH; r++) frameRows.add(r);
-        collectFrameRows(f.children, absRow);
-      }
-    };
-    collectFrameRows(frames, 0);
+  let gapIdx = 0;
+  let rowInGap = gaps.length > 0 ? Math.max(0, gaps[0].startRow) : 0;
 
-    // Monotonic reflow: try to keep each line near its original row,
-    // but never place a line above a previously-placed line (prevents reordering).
-    let minRow = 0;
-    for (let i = 0; i < proseLines.length; i++) {
-      const origRow = proseSegmentMap[i]?.row ?? minRow;
-      let row = Math.max(origRow, minRow);
-      while (frameRows.has(row)) row++;
-
-      const col = proseSegmentMap[i]?.col ?? 0;
-      const chars = [...proseLines[i]];
-      while (grid.length <= row) grid.push([]);
-      while (grid[row].length < col + chars.length) grid[row].push(" ");
-      for (let c = 0; c < chars.length; c++) {
-        grid[row][col + c] = chars[c];
-      }
-      minRow = row + 1;
+  for (let i = 0; i < proseLines.length; i++) {
+    // Advance to next gap if current is exhausted
+    while (gapIdx < gaps.length && rowInGap > gaps[gapIdx].endRow) {
+      gapIdx++;
+      if (gapIdx < gaps.length) rowInGap = Math.max(0, gaps[gapIdx].startRow);
     }
+
+    const row = rowInGap;
+    const chars = [...proseLines[i]];
+    while (grid.length <= row) grid.push([]);
+    while (grid[row].length < chars.length) grid[row].push(" ");
+    for (let c = 0; c < chars.length; c++) {
+      grid[row][c] = chars[c];
+    }
+    rowInGap++;
   }
 
   // Phase D — flatten

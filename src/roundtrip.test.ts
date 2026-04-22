@@ -8,7 +8,6 @@ import { gridSerialize, snapshotFrameBboxes } from "./gridSerialize";
 import {
   createEditorStateFromText,
   getFrames,
-  getProseSegmentMap,
   getOriginalProseSegments,
   getDoc,
   applyMoveFrame,
@@ -42,9 +41,7 @@ function roundTrip(text: string): string {
   return gridSerialize(
     getFrames(state),
     getDoc(state),
-    getProseSegmentMap(state),
     originalGrid,
-    CW, CH,
     getOriginalProseSegments(state),
   );
 }
@@ -176,7 +173,7 @@ describe("round-trip: after edits", () => {
     state = applyMoveFrame(state, container.id, 2, 0, CW, CH);
     const result = gridSerialize(
       getFrames(state), getDoc(state),
-      getProseSegmentMap(state), originalGrid, CW, CH,
+      originalGrid,
       getOriginalProseSegments(state), origBboxes,
     );
     expect(result).toContain("Prose");
