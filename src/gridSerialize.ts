@@ -230,8 +230,30 @@ export function gridSerialize(
   // Phase B.5 — repair junction characters where frame borders meet
   repairJunctions(grid);
 
-  // Phase B.6 removed: row-wide wire blanking was too destructive (erased
-  // valid sibling edges). Fixes 1+4 eliminate the orphan sources it masked.
+  // Phase B.6 — blank orphaned wire chars outside all current frame bboxes.
+  // Only runs when frames are dirty — when nothing moved, the original grid's
+  // wire chars (including connecting lines not part of any frame) are preserved.
+  {
+    const anyDirtyRec = (fs: Frame[]): boolean =>
+      fs.some(f => f.dirty || anyDirtyRec(f.children));
+    if (anyDirtyRec(frames)) {
+      const WIRE_CHARS = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"]);
+      const currentBboxes = snapshotFrameBboxes(frames);
+      const isInsideFrame = (r: number, c: number): boolean => {
+        for (const b of currentBboxes) {
+          if (r >= b.row && r < b.row + b.h && c >= b.col && c < b.col + b.w) return true;
+        }
+        return false;
+      };
+      for (let r = 0; r < grid.length; r++) {
+        for (let c = 0; c < grid[r].length; c++) {
+          if (WIRE_CHARS.has(grid[r][c]) && !isInsideFrame(r, c)) {
+            grid[r][c] = " ";
+          }
+        }
+      }
+    }
+  }
 
   // Phase C — write prose into frame gaps.
   // Derive gap intervals from current frame positions (always fresh).

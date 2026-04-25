@@ -73,8 +73,8 @@ const H_EDGE = new Set(["─", "━", "═", "┬", "┴", "┼", "╤", "╧", 
 const V_EDGE = new Set(["│", "║", "├", "┤", "┼", "╟", "╢", "╫", "|", "►", "◄"]);
 
 // For line detection (stricter than edge — excludes corners)
-const H_LINE_CHAR = new Set(["─", "━", "═", "-"]);
-const V_LINE_CHAR = new Set(["│", "║", "|"]);
+const H_LINE_CHAR = new Set(["─", "━", "═"]);
+const V_LINE_CHAR = new Set(["│", "║"]);
 
 function isTL(ch: string): boolean {
   return TL_CORNERS.has(ch);

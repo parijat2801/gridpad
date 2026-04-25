@@ -122,6 +122,11 @@ describe("round-trip: no edits", () => {
     expect(roundTrip(text)).toBe(text);
   });
 
+  it("markdown table with dashes is not wireframe", () => {
+    const text = "# Table\n\n| Name | Age |\n|------|-----|\n| Alice| 30  |\n\n---\n\nAfter the break.";
+    expect(roundTrip(text)).toBe(text);
+  });
+
   it("multiple wireframe regions separated by prose", () => {
     const text = [
       "Top prose",

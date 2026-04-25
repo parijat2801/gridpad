@@ -46,7 +46,11 @@ export function layoutTextChildren(
     else y = charHeight + (innerH - child.h) / 2 + vAlign.offset;
     y = Math.max(0, y);
 
-    return { ...child, x, y, gridRow: Math.round(y / charHeight), gridCol: Math.round(x / charWidth) };
+    // Compute grid coords in grid space — no pixel round-trip.
+    // Clamp to parent interior: [1, gridH-2] for row, [1, gridW-2] for col.
+    const gridCol = Math.max(1, Math.min(frame.gridW - 2, Math.round(x / charWidth)));
+    const gridRow = Math.max(1, Math.min(frame.gridH - 2, Math.round(y / charHeight)));
+    return { ...child, x: gridCol * charWidth, y: gridRow * charHeight, gridRow, gridCol };
   });
 
   return { ...frame, children: newChildren };
