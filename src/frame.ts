@@ -246,8 +246,11 @@ export function resizeFrame(
   charWidth: number,
   charHeight: number,
 ): Frame {
-  const gridW = Math.max(2, size.gridW);
-  const gridH = Math.max(2, size.gridH);
+  // Minimum 3 rows/cols if frame has text children (need 1 interior row/col)
+  const hasTextChildren = frame.children.some(c => c.content?.type === "text");
+  const minDim = hasTextChildren ? 3 : 2;
+  const gridW = Math.max(minDim, size.gridW);
+  const gridH = Math.max(minDim, size.gridH);
   const w = gridW * charWidth;
   const h = gridH * charHeight;
 
