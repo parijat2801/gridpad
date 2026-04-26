@@ -96,8 +96,13 @@ export function reflowLayout(
   for (let i = 0; i < preparedLines.length; i++) {
     const prepared = preparedLines[i];
     if (prepared === null) {
-      // Empty source line — advance vertical position, no visual output
+      // Empty source line — advance then skip past any overlapping obstacle
       lineTop += lineHeight;
+      for (const obs of obstacles) {
+        if (lineTop + lineHeight > obs.y && lineTop < obs.y + obs.h) {
+          lineTop = obs.y + obs.h;
+        }
+      }
       continue;
     }
 
@@ -106,24 +111,20 @@ export function reflowLayout(
     let exhausted = false;
 
     while (!exhausted) {
-      const bandTop = lineTop;
-      const bandBottom = lineTop + lineHeight;
-
-      const blocked: Interval[] = [];
-      for (const obs of obstacles) {
-        if (bandBottom <= obs.y || bandTop >= obs.y + obs.h) continue;
-        blocked.push({ left: obs.x, right: obs.x + obs.w });
+      // Skip past any obstacle that overlaps the current line band
+      let skipped = true;
+      while (skipped) {
+        skipped = false;
+        for (const obs of obstacles) {
+          if (lineTop + lineHeight > obs.y && lineTop < obs.y + obs.h) {
+            lineTop = obs.y + obs.h;
+            skipped = true;
+          }
+        }
       }
+      if (lineTop > 50000) break;
 
-      const slots = carveSlots({ left: 0, right: canvasWidth }, blocked);
-
-      if (slots.length === 0) {
-        lineTop += lineHeight;
-        if (lineTop > 50000) break;
-        continue;
-      }
-
-      slots.sort((a, b) => a.left - b.left);
+      const slots = [{ left: 0, right: canvasWidth }];
 
       for (const slot of slots) {
         const slotWidth = slot.right - slot.left;

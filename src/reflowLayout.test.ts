@@ -113,20 +113,19 @@ describe("reflowLayout obstacle handling", () => {
     }
   });
 
-  it("text flows around a rect obstacle", () => {
-    const obstacle: Obstacle = { x: 100, y: 20, w: 200, h: 40 };
+  it("text skips over a full-width obstacle band", () => {
+    const obstacle: Obstacle = { x: 0, y: 20, w: CANVAS_WIDTH, h: 40 };
     const prepared = prepareWithSegments(SAMPLE_TEXT, FONT, { whiteSpace: "pre-wrap" });
     const result = reflowLayout([prepared], CANVAS_WIDTH, LH, [obstacle]);
     expect(result.lines.length).toBeGreaterThan(0);
-    const affectedLines = result.lines.filter((line) => {
-      const bandBottom = line.y + LH;
-      return bandBottom > obstacle.y && line.y < obstacle.y + obstacle.h;
+    // No lines should land inside the obstacle band
+    const insideObstacle = result.lines.filter((line) => {
+      return line.y + LH > obstacle.y && line.y < obstacle.y + obstacle.h;
     });
-    expect(affectedLines.length).toBeGreaterThan(0);
-    const hasNarrowedSlot = affectedLines.some(
-      (line) => line.x !== 0 || line.width < CANVAS_WIDTH - 1,
-    );
-    expect(hasNarrowedSlot).toBe(true);
+    expect(insideObstacle.length).toBe(0);
+    // Lines after the obstacle should start below it
+    const linesAfter = result.lines.filter(l => l.y >= obstacle.y + obstacle.h);
+    expect(linesAfter.length).toBeGreaterThan(0);
   });
 });
 
@@ -193,18 +192,15 @@ describe("reflowLayout per-line cache equivalence", () => {
     }
   });
 
-  it("per-line cache with obstacles produces correct layout", () => {
+  it("per-line cache with obstacles skips obstacle band", () => {
     const text = "The quick brown fox jumps over the lazy dog. Pack my box.";
-    const obstacle = { x: 100, y: 0, w: 200, h: 40 };
+    const obstacle = { x: 0, y: 0, w: 600, h: 40 };
     const result = reflowLayout(prepareLines(text), 600, LH, [obstacle]);
     expect(result.lines.length).toBeGreaterThan(0);
-    const affected = result.lines.filter(l => {
-      const bandBot = l.y + LH;
-      return bandBot > obstacle.y && l.y < obstacle.y + obstacle.h;
-    });
-    expect(affected.length).toBeGreaterThan(0);
-    const hasNarrowed = affected.some(l => l.x !== 0 || l.width < 599);
-    expect(hasNarrowed).toBe(true);
+    // All lines should start below the obstacle
+    for (const l of result.lines) {
+      expect(l.y).toBeGreaterThanOrEqual(obstacle.y + obstacle.h);
+    }
   });
 });
 

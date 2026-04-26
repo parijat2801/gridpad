@@ -17,9 +17,9 @@ import {
   setTextEditEffect, editTextFrameEffect, getTextEdit,
   type CursorPos,
 } from "./editorState";
-import { gridSerialize, rebuildOriginalGrid, snapshotFrameBboxes, type FrameBbox } from "./gridSerialize";
+import { gridSerialize, rebuildOriginalGrid, snapshotFrameBboxes, framesToProseGaps, type FrameBbox } from "./gridSerialize";
 import { scanToFrames } from "./scanToFrames";
-import { type Frame, framesToObstacles, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
+import { type Frame, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { setTextAlignEffect } from "./editorState";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
@@ -252,7 +252,21 @@ export default function DemoV2() {
 
   function doLayout() {
     if (preparedRef.current.length === 0) { linesRef.current = []; return; }
-    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, PROSE_LINE_HEIGHT, framesToObstacles(framesRef.current)).lines;
+    // Use grid-snapped positions for vertical bands (stable during drag)
+    const ch = chRef.current;
+    const sorted = [...framesRef.current].sort((a, b) => a.gridRow - b.gridRow);
+    const merged: { y: number; bottom: number }[] = [];
+    for (const f of sorted) {
+      const y = f.gridRow * ch;
+      const bottom = y + f.gridH * ch;
+      if (merged.length > 0 && y <= merged[merged.length - 1].bottom) {
+        merged[merged.length - 1].bottom = Math.max(merged[merged.length - 1].bottom, bottom);
+      } else {
+        merged.push({ y, bottom });
+      }
+    }
+    const verticalBands = merged.map(m => ({ x: 0, y: m.y, w: sizeRef.current.w, h: m.bottom - m.y }));
+    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, chRef.current, verticalBands).lines;
   }
 
   function paint() {
@@ -261,7 +275,7 @@ export default function DemoV2() {
     if (!stateRef.current) return;
     const { w, h: viewH } = sizeRef.current;
     let contentH = 100;
-    for (const line of linesRef.current) contentH = Math.max(contentH, line.y + PROSE_LINE_HEIGHT);
+    for (const line of linesRef.current) contentH = Math.max(contentH, line.y + chRef.current);
     for (const f of framesRef.current) contentH = Math.max(contentH, f.y + f.h);
     contentH = Math.max(contentH + 40, viewH);
     // Update scroll spacer to enable scrolling over full content
@@ -281,8 +295,8 @@ export default function DemoV2() {
     ctx.translate(0, -scrollTop);
     ctx.font = PROSE_FONT_RENDER; ctx.fillStyle = FG_COLOR; ctx.textBaseline = "top";
     // Viewport culling — only draw visible content
-    const viewTop = scrollTop - PROSE_LINE_HEIGHT;
-    const viewBot = scrollTop + viewH + PROSE_LINE_HEIGHT;
+    const viewTop = scrollTop - chRef.current;
+    const viewBot = scrollTop + viewH + chRef.current;
     for (const line of linesRef.current) {
       if (line.y + PROSE_LINE_HEIGHT >= viewTop && line.y <= viewBot) ctx.fillText(line.text, line.x, line.y);
     }
@@ -299,7 +313,7 @@ export default function DemoV2() {
     const cursor = proseCursorRef.current;
     if (cursor && blinkRef.current) {
       ctx.font = PROSE_FONT_RENDER;
-      const pos = findCursorLine(cursor, linesRef.current, (s) => ctx.measureText(s).width, PROSE_LINE_HEIGHT);
+      const pos = findCursorLine(cursor, linesRef.current, (s) => ctx.measureText(s).width, chRef.current);
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(pos.x, pos.y, 2, PROSE_LINE_HEIGHT);
     }
