@@ -1,0 +1,14 @@
+Test: no-edit-simple-box
+Input lines: 8
+Output lines: 8
+Markdown match: true
+Visual diff: 0.00%
+Ghosts: 0
+Render failures: 0
+Prose issues: 0
+Prose-frame overlaps: 0
+Frame tree diffs: 0
+Invariant failures: 0
+
+Prose doc after reload: 1 lines
+Frames before: 1  Frames after: 1

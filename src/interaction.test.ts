@@ -41,28 +41,28 @@ beforeAll(() => {
 
 describe("drag: incremental moves", () => {
   it("3 sequential move deltas land frame at correct position", () => {
-    const f = createFrame({ x: 100, y: 200, w: 80, h: 40 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
-    const startX = 100, startY = 200;
+    // Use cw=5, ch=5 so gridCol=20, gridRow=40 corresponds to x=100, y=200
+    const CW = 5, CH = 5;
+    const f = { ...createFrame({ x: 100, y: 200, w: 80, h: 40 }), gridCol: 20, gridRow: 40 };
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
 
-    // Simulate 3 mousemove events, each 5px further
-    for (let i = 1; i <= 3; i++) {
-      const current = getFrames(state)[0];
-      const targetX = startX + i * 5;
-      const targetY = startY + i * 5;
-      state = applyMoveFrame(state, f.id, targetX - current.x, targetY - current.y);
+    // Simulate 3 mousemove events, each 1 cell (5px) further
+    for (let i = 0; i < 3; i++) {
+      state = applyMoveFrame(state, f.id, 1, 1, CW, CH);
     }
 
     const final = getFrames(state)[0];
-    expect(final.x).toBe(115); // 100 + 3*5
-    expect(final.y).toBe(215); // 200 + 3*5
+    expect(final.x).toBe(115); // (20+3)*5 = 115
+    expect(final.y).toBe(215); // (40+3)*5 = 215
   });
 
   it("drag to negative coordinates clamps at 0", () => {
-    const f = createFrame({ x: 5, y: 5, w: 80, h: 40 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
-    // Move far left/up
-    state = applyMoveFrame(state, f.id, -100, -100);
+    // Use cw=5, ch=5 so gridCol=1, gridRow=1 corresponds to x=5, y=5
+    const CW = 5, CH = 5;
+    const f = { ...createFrame({ x: 5, y: 5, w: 80, h: 40 }), gridCol: 1, gridRow: 1 };
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
+    // Move far left/up: dCol=-20, dRow=-20 → x=(1-20)*5=-95, y=-95
+    state = applyMoveFrame(state, f.id, -20, -20, CW, CH);
     const final = getFrames(state)[0];
     // moveFrame doesn't clamp — DemoV2 does Math.max(0, ...) before dispatching
     // So moveFrame itself allows negative. This test documents the behavior.
@@ -73,7 +73,7 @@ describe("drag: incremental moves", () => {
 describe("editTextFrameEffect on child frames", () => {
   it("top-level text frame updates correctly", () => {
     const f = createTextFrame({ text: "Hi", row: 0, col: 0, charWidth: 10, charHeight: 20 });
-    let state = createEditorState({ prose: "", frames: [f], regions: [], proseParts: [] });
+    let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
     state = state.update({
       effects: editTextFrameEffect.of({ id: f.id, text: "Hello", charWidth: 10 }),
       annotations: [Transaction.addToHistory.of(true)],
@@ -106,8 +106,7 @@ describe("prose cursor placement", () => {
     let state = createEditorState({
       prose: "hello\nworld\nfoo",
       frames: [],
-      regions: [],
-      proseParts: [],
+      proseSegmentMap: [],
     });
     state = moveCursorTo(state, { row: 1, col: 3 });
     expect(getCursor(state)).toEqual({ row: 1, col: 3 });
@@ -117,8 +116,7 @@ describe("prose cursor placement", () => {
     let state = createEditorState({
       prose: "hello\nworld",
       frames: [],
-      regions: [],
-      proseParts: [],
+      proseSegmentMap: [],
     });
     state = proseInsert(state, { row: 1, col: 5 }, "!");
     expect(getDoc(state)).toBe("hello\nworld!");

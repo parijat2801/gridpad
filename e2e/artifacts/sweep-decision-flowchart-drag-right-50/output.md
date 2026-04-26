@@ -1,0 +1,40 @@
+# Deployment Decision Flow
+
+     ┌──────────┐
+     │  Start   │
+     └──────────┘
+
+     ┌──────────┐
+     │  Tests   │
+     │  Pass?   │
+     └──────────┘
+     │
+   │    │
+  Yes   No
+┌──┴──┐ ┌──┴──────┐
+│ QA  │ │  Fix    │
+│Check│ │  Bugs   │
+└──┬──┘ └──┬──────┘
+
+┌──┴───────┴──┐
+│   Deploy    │
+│  to Staging │
+└──────┬──────┘
+   │    │
+┌──────┴──────┐
+│  Smoke Test │
+│  Pass?      │
+└──┬───────┬──┘
+   │       │
+       │
+   │       │
+┌──┴────┐ ┌┴────────┐
+│Deploy │ │ Rollback
+│  Prod │ │
+└───────┘ └──────────┘
+  Yes      No
+   │       │
+                     │
+                     │
+
+Review deployment logs after each release.

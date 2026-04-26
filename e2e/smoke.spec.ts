@@ -1,10 +1,8 @@
 import { test, expect } from "@playwright/test";
 
-const URL = "http://localhost:5173";
-
 test.describe("Gridpad Demo", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto(URL);
+    await page.goto("/");
     await page.waitForTimeout(2000);
   });
 
@@ -88,7 +86,7 @@ test.describe("Gridpad Demo", () => {
     const errors: string[] = [];
     page.on("console", msg => { if (msg.type() === "error") errors.push(msg.text()); });
     page.on("pageerror", err => errors.push(err.message));
-    await page.goto(URL);
+    await page.goto("/");
     await page.waitForTimeout(2000);
     const canvas = page.locator("canvas");
     const box = await canvas.boundingBox();

@@ -1,3 +1,4 @@
+// src/scanToFrames.test.ts
 import { describe, it, expect, beforeAll, vi } from "vitest";
 import { scanToFrames } from "./scanToFrames";
 
@@ -7,10 +8,7 @@ beforeAll(() => {
     const el = origCreateElement(tag);
     if (tag === "canvas") {
       (el as HTMLCanvasElement).getContext = (() => ({
-        font: "",
-        fillStyle: "",
-        textBaseline: "",
-        fillText: () => {},
+        font: "", fillStyle: "", textBaseline: "", fillText: () => {},
         measureText: (text: string) => ({
           width: text.length * 9.6,
           actualBoundingBoxAscent: 12,
@@ -22,40 +20,47 @@ beforeAll(() => {
   });
 });
 
-describe("scanToFrames", () => {
-  it("pure prose returns no frames and one prose entry", () => {
-    const { frames, prose, regions } = scanToFrames("Hello world", 9.6, 18.4);
+describe("scanToFrames (grid-based)", () => {
+  it("returns originalGrid as the scanner's grid", () => {
+    const { originalGrid } = scanToFrames("Hello\n┌─┐\n└─┘", 9.6, 18.4);
+    expect(originalGrid).toHaveLength(3);
+    expect(originalGrid[0].join("")).toBe("Hello");
+  });
+
+  it("returns proseSegments instead of prose/regions", () => {
+    const result = scanToFrames("Hello world", 9.6, 18.4);
+    expect(result.proseSegments).toBeDefined();
+    expect(result.proseSegments[0]).toEqual({ row: 0, col: 0, text: "Hello world" });
+    // Old fields should not exist
+    expect((result as any).prose).toBeUndefined();
+    expect((result as any).regions).toBeUndefined();
+  });
+
+  it("pure prose returns no frames", () => {
+    const { frames, proseSegments } = scanToFrames("Hello world", 9.6, 18.4);
     expect(frames).toHaveLength(0);
-    expect(prose).toHaveLength(1);
-    expect(prose[0].text).toBe("Hello world");
-    expect(regions).toHaveLength(1);
-    expect(regions[0].type).toBe("prose");
+    expect(proseSegments.length).toBeGreaterThan(0);
   });
 
-  it("single rect returns one container frame with children", () => {
-    const { frames, prose, regions } = scanToFrames(
-      "┌─┐\n│ │\n└─┘",
-      9.6, 18.4,
-    );
+  it("single rect returns frames at absolute positions", () => {
+    const { frames, proseSegments } = scanToFrames("┌─┐\n│ │\n└─┘", 9.6, 18.4);
     expect(frames).toHaveLength(1);
-    expect(prose).toHaveLength(0);
-    expect(regions).toHaveLength(1);
-    expect(regions[0].type).toBe("wireframe");
+    // No prose segments inside the rect
+    expect(proseSegments).toHaveLength(0);
   });
 
-  it("prose before and after wireframe returns frames and two prose entries", () => {
-    // Need blank lines to separate prose from wireframe — scanner merges
-    // adjacent rows (gap ≤ 2) into a single wireframe range.
-    const text = "intro line\n\n\n┌─┐\n│ │\n└─┘\n\n\noutro line";
-    const { frames, prose } = scanToFrames(text, 9.6, 18.4);
-    expect(frames).toHaveLength(1);
-    expect(prose).toHaveLength(2);
+  it("prose + wireframe returns both", () => {
+    const text = "Hello\n\n┌──┐\n│  │\n└──┘\n\nWorld";
+    const { frames, proseSegments } = scanToFrames(text, 9.6, 18.4);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(proseSegments.some(s => s.text === "Hello")).toBe(true);
+    expect(proseSegments.some(s => s.text === "World")).toBe(true);
   });
 
-  it("empty string returns no frames, no prose, no regions", () => {
-    const { frames, prose, regions } = scanToFrames("", 9.6, 18.4);
+  it("empty string returns empty everything", () => {
+    const { frames, proseSegments, originalGrid } = scanToFrames("", 9.6, 18.4);
     expect(frames).toHaveLength(0);
-    expect(prose).toHaveLength(0);
-    expect(regions).toHaveLength(0);
+    expect(proseSegments).toHaveLength(0);
+    expect(originalGrid).toHaveLength(0);
   });
 });

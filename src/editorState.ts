@@ -1,6 +1,6 @@
 // src/editorState.ts
 // Single CM EditorState backing all of Gridpad's state.
-// Prose in doc, frames/regions/proseParts as StateFields.
+// Prose in doc, frames/proseSegmentMap as StateFields.
 // One history stack for everything — no zustand, no zundo.
 
 import {
@@ -14,17 +14,12 @@ import { history, undo, redo, undoDepth, redoDepth, invertedEffects } from "@cod
 import type { Frame } from "./frame";
 import { moveFrame, resizeFrame } from "./frame";
 import { layoutTextChildren } from "./autoLayout";
-import type { Region } from "./regions";
 import { scanToFrames } from "./scanToFrames";
+import type { ProseSegment } from "./proseSegments";
 
 export { undoDepth, redoDepth };
 
 // ── Types ──────────────────────────────────────────────────────────────────
-
-export interface ProsePart {
-  startRow: number;
-  text: string;
-}
 
 export interface CursorPos {
   row: number;  // 0-indexed line number
@@ -35,14 +30,16 @@ export interface CursorPos {
 
 export const moveFrameEffect = StateEffect.define<{
   id: string;
-  dx: number;
-  dy: number;
+  dCol: number;
+  dRow: number;
+  charWidth: number;
+  charHeight: number;
 }>();
 
 export const resizeFrameEffect = StateEffect.define<{
   id: string;
-  w: number;
-  h: number;
+  gridW: number;
+  gridH: number;
   charWidth: number;
   charHeight: number;
 }>();
@@ -52,10 +49,6 @@ const addFrameEffect = StateEffect.define<Frame>();
 const deleteFrameEffect = StateEffect.define<{ id: string }>();
 
 export const setZEffect = StateEffect.define<{ id: string; z: number }>();
-
-export const setRegionsEffect = StateEffect.define<Region[]>();
-
-export const setProsePartsEffect = StateEffect.define<ProsePart[]>();
 
 export const selectFrameEffect = StateEffect.define<string | null>();
 
@@ -74,6 +67,7 @@ export const setTextAlignEffect = StateEffect.define<{
 // Restore effect — used by invertedEffects for undo of frame mutations.
 const restoreFramesEffect = StateEffect.define<Frame[]>();
 const clearDirtyEffect = StateEffect.define<null>();
+const setOriginalProseSegmentsEffect = StateEffect.define<ProseSegment[]>();
 
 // Mark a frame dirty by id, propagating up to ancestors.
 function markDirtyById(frames: Frame[], id: string): { frames: Frame[]; found: boolean } {
@@ -107,7 +101,7 @@ const framesField = StateField.define<Frame[]>({
         return clearDirty(result);
       } else if (e.is(moveFrameEffect)) {
         const applyMove = (f: Frame): Frame => {
-          if (f.id === e.value.id) return moveFrame(f, { dx: e.value.dx, dy: e.value.dy });
+          if (f.id === e.value.id) return moveFrame(f, { dCol: e.value.dCol, dRow: e.value.dRow, charWidth: e.value.charWidth, charHeight: e.value.charHeight });
           if (f.children.length > 0) return { ...f, children: f.children.map(applyMove) };
           return f;
         };
@@ -115,7 +109,7 @@ const framesField = StateField.define<Frame[]>({
         result = markDirtyById(result, e.value.id).frames;
       } else if (e.is(resizeFrameEffect)) {
         const applyResize = (f: Frame): Frame => {
-          if (f.id === e.value.id) return resizeFrame(f, { w: e.value.w, h: e.value.h }, e.value.charWidth, e.value.charHeight);
+          if (f.id === e.value.id) return resizeFrame(f, { gridW: e.value.gridW, gridH: e.value.gridH }, e.value.charWidth, e.value.charHeight);
           if (f.children.length > 0) return { ...f, children: f.children.map(applyResize) };
           return f;
         };
@@ -145,6 +139,17 @@ const framesField = StateField.define<Frame[]>({
           });
         };
         result = removeById(result);
+        // Cascade: remove empty container parents (content === null, no children left after deletion)
+        const cascadeEmpty = (frames: Frame[]): Frame[] => {
+          return frames
+            .map(f => {
+              if (f.children.length === 0) return f;
+              const updated = cascadeEmpty(f.children);
+              return { ...f, children: updated };
+            })
+            .filter(f => !(f.content === null && f.children.length === 0 && f.dirty));
+        };
+        result = cascadeEmpty(result);
       } else if (e.is(setZEffect)) {
         const applyZ = (f: Frame): Frame => {
           if (f.id === e.value.id) return { ...f, z: e.value.z };
@@ -196,26 +201,6 @@ const framesField = StateField.define<Frame[]>({
   },
 });
 
-const regionsField = StateField.define<Region[]>({
-  create: () => [],
-  update(regions, tr: Transaction) {
-    for (const e of tr.effects) {
-      if (e.is(setRegionsEffect)) return e.value;
-    }
-    return regions;
-  },
-});
-
-const prosePartsField = StateField.define<ProsePart[]>({
-  create: () => [],
-  update(parts, tr: Transaction) {
-    for (const e of tr.effects) {
-      if (e.is(setProsePartsEffect)) return e.value;
-    }
-    return parts;
-  },
-});
-
 const selectedIdField = StateField.define<string | null>({
   create: () => null,
   update(val, tr) {
@@ -244,17 +229,71 @@ export function getTextEdit(state: EditorState): { frameId: string; col: number 
   return state.field(textEditField);
 }
 
+const proseSegmentMapField = StateField.define<{ row: number; col: number }[]>({
+  create: () => [],
+  update(map, tr: Transaction) {
+    if (!tr.docChanged) return map;
+    const oldLines = tr.startState.doc.lines;
+    const newLines = tr.state.doc.lines;
+    const delta = newLines - oldLines;
+    if (delta === 0) return map;
+    let changeLine = 0;
+    tr.changes.iterChangedRanges((fromA) => {
+      changeLine = tr.startState.doc.lineAt(fromA).number - 1;
+    });
+    const result = [...map];
+    if (delta > 0) {
+      const insertAt = changeLine + 1;
+      const newEntries: { row: number; col: number }[] = [];
+      const baseRow = result[changeLine]?.row ?? changeLine;
+      for (let i = 0; i < delta; i++) {
+        newEntries.push({ row: baseRow + 1 + i, col: 0 });
+      }
+      result.splice(insertAt, 0, ...newEntries);
+      for (let i = insertAt + delta; i < result.length; i++) {
+        result[i] = { ...result[i], row: result[i].row + delta };
+      }
+    } else {
+      const removeAt = changeLine + 1;
+      const removeCount = Math.min(-delta, result.length - removeAt);
+      result.splice(removeAt, removeCount);
+      for (let i = removeAt; i < result.length; i++) {
+        result[i] = { ...result[i], row: result[i].row + delta };
+      }
+    }
+    return result;
+  },
+});
+
+export function getProseSegmentMap(state: EditorState): { row: number; col: number }[] {
+  return state.field(proseSegmentMapField);
+}
+
+const originalProseSegmentsField = StateField.define<ProseSegment[]>({
+  create: () => [],
+  update(segs, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setOriginalProseSegmentsEffect)) return e.value;
+    }
+    return segs;
+  },
+});
+
+export function getOriginalProseSegments(state: EditorState): ProseSegment[] {
+  return state.field(originalProseSegmentsField);
+}
+
 // ── Factory ────────────────────────────────────────────────────────────────
 
 interface EditorStateInit {
   prose: string;
   frames: Frame[];
-  regions: Region[];
-  proseParts: ProsePart[];
+  proseSegmentMap?: { row: number; col: number }[];
+  originalProseSegments?: ProseSegment[];
 }
 
 export function createEditorState(init: EditorStateInit): EditorState {
-  const { prose, frames, regions, proseParts } = init;
+  const { prose, frames } = init;
   // invertedEffects tells CM history how to undo frame mutations:
   // snapshot the frames array before the transaction and emit a
   // restoreFramesEffect that replays it on undo.
@@ -280,9 +319,20 @@ export function createEditorState(init: EditorStateInit): EditorState {
     framesField.init(() => frames),
     selectedIdField,
     textEditField,
-    regionsField.init(() => regions),
-    prosePartsField.init(() => proseParts),
   ];
+
+  if (init.proseSegmentMap) {
+    extensions.push(proseSegmentMapField.init(() => init.proseSegmentMap!));
+  } else {
+    extensions.push(proseSegmentMapField);
+  }
+
+  if (init.originalProseSegments) {
+    extensions.push(originalProseSegmentsField.init(() => init.originalProseSegments!));
+  } else {
+    extensions.push(originalProseSegmentsField);
+  }
+
   return EditorState.create({ doc: prose, extensions });
 }
 
@@ -292,9 +342,28 @@ export function createEditorStateFromText(
   charWidth: number,
   charHeight: number,
 ): EditorState {
-  const { frames, prose, regions } = scanToFrames(text, charWidth, charHeight);
-  const proseText = prose.map((p) => p.text).join("\n\n");
-  return createEditorState({ prose: proseText, frames, regions, proseParts: prose });
+  const { frames, proseSegments } = scanToFrames(text, charWidth, charHeight);
+  const byRow = new Map<number, string>();
+  for (const seg of proseSegments) {
+    const existing = byRow.get(seg.row) ?? "";
+    if (existing && seg.col > existing.length) {
+      byRow.set(seg.row, existing + " ".repeat(seg.col - existing.length) + seg.text);
+    } else {
+      byRow.set(seg.row, existing + seg.text);
+    }
+  }
+  const sortedRows = [...byRow.keys()].sort((a, b) => a - b);
+  const proseText = sortedRows.map(r => byRow.get(r)!).join("\n");
+  const proseSegmentMap = sortedRows.map(r => {
+    const seg = proseSegments.find(s => s.row === r);
+    return { row: r, col: seg?.col ?? 0 };
+  });
+  return createEditorState({
+    prose: proseText,
+    frames,
+    proseSegmentMap,
+    originalProseSegments: proseSegments,
+  });
 }
 
 // ── Accessors ──────────────────────────────────────────────────────────────
@@ -308,40 +377,12 @@ export function getFrames(state: EditorState): Frame[] {
 }
 
 
-export function getRegions(state: EditorState): Region[] {
-  return state.field(regionsField);
-}
-
-export function getProseParts(state: EditorState): ProsePart[] {
-  return state.field(prosePartsField);
-}
-
 // getCursor returns the cursor as grapheme {row, col}.
 // Returns null if the selection is a range (not a collapsed cursor).
 export function getCursor(state: EditorState): CursorPos | null {
   const sel = state.selection.main;
   if (!sel.empty) return null;
   return posToRowCol(state, sel.from);
-}
-
-export function rebuildProseParts(state: EditorState): { startRow: number; text: string }[] {
-  const regions = getRegions(state);
-  const doc = getDoc(state);
-  const lines = doc.split("\n");
-  const proseRegions = regions.filter(r => r.type === "prose");
-  const parts: { startRow: number; text: string }[] = [];
-  let lineOffset = 0;
-
-  for (let i = 0; i < proseRegions.length; i++) {
-    const region = proseRegions[i];
-    const regionLines = region.endRow - region.startRow + 1;
-    const slice = lines.slice(lineOffset, lineOffset + regionLines).join("\n");
-    parts.push({ startRow: region.startRow, text: slice });
-    lineOffset += regionLines;
-    // Skip the \n\n separator between prose parts (adds 1 empty line in the doc)
-    if (i < proseRegions.length - 1) lineOffset += 1;
-  }
-  return parts;
 }
 
 // ── Position converters ────────────────────────────────────────────────────
@@ -488,11 +529,13 @@ export function proseMoveDown(state: EditorState): EditorState {
 export function applyMoveFrame(
   state: EditorState,
   id: string,
-  dx: number,
-  dy: number,
+  dCol: number,
+  dRow: number,
+  charWidth: number,
+  charHeight: number,
 ): EditorState {
   return state.update({
-    effects: moveFrameEffect.of({ id, dx, dy }),
+    effects: moveFrameEffect.of({ id, dCol, dRow, charWidth, charHeight }),
     annotations: Transaction.addToHistory.of(true),
   }).state;
 }
@@ -500,13 +543,13 @@ export function applyMoveFrame(
 export function applyResizeFrame(
   state: EditorState,
   id: string,
-  w: number,
-  h: number,
+  gridW: number,
+  gridH: number,
   charWidth: number,
   charHeight: number,
 ): EditorState {
   return state.update({
-    effects: resizeFrameEffect.of({ id, w, h, charWidth, charHeight }),
+    effects: resizeFrameEffect.of({ id, gridW, gridH, charWidth, charHeight }),
     annotations: Transaction.addToHistory.of(true),
   }).state;
 }
@@ -549,6 +592,16 @@ export function applyDeleteFrame(state: EditorState, id: string): EditorState {
 export function applyClearDirty(state: EditorState): EditorState {
   return state.update({
     effects: clearDirtyEffect.of(null),
+    annotations: Transaction.addToHistory.of(false),
+  }).state;
+}
+
+export function applySetOriginalProseSegments(
+  state: EditorState,
+  segments: ProseSegment[],
+): EditorState {
+  return state.update({
+    effects: setOriginalProseSegmentsEffect.of(segments),
     annotations: Transaction.addToHistory.of(false),
   }).state;
 }

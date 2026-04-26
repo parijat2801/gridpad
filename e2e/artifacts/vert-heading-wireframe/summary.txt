@@ -1,0 +1,15 @@
+Test: vert-heading-wireframe
+Input lines: 21
+Output lines: 21
+Markdown match: true
+Visual diff: 0.00%
+Ghosts: 0
+Render failures: 1
+  Frame at (144,147) 67x13: no visible pixels (0.0% lit)
+Prose issues: 0
+Prose-frame overlaps: 0
+Frame tree diffs: 0
+Invariant failures: 0
+
+Prose doc after reload: 1 lines
+Frames before: 12  Frames after: 12

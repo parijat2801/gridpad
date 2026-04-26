@@ -1,0 +1,6 @@
+## User Flow
+
+┌─────────┐    ┌───────────┐    ┌──────────┐ ┌──────────┐
+└──Login──┴────┴─Dashboard─┴────┴─Settings─┴─┴──Logout──┘
+
+Drag the boxes to rearrange the flow.

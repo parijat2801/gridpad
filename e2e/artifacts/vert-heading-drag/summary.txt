@@ -1,0 +1,34 @@
+Test: vert-heading-drag
+Input lines: 13
+Output lines: 13
+Markdown match: false
+Visual diff: 0.00%
+Ghosts: 0
+Render failures: 0
+Prose issues: 0
+Prose-frame overlaps: 0
+Frame tree diffs: 0
+Invariant failures: 0
+
+Markdown diff:
+  L4:
+    - ""
+    + "┌──────────────────────┐"
+  L5:
+    - ""
+    + "│  Box                 │"
+  L6:
+    - "┌──────────────────────┐"
+    + "│                      │"
+  L7:
+    - "│  Box                 │"
+    + "└──────────────────────┘"
+  L8:
+    - "│                      │"
+    + ""
+  L9:
+    - "└──────────────────────┘"
+    + ""
+
+Prose doc after reload: 1 lines
+Frames before: 2  Frames after: 2

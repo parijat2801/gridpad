@@ -1,0 +1,52 @@
+[
+  {
+    "depth": 0,
+    "contentType": "container",
+    "text": null,
+    "absX": 0,
+    "absY": 26.737499999999997,
+    "w": 173.390625,
+    "h": 80.21249999999999,
+    "childCount": 2
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 26.737499999999997,
+    "w": 57.796875,
+    "h": 53.474999999999994,
+    "childCount": 1
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "A",
+    "absX": 19.265625,
+    "absY": 40.106249999999996,
+    "w": 9.6328125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 57.796875,
+    "absY": 26.737499999999997,
+    "w": 115.59375,
+    "h": 80.21249999999999,
+    "childCount": 1
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "B",
+    "absX": 86.6953125,
+    "absY": 40.106249999999996,
+    "w": 9.6328125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  }
+]

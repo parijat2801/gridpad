@@ -73,8 +73,8 @@ const H_EDGE = new Set(["─", "━", "═", "┬", "┴", "┼", "╤", "╧", 
 const V_EDGE = new Set(["│", "║", "├", "┤", "┼", "╟", "╢", "╫", "|", "►", "◄"]);
 
 // For line detection (stricter than edge — excludes corners)
-const H_LINE_CHAR = new Set(["─", "━", "═", "-"]);
-const V_LINE_CHAR = new Set(["│", "║", "|"]);
+const H_LINE_CHAR = new Set(["─", "━", "═"]);
+const V_LINE_CHAR = new Set(["│", "║"]);
 
 function isTL(ch: string): boolean {
   return TL_CORNERS.has(ch);
@@ -347,6 +347,7 @@ function detectTexts(
 ): { texts: ScannedText[]; textClaimed: Set<string> } {
   const texts: ScannedText[] = [];
   const textClaimed = new Set<string>();
+  const WIRE = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"]);
 
   for (let row = 0; row < grid.length; row++) {
     const width = grid[row].length;
@@ -368,7 +369,13 @@ function detectTexts(
         }
       } else {
         if (runStart >= 0) {
-          texts.push({ row, col: runStart, content: runContent });
+          // Skip wire-only text runs — they are structural chars from misaligned
+          // ASCII art, not user prose. Still claim the cells so they don't
+          // become unclaimed and leak into the base layer.
+          const isWireOnly = [...runContent].every(ch => WIRE.has(ch));
+          if (!isWireOnly) {
+            texts.push({ row, col: runStart, content: runContent });
+          }
           for (let c = runStart; c < runStart + runContent.length; c++) {
             textClaimed.add(key(row, c));
           }

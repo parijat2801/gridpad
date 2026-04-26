@@ -1,0 +1,32 @@
+Test: ix-move-then-edit
+Input lines: 8
+Output lines: 8
+Markdown match: false
+Visual diff: 0.00%
+Ghosts: 0
+Render failures: 1
+  Frame at (77,27) 154x53: no visible pixels (0.0% lit)
+Prose issues: 0
+Prose-frame overlaps: 0
+Frame tree diffs: 0
+Invariant failures: 0
+
+Markdown diff:
+  L1:
+    - "Prose above"
+    + " AFTER_MOVEProse above"
+  L3:
+    - "┌──────────────┐"
+    + "        ┌──────────────┐"
+  L4:
+    - "│              │"
+    + "        │              │"
+  L5:
+    - "│              │"
+    + "        │              │"
+  L6:
+    - "└──────────────┘"
+    + "        └──────────────┘"
+
+Prose doc after reload: 1 lines
+Frames before: 1  Frames after: 1

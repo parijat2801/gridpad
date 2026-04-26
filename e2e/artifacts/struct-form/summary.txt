@@ -1,0 +1,10 @@
+Nodes: 8
+Max depth: 2
+container 
+  rect 
+    text "Title"
+    text "Name:"
+  rect 
+    rect 
+    rect 
+    text "Email:"

@@ -46,7 +46,11 @@ export function layoutTextChildren(
     else y = charHeight + (innerH - child.h) / 2 + vAlign.offset;
     y = Math.max(0, y);
 
-    return { ...child, x, y };
+    // Compute grid coords in grid space — no pixel round-trip.
+    // Clamp to parent interior: [1, gridH-2] for row, [1, gridW-2] for col.
+    const gridCol = Math.max(1, Math.min(frame.gridW - 2, Math.round(x / charWidth)));
+    const gridRow = Math.max(1, Math.min(frame.gridH - 2, Math.round(y / charHeight)));
+    return { ...child, x: gridCol * charWidth, y: gridRow * charHeight, gridRow, gridCol };
   });
 
   return { ...frame, children: newChildren };
@@ -138,6 +142,7 @@ export function mergeAdjacentTexts(parent: Frame, charWidth: number, charHeight:
         current = {
           ...current,
           w: mergedW,
+          gridW: codepoints.length,
           content: { ...current.content!, text: mergedText, cells },
         };
         i++;
@@ -204,6 +209,8 @@ export function reparentChildren(
         ...child,
         x: child.x - parentRect.x,
         y: child.y - parentRect.y,
+        gridRow: child.gridRow - parentRect.gridRow,
+        gridCol: child.gridCol - parentRect.gridCol,
         content: { ...child.content, hAlign, vAlign },
       };
     } else {
@@ -212,6 +219,8 @@ export function reparentChildren(
         ...child,
         x: child.x - parentRect.x,
         y: child.y - parentRect.y,
+        gridRow: child.gridRow - parentRect.gridRow,
+        gridCol: child.gridCol - parentRect.gridCol,
       };
     }
 

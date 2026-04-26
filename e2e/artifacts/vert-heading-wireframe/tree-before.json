@@ -1,0 +1,122 @@
+[
+  {
+    "depth": 0,
+    "contentType": "container",
+    "text": null,
+    "absX": 0,
+    "absY": 106.94999999999999,
+    "w": 317.8828125,
+    "h": 106.94999999999999,
+    "childCount": 3
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 106.94999999999999,
+    "w": 317.8828125,
+    "h": 40.106249999999996,
+    "childCount": 2
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Dashboard",
+    "absX": 28.8984375,
+    "absY": 120.31875,
+    "w": 86.6953125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Content",
+    "absX": 144.4921875,
+    "absY": 147.05624999999998,
+    "w": 67.4296875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 0,
+    "absY": 133.6875,
+    "w": 125.2265625,
+    "h": 80.21249999999999,
+    "childCount": 4
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Nav",
+    "absX": 19.265625,
+    "absY": 147.05624999999998,
+    "w": 28.8984375,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Home",
+    "absX": 19.265625,
+    "absY": 160.42499999999998,
+    "w": 38.53125,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Search",
+    "absX": 19.265625,
+    "absY": 173.79375,
+    "w": 57.796875,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Settings",
+    "absX": 19.265625,
+    "absY": 187.16249999999997,
+    "w": 77.0625,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 1,
+    "contentType": "rect",
+    "text": null,
+    "absX": 115.59375,
+    "absY": 133.6875,
+    "w": 202.2890625,
+    "h": 80.21249999999999,
+    "childCount": 2
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "User: Alice",
+    "absX": 144.4921875,
+    "absY": 173.79375,
+    "w": 105.9609375,
+    "h": 13.368749999999999,
+    "childCount": 0
+  },
+  {
+    "depth": 2,
+    "contentType": "text",
+    "text": "Role: Admin",
+    "absX": 144.4921875,
+    "absY": 187.16249999999997,
+    "w": 105.9609375,
+    "h": 13.368749999999999,
+    "childCount": 0
+  }
+]

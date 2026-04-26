@@ -1,0 +1,65 @@
+Test: crit-10-enters
+Input lines: 8
+Output lines: 18
+Markdown match: false
+Visual diff: 0.00%
+Ghosts: 0
+Render failures: 1
+  Frame at (0,160) 154x53: no visible pixels (0.0% lit)
+Prose issues: 0
+Prose-frame overlaps: 0
+Frame tree diffs: 0
+Invariant failures: 0
+
+Markdown diff:
+  L1:
+    - "Prose above"
+    + ""
+  L3:
+    - "┌──────────────┐"
+    + ""
+  L4:
+    - "│              │"
+    + ""
+  L5:
+    - "│              │"
+    + ""
+  L6:
+    - "└──────────────┘"
+    + ""
+  L8:
+    - "Prose below"
+    + ""
+  L9:
+    - "<missing>"
+    + ""
+  L10:
+    - "<missing>"
+    + ""
+  L11:
+    - "<missing>"
+    + "Prose above"
+  L12:
+    - "<missing>"
+    + ""
+  L13:
+    - "<missing>"
+    + "┌──────────────┐"
+  L14:
+    - "<missing>"
+    + "│              │"
+  L15:
+    - "<missing>"
+    + "│              │"
+  L16:
+    - "<missing>"
+    + "└──────────────┘"
+  L17:
+    - "<missing>"
+    + ""
+  L18:
+    - "<missing>"
+    + "Prose below"
+
+Prose doc after reload: 1 lines
+Frames before: 1  Frames after: 1

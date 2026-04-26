@@ -1,0 +1,8 @@
+ COMBOProse above
+
+      ┌──────────────┐
+      │              │
+      │              │
+      └──────────────┘
+
+Prose below
