@@ -360,7 +360,7 @@ describe("Fix 3: recursive dirty detection", () => {
 // ── framesToProseGaps ─────────────────────────────────────────────────────────
 
 // Helper to create a minimal Frame with only the fields framesToProseGaps needs
-function fakeFrame(gridRow: number, gridH: number): any {
+function fakeFrame(gridRow: number, gridH: number): Frame {
   return {
     id: `f-${gridRow}`,
     x: 0, y: 0, w: 0, h: 0, z: 0,

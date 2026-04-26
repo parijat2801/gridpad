@@ -35,9 +35,16 @@ export function framesToProseGaps(
   return gaps;
 }
 
+// ── Shared constants ──────────────────────────────────────────
+
+const WIRE_CHARS = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"]);
+
+function hasAnyDirtyDesc(f: Frame): boolean {
+  return f.dirty || f.children.some(hasAnyDirtyDesc);
+}
+
 // ── Junction repair ────────────────────────────────────────
 
-/** All box-drawing characters we recognize */
 const BOX_CHARS = new Set([..."┌┐└┘│─├┤┬┴┼"]);
 
 /** Which chars have a stroke going in each direction */
@@ -158,8 +165,7 @@ export function gridSerialize(
     // UP (child dirty → parent dirty). When a child moves inside a parent,
     // the parent's border cells at the child's old position need blanking.
     const dirtyIds = new Set<string>();
-    const hasAnyDirtyDesc = (f: Frame): boolean =>
-      f.dirty || f.children.some(hasAnyDirtyDesc);
+    // Uses module-level hasAnyDirtyDesc
     const collectDirty = (fs: Frame[], ancestorDirty = false) => {
       for (const f of fs) {
         const isDirty = f.dirty || ancestorDirty || hasAnyDirtyDesc(f);
@@ -170,7 +176,7 @@ export function gridSerialize(
     collectDirty(frames);
 
     // Box-drawing characters that indicate wireframe content
-    const WIRE = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"]);
+    // Uses module-level WIRE_CHARS
 
     for (const bbox of originalFrameBboxes) {
       // Blank if frame is dirty (moved/resized) or deleted
@@ -192,7 +198,7 @@ export function gridSerialize(
           const mc2 = Math.min(grid[r].length, bbox.col + bbox.w + MARGIN);
           for (let c = mc1; c < mc2; c++) {
             if (r >= bbox.row && r < bbox.row + bbox.h && c >= bbox.col && c < bbox.col + bbox.w) continue;
-            if (WIRE.has(grid[r][c])) grid[r][c] = " ";
+            if (WIRE_CHARS.has(grid[r][c])) grid[r][c] = " ";
           }
         }
       }
@@ -231,25 +237,21 @@ export function gridSerialize(
   repairJunctions(grid);
 
   // Phase B.6 — blank orphaned wire chars outside all current frame bboxes.
-  // Only runs when frames are dirty — when nothing moved, the original grid's
-  // wire chars (including connecting lines not part of any frame) are preserved.
-  {
-    const anyDirtyRec = (fs: Frame[]): boolean =>
-      fs.some(f => f.dirty || anyDirtyRec(f.children));
-    if (anyDirtyRec(frames)) {
-      const WIRE_CHARS = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"]);
-      const currentBboxes = snapshotFrameBboxes(frames);
-      const isInsideFrame = (r: number, c: number): boolean => {
-        for (const b of currentBboxes) {
-          if (r >= b.row && r < b.row + b.h && c >= b.col && c < b.col + b.w) return true;
+  // Only when frames are dirty — clean docs preserve original connecting lines.
+  if (frames.some(hasAnyDirtyDesc)) {
+    const currentBboxes = snapshotFrameBboxes(frames);
+    const coveredCells = new Set<string>();
+    for (const b of currentBboxes) {
+      for (let r = b.row; r < b.row + b.h; r++) {
+        for (let c = b.col; c < b.col + b.w; c++) {
+          coveredCells.add(`${r},${c}`);
         }
-        return false;
-      };
-      for (let r = 0; r < grid.length; r++) {
-        for (let c = 0; c < grid[r].length; c++) {
-          if (WIRE_CHARS.has(grid[r][c]) && !isInsideFrame(r, c)) {
-            grid[r][c] = " ";
-          }
+      }
+    }
+    for (let r = 0; r < grid.length; r++) {
+      for (let c = 0; c < grid[r].length; c++) {
+        if (WIRE_CHARS.has(grid[r][c]) && !coveredCells.has(`${r},${c}`)) {
+          grid[r][c] = " ";
         }
       }
     }
@@ -261,13 +263,13 @@ export function gridSerialize(
   const proseLines = prose.split("\n");
 
   let gapIdx = 0;
-  let rowInGap = gaps.length > 0 ? Math.max(0, gaps[0].startRow) : 0;
+  let rowInGap = gaps.length > 0 ? gaps[0].startRow : 0;
 
   for (let i = 0; i < proseLines.length; i++) {
     // Advance to next gap if current is exhausted
     while (gapIdx < gaps.length && rowInGap > gaps[gapIdx].endRow) {
       gapIdx++;
-      if (gapIdx < gaps.length) rowInGap = Math.max(0, gaps[gapIdx].startRow);
+      if (gapIdx < gaps.length) rowInGap = gaps[gapIdx].startRow;
     }
 
     const row = rowInGap;
@@ -292,7 +294,6 @@ export function rebuildOriginalGrid(text: string): string[][] {
   return text.split("\n").map(line => [...line]);
 }
 
-/** Snapshot frame bounding boxes for next save's dirty/delete detection. */
 /** Snapshot frame bounding boxes using grid coordinates directly.
  * No Math.round — grid coords are canonical. */
 export function snapshotFrameBboxes(frames: Frame[]): FrameBbox[] {
@@ -351,9 +352,7 @@ function collectFrameCells(
 ): void {
   const absRow = offRow + f.gridRow;
   const absCol = offCol + f.gridCol;
-  const hasAnyDirtyDescendant = (fr: Frame): boolean =>
-    fr.dirty || fr.children.some(hasAnyDirtyDescendant);
-  const needsWrite = f.dirty || ancestorDirty || hasAnyDirtyDescendant(f);
+  const needsWrite = f.dirty || ancestorDirty || hasAnyDirtyDesc(f);
 
   if (needsWrite && f.content) {
     const r1 = absRow;
