@@ -252,21 +252,20 @@ export default function DemoV2() {
 
   function doLayout() {
     if (preparedRef.current.length === 0) { linesRef.current = []; return; }
-    // Use grid-snapped positions for vertical bands (stable during drag)
     const ch = chRef.current;
     const sorted = [...framesRef.current].sort((a, b) => a.gridRow - b.gridRow);
     const merged: { y: number; bottom: number }[] = [];
     for (const f of sorted) {
-      const y = f.gridRow * ch;
-      const bottom = y + f.gridH * ch;
-      if (merged.length > 0 && y <= merged[merged.length - 1].bottom) {
-        merged[merged.length - 1].bottom = Math.max(merged[merged.length - 1].bottom, bottom);
+      const fy = f.gridRow * ch;
+      const fb = fy + f.gridH * ch;
+      if (merged.length > 0 && fy <= merged[merged.length - 1].bottom) {
+        merged[merged.length - 1].bottom = Math.max(merged[merged.length - 1].bottom, fb);
       } else {
-        merged.push({ y, bottom });
+        merged.push({ y: fy, bottom: fb });
       }
     }
-    const verticalBands = merged.map(m => ({ x: 0, y: m.y, w: sizeRef.current.w, h: m.bottom - m.y }));
-    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, chRef.current, verticalBands).lines;
+    const obstacles = merged.map(m => ({ x: 0, y: m.y, w: sizeRef.current.w, h: m.bottom - m.y }));
+    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, ch, obstacles).lines;
   }
 
   function paint() {
