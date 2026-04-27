@@ -2,7 +2,7 @@
  * DemoV2 — Frame-based spatial canvas. Thin shell using frame.ts + frameRenderer.ts.
  */
 import { useEffect, useRef, useState } from "react";
-import { buildPreparedCache, invalidateLine, splitLine, mergeLines, type PreparedCache } from "./preparedCache";
+import { buildPreparedCache, type PreparedCache } from "./preparedCache";
 import type { EditorState } from "@codemirror/state";
 import { Transaction } from "@codemirror/state";
 import {
@@ -1009,54 +1009,18 @@ export default function DemoV2() {
         if (e.key === "Backspace") {
           e.preventDefault();
           const beforeCursor = getCursor(stateRef.current)!;
-          const isLineMerge = beforeCursor.col === 0 && beforeCursor.row > 0;
           stateRef.current = proseDeleteBefore(stateRef.current, beforeCursor);
-          proseRef.current = getDoc(stateRef.current);
+          // Unified-doc: proseDelete mutates the CM doc; mapPos in framesField
+          // shifts every frame's docOffset automatically. No manual frame-shift
+          // loop needed. syncRefsFromState rebuilds preparedRef from scratch.
           syncRefsFromState();
-          const afterCursor = getCursor(stateRef.current)!;
-          if (isLineMerge) {
-            mergeLines(preparedRef.current, beforeCursor.row, stateRef.current.doc.line(afterCursor.row + 1).text);
-            // Shift frames up when a line is deleted via merge
-            // In unified doc, cursor.row IS the source/grid row directly
-            const mergeGridRow = beforeCursor.row;
-            const ch = chRef.current;
-            const cw = cwRef.current;
-            for (const f of framesRef.current) {
-              if (f.gridRow >= mergeGridRow) {
-                stateRef.current = stateRef.current.update({
-                  effects: moveFrameEffect.of({ id: f.id, dCol: 0, dRow: -1, charWidth: cw, charHeight: ch }),
-                }).state;
-              }
-            }
-            syncRefsFromState();
-          } else {
-            invalidateLine(preparedRef.current, afterCursor.row, stateRef.current.doc.line(afterCursor.row + 1).text);
-          }
-          proseCursorRef.current = afterCursor;
+          proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key === "Enter") {
           e.preventDefault();
-          const beforeRow = getCursor(stateRef.current)!.row;
           stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, "\n");
-          proseRef.current = getDoc(stateRef.current);
-          syncRefsFromState();
-          // Split: beforeRow keeps text before cursor, beforeRow+1 gets text after
-          const firstText = stateRef.current.doc.line(beforeRow + 1).text;
-          const secondText = stateRef.current.doc.line(beforeRow + 2).text;
-          splitLine(preparedRef.current, beforeRow, firstText, secondText);
-          // Shift frames down when a new line is inserted
-          // In unified doc, beforeRow IS the source/grid row directly
-          const editGridRow = beforeRow;
-          const ch = chRef.current;
-          const cw = cwRef.current;
-          for (const f of framesRef.current) {
-            if (f.gridRow >= editGridRow) {
-              stateRef.current = stateRef.current.update({
-                effects: moveFrameEffect.of({ id: f.id, dCol: 0, dRow: 1, charWidth: cw, charHeight: ch }),
-              }).state;
-            }
-          }
+          // Same as Backspace: unified pipeline handles both doc + frame shift.
           syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
@@ -1064,11 +1028,8 @@ export default function DemoV2() {
         if (e.key.length === 1 && !mod) {
           e.preventDefault();
           stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, e.key);
-          proseRef.current = getDoc(stateRef.current);
           syncRefsFromState();
-          const cur = getCursor(stateRef.current)!;
-          invalidateLine(preparedRef.current, cur.row, stateRef.current.doc.line(cur.row + 1).text);
-          proseCursorRef.current = cur;
+          proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         return;
