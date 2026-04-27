@@ -70,6 +70,16 @@ const clearDirtyEffect = StateEffect.define<null>();
 const setOriginalProseSegmentsEffect = StateEffect.define<ProseSegment[]>();
 
 // Mark a frame dirty by id, propagating up to ancestors.
+/** Recursively find a frame by id in a frame tree (incl. children). */
+function findFrameInList(frames: Frame[], id: string): Frame | null {
+  for (const f of frames) {
+    if (f.id === id) return f;
+    const found = findFrameInList(f.children, id);
+    if (found) return found;
+  }
+  return null;
+}
+
 function markDirtyById(frames: Frame[], id: string): { frames: Frame[]; found: boolean } {
   let found = false;
   const result = frames.map(f => {
@@ -127,6 +137,12 @@ const framesField = StateField.define<Frame[]>({
         };
         result = result.map(applyResize);
         result = markDirtyById(result, e.value.id).frames;
+        // Sync lineCount with new gridH for top-level frames that claim doc lines.
+        result = result.map(f =>
+          f.id === e.value.id && f.lineCount > 0
+            ? { ...f, lineCount: Math.max(2, e.value.gridH) }
+            : f,
+        );
       } else if (e.is(addFrameEffect)) {
         result = [...result, { ...e.value, dirty: true }];
       } else if (e.is(deleteFrameEffect)) {
@@ -367,10 +383,50 @@ export function createEditorState(init: EditorStateInit): EditorState {
     return !intersects;
   });
 
+  // unifiedDocSync: intercept frame mutation effects and add doc changes
+  // that keep the CM doc in sync with the frame model. Empty-string lines
+  // (per Task 3 audit correction) are inserted/removed as the frame grows
+  // or shrinks. When this filter returns an array of specs, CM merges them
+  // via resolveTransaction(state, filtered, false), so changeFilter does
+  // not re-fire on the merged transaction (programmatic edits go through).
+  const unifiedDocSync = EditorState.transactionFilter.of((tr) => {
+    for (const e of tr.effects) {
+      if (e.is(resizeFrameEffect)) {
+        const frames = tr.startState.field(framesField);
+        const frame = findFrameInList(frames, e.value.id);
+        if (!frame || frame.lineCount === 0) continue;
+
+        const newGridH = Math.max(2, e.value.gridH);
+        const delta = newGridH - frame.lineCount;
+        if (delta === 0) continue;
+
+        const startLine = tr.startState.doc.lineAt(frame.docOffset);
+        const endLineNum = startLine.number + frame.lineCount - 1;
+        const endLine = tr.startState.doc.line(endLineNum);
+
+        if (delta > 0) {
+          // Insert `delta` empty lines AFTER the current claimed range.
+          // Each new line is just "\n" (empty string content).
+          const insert = "\n".repeat(delta);
+          return [tr, { changes: { from: endLine.to, insert }, sequential: true }];
+        } else {
+          // Remove `-delta` lines from the end of the claimed range.
+          // endLineNum + delta + 1 is the first line to keep at the bottom.
+          // Delete from end of (endLineNum + delta) through end of endLine.
+          const keepLastNum = endLineNum + delta; // last claimed line we keep
+          const keepLast = tr.startState.doc.line(keepLastNum);
+          return [tr, { changes: { from: keepLast.to, to: endLine.to }, sequential: true }];
+        }
+      }
+    }
+    return tr;
+  });
+
   const extensions: Extension[] = [
     history(),
     frameInversion,
     claimFilter,
+    unifiedDocSync,
     framesField.init(() => frames),
     selectedIdField,
     textEditField,

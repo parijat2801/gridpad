@@ -1643,3 +1643,115 @@ describe("Enter/Backspace above wireframe (should work via mapPos)", () => {
     expect(getDoc(s)).toBe(getDoc(state));
   });
 });
+
+// ── Task 10: Resize wireframe inserts/removes claimed lines ────────────────
+
+describe("resize wireframe in unified mode", () => {
+  it("resize taller inserts blank claimed lines and updates lineCount", () => {
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    expect(before.lineCount).toBe(3);
+    const docLinesBefore = state.doc.lines;
+    const updated = state.update({
+      effects: resizeFrameEffect.of({
+        id: before.id, gridW: before.gridW, gridH: 5,
+        charWidth: 9.6, charHeight: 18,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    const after = getFrames(updated)[0];
+    expect(after.lineCount).toBe(5);
+    expect(after.gridH).toBe(5);
+    expect(updated.doc.lines).toBe(docLinesBefore + 2);
+  });
+
+  it("resize shorter removes claimed lines and updates lineCount", () => {
+    const text = "Hello\n┌────┐\n│ Bx │\n│    │\n│    │\n└────┘\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    expect(before.lineCount).toBe(5);
+    const docLinesBefore = state.doc.lines;
+    const updated = state.update({
+      effects: resizeFrameEffect.of({
+        id: before.id, gridW: before.gridW, gridH: 3,
+        charWidth: 9.6, charHeight: 18,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    const after = getFrames(updated)[0];
+    expect(after.lineCount).toBe(3);
+    expect(after.gridH).toBe(3);
+    expect(updated.doc.lines).toBe(docLinesBefore - 2);
+  });
+
+  it("resize-no-change does not touch the doc", () => {
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    const docBefore = getDoc(state);
+    const updated = state.update({
+      effects: resizeFrameEffect.of({
+        id: before.id, gridW: before.gridW, gridH: 3,
+        charWidth: 9.6, charHeight: 18,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    expect(getDoc(updated)).toBe(docBefore);
+    expect(getFrames(updated)[0].lineCount).toBe(3);
+  });
+
+  it("resize taller is undoable — doc and lineCount restored", () => {
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    const docBefore = getDoc(state);
+    let s = state.update({
+      effects: resizeFrameEffect.of({
+        id: before.id, gridW: before.gridW, gridH: 5,
+        charWidth: 9.6, charHeight: 18,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    expect(getFrames(s)[0].lineCount).toBe(5);
+    s = editorUndo(s);
+    expect(getDoc(s)).toBe(docBefore);
+    expect(getFrames(s)[0].lineCount).toBe(3);
+  });
+
+  it("resize preserves docOffset (frame stays at its anchor line)", () => {
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    const updated = state.update({
+      effects: resizeFrameEffect.of({
+        id: before.id, gridW: before.gridW, gridH: 5,
+        charWidth: 9.6, charHeight: 18,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    const after = getFrames(updated)[0];
+    expect(after.docOffset).toBe(before.docOffset);
+  });
+
+  it("inserted claimed lines are empty strings (preparedCache null fast-path)", () => {
+    // Per Task 3 plan correction: claimed lines must be "" not " "
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    const updated = state.update({
+      effects: resizeFrameEffect.of({
+        id: before.id, gridW: before.gridW, gridH: 5,
+        charWidth: 9.6, charHeight: 18,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    const after = getFrames(updated)[0];
+    // The new claimed lines should be "" — read all 5 claimed lines.
+    const startLine = updated.doc.lineAt(after.docOffset).number;
+    for (let i = 0; i < after.lineCount; i++) {
+      const line = updated.doc.line(startLine + i);
+      expect(line.text).toBe("");
+    }
+  });
+});
