@@ -204,6 +204,75 @@ describe("reflowLayout per-line cache equivalence", () => {
   });
 });
 
+describe("reflowLayout under unified-doc model (empty claimed lines)", () => {
+  // In the unified-doc model, wireframe rows are stored as empty strings ("") in
+  // the CM doc. buildPreparedCache maps "" → null (preparedCache.ts:12).
+  // reflowLayout.ts:98-107 handles null by advancing lineTop without emitting a
+  // PositionedLine. These tests lock in that contract.
+
+  it("prose with single empty claimed line skips that row", () => {
+    // Simulates: prose row 0, claimed (wireframe) row 1, prose row 2
+    // obstacle covers row 1 (y=LH, h=LH)
+    const prosePrepared = prepareWithSegments("Hello world", FONT, { whiteSpace: "pre-wrap" });
+    const preparedLines = [prosePrepared, null, prosePrepared];
+    const obstacle: Obstacle = { x: 0, y: LH, w: 600, h: LH };
+    const result = reflowLayout(preparedLines, 9999, LH, [obstacle]);
+
+    // Should get exactly 2 PositionedLines — one for index 0 and one for index 2
+    expect(result.lines.length).toBe(2);
+    expect(result.lines[0].sourceLine).toBe(0);
+    expect(result.lines[1].sourceLine).toBe(2);
+    // The second prose line must start at or after the obstacle bottom
+    expect(result.lines[1].y).toBeGreaterThanOrEqual(obstacle.y + obstacle.h);
+  });
+
+  it("prose with multiple consecutive empty claimed lines skips all of them", () => {
+    // Simulates 3 consecutive wireframe rows claimed in the doc
+    // obstacle spans rows 1-3 (y=LH, h=3*LH)
+    const prosePrepared = prepareWithSegments("Some text", FONT, { whiteSpace: "pre-wrap" });
+    const preparedLines = [prosePrepared, null, null, null, prosePrepared];
+    const obstacle: Obstacle = { x: 0, y: LH, w: 600, h: 3 * LH };
+    const result = reflowLayout(preparedLines, 9999, LH, [obstacle]);
+
+    // Should only emit 2 PositionedLines — one per prose entry
+    expect(result.lines.length).toBe(2);
+    expect(result.lines[0].sourceLine).toBe(0);
+    expect(result.lines[1].sourceLine).toBe(4);
+    // Second prose must start below the entire obstacle
+    expect(result.lines[1].y).toBeGreaterThanOrEqual(obstacle.y + obstacle.h);
+  });
+
+  it("prose flows around obstacle when claimed lines are present", () => {
+    // A paragraph above (row 0 prose) and an obstacle at rows 1-2 and more prose at row 3.
+    // Verify no PositionedLine lands inside the obstacle band.
+    const prosePrepared = prepareWithSegments("Quick brown fox", FONT, { whiteSpace: "pre-wrap" });
+    const obstacle: Obstacle = { x: 0, y: LH, w: 600, h: 2 * LH };
+    const preparedLines = [prosePrepared, null, null, prosePrepared];
+    const result = reflowLayout(preparedLines, 9999, LH, [obstacle]);
+
+    const insideObstacle = result.lines.filter(
+      l => l.y + LH > obstacle.y && l.y < obstacle.y + obstacle.h
+    );
+    expect(insideObstacle.length).toBe(0);
+    // Still have output lines
+    expect(result.lines.length).toBeGreaterThan(0);
+  });
+
+  it("empty claimed line at start of doc still advances lineTop", () => {
+    // Claimed row 0 (wireframe at top), prose at row 1.
+    // obstacle at y=0, h=LH.
+    const prosePrepared = prepareWithSegments("First real prose", FONT, { whiteSpace: "pre-wrap" });
+    const obstacle: Obstacle = { x: 0, y: 0, w: 600, h: LH };
+    const preparedLines = [null, prosePrepared];
+    const result = reflowLayout(preparedLines, 9999, LH, [obstacle]);
+
+    expect(result.lines.length).toBeGreaterThanOrEqual(1);
+    // The prose line must start at or after y = LH (obstacle bottom)
+    expect(result.lines[0].y).toBeGreaterThanOrEqual(LH);
+    expect(result.lines[0].sourceLine).toBe(1);
+  });
+});
+
 describe("reflowLayout PositionedLine metadata", () => {
   it("each line has endCursor and slotWidth", () => {
     const result = reflowLayout(prepareLines("Hello\nWorld"), 9999, LH, []);
