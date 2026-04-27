@@ -210,7 +210,7 @@ export default function DemoV2() {
       await w.write(md);
       await w.close();
       stateRef.current = applyClearDirty(stateRef.current);
-      framesRef.current = getFrames(stateRef.current);
+      syncRefsFromState();
     } catch (err) { console.error("saveToHandle failed:", err); }
   }
   function scheduleAutosave() {
@@ -223,14 +223,19 @@ export default function DemoV2() {
   function loadDocument(text: string) {
     const cw = cwRef.current, ch = chRef.current;
     stateRef.current = createEditorStateUnified(text, cw, ch);
-    // Sync old refs for un-migrated code paths
-    const frames = getFrames(stateRef.current);
-    const proseText = getDoc(stateRef.current);
-    proseRef.current = proseText;
-    framesRef.current = frames;
-    preparedRef.current = buildPreparedCache(proseText);
+    syncRefsFromState();
     dragRef.current = null;
     proseCursorRef.current = null;
+  }
+
+  /** Refresh framesRef + proseRef + preparedRef from the current EditorState.
+   * Call after any mutation that goes through unifiedDocSync (drag, resize,
+   * delete, add) so the prepared-line cache reflects the post-mutation doc. */
+  function syncRefsFromState() {
+    const proseText = getDoc(stateRef.current);
+    proseRef.current = proseText;
+    framesRef.current = getFrames(stateRef.current);
+    preparedRef.current = buildPreparedCache(proseText);
   }
 
   function doLayout() {
@@ -601,7 +606,7 @@ export default function DemoV2() {
         effects,
         annotations: [Transaction.addToHistory.of(isFirstDragStep)],
       }).state;
-      framesRef.current = getFrames(stateRef.current);
+      syncRefsFromState();
     } else {
       // Compute target position from drag start + mouse delta, snapped to grid
       const cw = cwRef.current, ch = chRef.current;
@@ -616,7 +621,7 @@ export default function DemoV2() {
           effects: moveFrameEffect.of({ id: drag.frameId, dCol, dRow, charWidth: cw, charHeight: ch }),
           annotations: [Transaction.addToHistory.of(isFirstDragStep)],
         }).state;
-        framesRef.current = getFrames(stateRef.current);
+        syncRefsFromState();
       }
     }
     doLayout(); paint();
@@ -645,12 +650,12 @@ export default function DemoV2() {
       const f = createRectFrame({ gridW: Math.max(2, Math.round((x2 - x1) / cw)), gridH: Math.max(2, Math.round((y2 - y1) / ch)), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
       const gridR = Math.round(y1 / ch), gridC = Math.round(x1 / cw);
       stateRef.current = applyAddFrame(stateRef.current, { ...f, x: gridC * cw, y: gridR * ch, gridRow: gridR, gridCol: gridC });
-      framesRef.current = getFrames(stateRef.current); scheduleAutosave();
+      syncRefsFromState(); scheduleAutosave();
     } else if (tool === "line") {
       const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
       if (r1 !== r2 || c1 !== c2) {
         stateRef.current = applyAddFrame(stateRef.current, createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch }));
-        framesRef.current = getFrames(stateRef.current); scheduleAutosave();
+        syncRefsFromState(); scheduleAutosave();
       }
     }
     setTool("select"); // one-shot: revert to Select after drawing
@@ -674,7 +679,7 @@ export default function DemoV2() {
           const state = stateRef.current;
           const md = serializeUnified(getDoc(state), getFrames(state));
           stateRef.current = applyClearDirty(stateRef.current);
-          framesRef.current = getFrames(stateRef.current);
+          syncRefsFromState();
           doLayout(); paint();
           return md;
         },
@@ -745,7 +750,7 @@ export default function DemoV2() {
           }).state;
           proseCursorRef.current = null;
           textEditRef.current = null;
-          framesRef.current = getFrames(stateRef.current);
+          syncRefsFromState();
           paint();
         },
       };
@@ -772,7 +777,7 @@ export default function DemoV2() {
       if (mod && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         stateRef.current = editorUndo(stateRef.current);
-        framesRef.current = getFrames(stateRef.current);
+        syncRefsFromState();
         proseRef.current = getDoc(stateRef.current);
         preparedRef.current = buildPreparedCache(proseRef.current);
         proseCursorRef.current = getCursor(stateRef.current);
@@ -782,7 +787,7 @@ export default function DemoV2() {
       if (mod && e.key === "z" && e.shiftKey) {
         e.preventDefault();
         stateRef.current = editorRedo(stateRef.current);
-        framesRef.current = getFrames(stateRef.current);
+        syncRefsFromState();
         proseRef.current = getDoc(stateRef.current);
         preparedRef.current = buildPreparedCache(proseRef.current);
         proseCursorRef.current = getCursor(stateRef.current);
@@ -828,7 +833,7 @@ export default function DemoV2() {
           if (tp.chars.length > 0) {
             const cw = cwRef.current, ch = chRef.current;
             stateRef.current = applyAddFrame(stateRef.current, createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch }));
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             scheduleAutosave(); doLayout();
           }
           setTool("select"); paint(); return; // one-shot: revert to Select
@@ -854,7 +859,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, hAlign: { anchor: "left", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
           if (e.key === "e" || e.key === "E") {
@@ -862,7 +867,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, hAlign: { anchor: "center", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
           if (e.key === "r" || e.key === "R") {
@@ -870,7 +875,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, hAlign: { anchor: "right", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
         }
@@ -880,7 +885,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, vAlign: { anchor: "top", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
           if (e.key === "m" || e.key === "M") {
@@ -888,7 +893,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, vAlign: { anchor: "center", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
           if (e.key === "b" || e.key === "B") {
@@ -896,7 +901,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, vAlign: { anchor: "bottom", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
         }
@@ -951,7 +956,7 @@ export default function DemoV2() {
               ],
               annotations: [Transaction.addToHistory.of(true)],
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             textEditRef.current = getTextEdit(stateRef.current);
             scheduleAutosave();
           }
@@ -969,7 +974,7 @@ export default function DemoV2() {
             ],
             annotations: [Transaction.addToHistory.of(true)],
           }).state;
-          framesRef.current = getFrames(stateRef.current);
+          syncRefsFromState();
           textEditRef.current = getTextEdit(stateRef.current);
           scheduleAutosave(); blinkRef.current = true; paint(); return;
         }
@@ -1007,7 +1012,7 @@ export default function DemoV2() {
           const isLineMerge = beforeCursor.col === 0 && beforeCursor.row > 0;
           stateRef.current = proseDeleteBefore(stateRef.current, beforeCursor);
           proseRef.current = getDoc(stateRef.current);
-          framesRef.current = getFrames(stateRef.current);
+          syncRefsFromState();
           const afterCursor = getCursor(stateRef.current)!;
           if (isLineMerge) {
             mergeLines(preparedRef.current, beforeCursor.row, stateRef.current.doc.line(afterCursor.row + 1).text);
@@ -1023,7 +1028,7 @@ export default function DemoV2() {
                 }).state;
               }
             }
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
           } else {
             invalidateLine(preparedRef.current, afterCursor.row, stateRef.current.doc.line(afterCursor.row + 1).text);
           }
@@ -1035,7 +1040,7 @@ export default function DemoV2() {
           const beforeRow = getCursor(stateRef.current)!.row;
           stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, "\n");
           proseRef.current = getDoc(stateRef.current);
-          framesRef.current = getFrames(stateRef.current);
+          syncRefsFromState();
           // Split: beforeRow keeps text before cursor, beforeRow+1 gets text after
           const firstText = stateRef.current.doc.line(beforeRow + 1).text;
           const secondText = stateRef.current.doc.line(beforeRow + 2).text;
@@ -1052,7 +1057,7 @@ export default function DemoV2() {
               }).state;
             }
           }
-          framesRef.current = getFrames(stateRef.current);
+          syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
@@ -1060,7 +1065,7 @@ export default function DemoV2() {
           e.preventDefault();
           stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, e.key);
           proseRef.current = getDoc(stateRef.current);
-          framesRef.current = getFrames(stateRef.current);
+          syncRefsFromState();
           const cur = getCursor(stateRef.current)!;
           invalidateLine(preparedRef.current, cur.row, stateRef.current.doc.line(cur.row + 1).text);
           proseCursorRef.current = cur;
@@ -1076,7 +1081,7 @@ export default function DemoV2() {
       const deleteSelectedId = getSelectedId(stateRef.current);
       if ((e.key === "Delete" || e.key === "Backspace") && deleteSelectedId) {
         stateRef.current = applyDeleteFrame(stateRef.current, deleteSelectedId);
-        framesRef.current = getFrames(stateRef.current);
+        syncRefsFromState();
         doLayout(); paint();
       }
       // Z-order shortcuts (top-level frames only)
@@ -1087,23 +1092,23 @@ export default function DemoV2() {
           if (e.key === "]" && !mod) {
             e.preventDefault();
             stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: topFrame.z + 1 }), annotations: [Transaction.addToHistory.of(true)] }).state;
-            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+            syncRefsFromState(); doLayout(); paint(); return;
           }
           if (e.key === "[" && !mod) {
             e.preventDefault();
             stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: Math.max(0, topFrame.z - 1) }), annotations: [Transaction.addToHistory.of(true)] }).state;
-            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+            syncRefsFromState(); doLayout(); paint(); return;
           }
           if (e.key === "]" && mod) {
             e.preventDefault();
             const maxZ = Math.max(...framesRef.current.map(f => f.z));
             stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: maxZ + 1 }), annotations: [Transaction.addToHistory.of(true)] }).state;
-            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+            syncRefsFromState(); doLayout(); paint(); return;
           }
           if (e.key === "[" && mod) {
             e.preventDefault();
             stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: 0 }), annotations: [Transaction.addToHistory.of(true)] }).state;
-            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+            syncRefsFromState(); doLayout(); paint(); return;
           }
         }
       }
