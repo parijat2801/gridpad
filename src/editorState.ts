@@ -313,9 +313,48 @@ export function createEditorState(init: EditorStateInit): EditorState {
     return [restoreFramesEffect.of(tr.startState.field(framesField))];
   });
 
+  // changeFilter: reject user-initiated edits that touch any frame-claimed
+  // line range. Programmatic transactions (no userEvent) are bypassed so the
+  // mutation transactionFilter (Tasks 10-13) can splice claimed lines on
+  // move/resize/delete. Note: when a transactionFilter returns an array of
+  // specs, CM merges them via resolveTransaction(state, filtered, false) —
+  // the `false` skips re-applying changeFilter, so this is consistent.
+  const claimFilter = EditorState.changeFilter.of((tr) => {
+    if (!tr.isUserEvent("input") && !tr.isUserEvent("delete")) return true;
+    const frames = tr.startState.field(framesField);
+    if (frames.length === 0) return true;
+    const claimed: Array<{ from: number; to: number }> = [];
+    const docLen = tr.startState.doc.length;
+    for (const f of frames) {
+      if (f.lineCount === 0) continue;
+      // Defensive: a frame's docOffset is only meaningful in the unified-doc
+      // factory. Other factories (the legacy prose-only path) leave docOffset
+      // pointing into the longer source text; skip those rather than crash.
+      if (f.docOffset < 0 || f.docOffset > docLen) continue;
+      const startLine = tr.startState.doc.lineAt(f.docOffset);
+      const endLineNum = Math.min(
+        startLine.number + f.lineCount - 1,
+        tr.startState.doc.lines,
+      );
+      const endLine = tr.startState.doc.line(endLineNum);
+      claimed.push({ from: startLine.from, to: endLine.to });
+    }
+    let intersects = false;
+    tr.changes.iterChangedRanges((fromA, toA) => {
+      for (const r of claimed) {
+        if (fromA <= r.to && toA >= r.from) {
+          intersects = true;
+          break;
+        }
+      }
+    });
+    return !intersects;
+  });
+
   const extensions: Extension[] = [
     history(),
     frameInversion,
+    claimFilter,
     framesField.init(() => frames),
     selectedIdField,
     textEditField,
@@ -337,12 +376,17 @@ export function createEditorState(init: EditorStateInit): EditorState {
 }
 
 // Convenience factory — runs scanToFrames internally.
+// Legacy path: builds a CM doc with prose only (wireframe lines stripped).
+// Frame.docOffset values from scanToFrames refer to the FULL source text,
+// not this shrunken prose doc — clear them so the unified-doc claimFilter
+// (which sees lineCount=0) treats these frames as non-claiming.
 export function createEditorStateFromText(
   text: string,
   charWidth: number,
   charHeight: number,
 ): EditorState {
   const { frames, proseSegments } = scanToFrames(text, charWidth, charHeight);
+  for (const f of frames) { f.docOffset = 0; f.lineCount = 0; }
   const byRow = new Map<number, string>();
   for (const seg of proseSegments) {
     const existing = byRow.get(seg.row) ?? "";

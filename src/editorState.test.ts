@@ -1354,3 +1354,94 @@ describe("createEditorStateUnified", () => {
     expect(getDoc(state)).toBe("AAAA\n\n\nBBBB");
   });
 });
+
+// ── Task 4: changeFilter protects claimed lines ────────────────────────────
+
+describe("changeFilter protects claimed lines", () => {
+  it("rejects user-event insertion into a claimed line", () => {
+    const text = "Hello\n\n┌──────┐\n│ Box  │\n└──────┘\n\nGoodbye";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frame = getFrames(state)[0];
+    const pos = frame.docOffset; // start of first claimed line
+    // Simulate user input via userEvent annotation
+    const updated = state.update({
+      changes: { from: pos, insert: "INJECTED" },
+      userEvent: "input.type",
+    }).state;
+    // Filter rejected → doc unchanged
+    expect(getDoc(updated)).toBe(getDoc(state));
+  });
+
+  it("rejects user-event deletion that touches a claimed range", () => {
+    const text = "Hello\n┌─┐\n└─┘\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frame = getFrames(state)[0];
+    // Delete one char of the claimed range
+    const updated = state.update({
+      changes: { from: frame.docOffset, to: frame.docOffset + 1 },
+      userEvent: "delete.backward",
+    }).state;
+    expect(getDoc(updated)).toBe(getDoc(state));
+  });
+
+  it("allows user-event insertion into a prose line", () => {
+    const text = "Hello\n\n┌──────┐\n│ Box  │\n└──────┘\n\nGoodbye";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const updated = state.update({
+      changes: { from: 0, insert: "X" },
+      userEvent: "input.type",
+    }).state;
+    expect(getDoc(updated).startsWith("XHello")).toBe(true);
+  });
+
+  it("allows non-user (programmatic) edits even on claimed ranges", () => {
+    // Programmatic move/resize/delete must be able to splice claimed lines.
+    // Transactions without a userEvent should bypass the filter.
+    const text = "Hello\n┌─┐\n└─┘\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frame = getFrames(state)[0];
+    const updated = state.update({
+      changes: { from: frame.docOffset, to: frame.docOffset + 1 },
+      // no userEvent → programmatic
+    }).state;
+    // No filter applied → change went through
+    expect(getDoc(updated).length).toBe(getDoc(state).length - 1);
+  });
+
+  it("allows edits on prose-only docs (no frames)", () => {
+    const state = createEditorStateUnified("Just prose\nNo frames", 9.6, 18);
+    const updated = state.update({
+      changes: { from: 0, insert: "X" },
+      userEvent: "input.type",
+    }).state;
+    expect(getDoc(updated).startsWith("XJust prose")).toBe(true);
+  });
+
+  it("rejects multi-line replacement that spans a claimed range", () => {
+    const text = "Hello\n┌─┐\n└─┘\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    // Try to replace range [5..15] which includes the claimed lines
+    const updated = state.update({
+      changes: { from: 5, to: 9, insert: "XXX" },
+      userEvent: "input.type",
+    }).state;
+    expect(getDoc(updated)).toBe(getDoc(state));
+  });
+
+  it("rejects backspace at column 0 of line below wireframe (boundary)", () => {
+    // After unified doc: "Hello\n\n\n\nWorld" — frame claims lines 1-3.
+    // Cursor at start of "World" (line 4). Backspace would delete the \n at
+    // end of claimed line 3, intruding into the claimed range.
+    const text = "Hello\n┌─┐\n└─┘\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const doc = getDoc(state);
+    // Find position of "World" — it's after "Hello\n\n\n"
+    const worldStart = doc.indexOf("World");
+    const updated = state.update({
+      changes: { from: worldStart - 1, to: worldStart },
+      userEvent: "delete.backward",
+    }).state;
+    // Filter rejected → doc unchanged
+    expect(getDoc(updated)).toBe(doc);
+  });
+});
