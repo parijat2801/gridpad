@@ -1358,18 +1358,35 @@ describe("createEditorStateUnified", () => {
 // ── Task 4: changeFilter protects claimed lines ────────────────────────────
 
 describe("changeFilter protects claimed lines", () => {
-  it("rejects user-event insertion into a claimed line", () => {
+  it("rejects user-event insertion INSIDE a claimed line (not at boundary)", () => {
+    // Insertion AT the start of a claimed range is allowed (treated as
+    // before-the-claim — Enter-above-wireframe). To exercise the filter
+    // we insert ONE char past the start, where the position is mid-claim.
     const text = "Hello\n\n┌──────┐\n│ Box  │\n└──────┘\n\nGoodbye";
     const state = createEditorStateUnified(text, 9.6, 18);
     const frame = getFrames(state)[0];
-    const pos = frame.docOffset; // start of first claimed line
-    // Simulate user input via userEvent annotation
+    const pos = frame.docOffset + 1; // mid-claim
     const updated = state.update({
       changes: { from: pos, insert: "INJECTED" },
       userEvent: "input.type",
     }).state;
-    // Filter rejected → doc unchanged
     expect(getDoc(updated)).toBe(getDoc(state));
+  });
+
+  it("allows user-event insertion AT claimed-range start (Enter-above-wireframe)", () => {
+    // Pure insertion at docOffset is "before the claim". With mapPos
+    // associativity=1, the frame's docOffset shifts forward by the inserted
+    // length and the claim still owns the original lines.
+    const text = "Hello\n\n┌──────┐\n│ Box  │\n└──────┘\n\nGoodbye";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frame = getFrames(state)[0];
+    const before = frame.docOffset;
+    const updated = state.update({
+      changes: { from: before, insert: "X" },
+      userEvent: "input.type",
+    }).state;
+    expect(getDoc(updated).length).toBe(getDoc(state).length + 1);
+    expect(getFrames(updated)[0].docOffset).toBe(before + 1);
   });
 
   it("rejects user-event deletion that touches a claimed range", () => {
@@ -1443,5 +1460,123 @@ describe("changeFilter protects claimed lines", () => {
     }).state;
     // Filter rejected → doc unchanged
     expect(getDoc(updated)).toBe(doc);
+  });
+});
+
+// ── Task 5: docOffset remapping through CM edits ───────────────────────────
+
+describe("docOffset remapping through edits", () => {
+  it("inserting a char before frame shifts docOffset forward", () => {
+    const text = "Hello\n\n┌──────┐\n│ Box  │\n└──────┘\n\nGoodbye";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0].docOffset;
+    // Insert a single char at position 0 (before "Hello")
+    const updated = state.update({
+      changes: { from: 0, insert: "X" },
+      userEvent: "input.type",
+    }).state;
+    const after = getFrames(updated)[0].docOffset;
+    expect(after).toBe(before + 1);
+  });
+
+  it("inserting a newline before frame shifts docOffset by +1", () => {
+    const text = "Hello\n\n┌──────┐\n│ Box  │\n└──────┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0].docOffset;
+    const updated = state.update({
+      changes: { from: 0, insert: "\n" },
+      userEvent: "input.type",
+    }).state;
+    const after = getFrames(updated)[0].docOffset;
+    expect(after).toBe(before + 1);
+  });
+
+  it("deleting a char before frame shifts docOffset backward", () => {
+    const text = "AAAA\n\n┌──────┐\n│ Box  │\n└──────┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0].docOffset;
+    const updated = state.update({
+      changes: { from: 0, to: 1 }, // delete first "A"
+      userEvent: "delete.forward",
+    }).state;
+    const after = getFrames(updated)[0].docOffset;
+    expect(after).toBe(before - 1);
+  });
+
+  it("inserting at exact frame docOffset pushes frame forward (associativity=1)", () => {
+    // The Gemini correction: mapPos(offset, 1) so frame follows insertions
+    // landing AT its docOffset. This is what "Enter above wireframe" does.
+    const text = "Hello\n\n┌──┐\n└──┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0].docOffset;
+    // Insert at position == docOffset
+    const updated = state.update({
+      changes: { from: before, insert: "X" },
+      userEvent: "input.type",
+    }).state;
+    const after = getFrames(updated)[0].docOffset;
+    // Frame moved forward — the inserted char is BEFORE the claimed range.
+    expect(after).toBe(before + 1);
+  });
+
+  it("paste of multi-line content before frame shifts by total length", () => {
+    const text = "A\n┌──┐\n└──┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0].docOffset;
+    const insert = "X\nY\nZ"; // 5 chars including 2 newlines
+    const updated = state.update({
+      changes: { from: 0, insert },
+      userEvent: "input.paste",
+    }).state;
+    const after = getFrames(updated)[0].docOffset;
+    expect(after).toBe(before + insert.length);
+  });
+
+  it("edit AFTER frame does not change docOffset", () => {
+    const text = "A\n┌──┐\n└──┘\nXXXX";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0].docOffset;
+    const doc = getDoc(state);
+    // Insert at end of doc (after frame's claimed range)
+    const updated = state.update({
+      changes: { from: doc.length, insert: "Q" },
+      userEvent: "input.type",
+    }).state;
+    const after = getFrames(updated)[0].docOffset;
+    expect(after).toBe(before);
+  });
+
+  it("two frames: edit before frame1 shifts both", () => {
+    const text = "A\n┌──┐\n└──┘\n\n\n\n\nbetween\n\n\n\n\n\n┌──┐\n└──┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frames = getFrames(state);
+    expect(frames.length).toBe(2);
+    const before1 = frames[0].docOffset;
+    const before2 = frames[1].docOffset;
+    const updated = state.update({
+      changes: { from: 0, insert: "Z" },
+      userEvent: "input.type",
+    }).state;
+    const updatedFrames = getFrames(updated);
+    expect(updatedFrames[0].docOffset).toBe(before1 + 1);
+    expect(updatedFrames[1].docOffset).toBe(before2 + 1);
+  });
+
+  it("two frames: edit between them shifts only the second", () => {
+    const text = "A\n┌──┐\n└──┘\n\n\n\n\nM\n\n\n\n\n\n┌──┐\n└──┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frames = getFrames(state);
+    expect(frames.length).toBe(2);
+    const before1 = frames[0].docOffset;
+    const before2 = frames[1].docOffset;
+    const doc = getDoc(state);
+    const mPos = doc.indexOf("M");
+    const updated = state.update({
+      changes: { from: mPos, insert: "Z" },
+      userEvent: "input.type",
+    }).state;
+    const updatedFrames = getFrames(updated);
+    expect(updatedFrames[0].docOffset).toBe(before1); // unchanged
+    expect(updatedFrames[1].docOffset).toBe(before2 + 1);
   });
 });

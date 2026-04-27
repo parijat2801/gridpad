@@ -88,6 +88,18 @@ const framesField = StateField.define<Frame[]>({
   create: () => [],
   update(frames, tr: Transaction) {
     let result = frames;
+    // Remap docOffset on every doc-changing transaction. Use associativity=1
+    // so frames follow preceding insertions (Enter-above-wireframe pushes
+    // frame down). Also re-runs on undo, where the inverted ChangeSet maps
+    // offsets back; restoreFramesEffect (below) overrides this for frame
+    // mutations, but pure prose edits land here exclusively.
+    if (tr.docChanged) {
+      result = result.map((f) =>
+        f.lineCount === 0
+          ? f
+          : { ...f, docOffset: tr.changes.mapPos(f.docOffset, 1) },
+      );
+    }
     for (const e of tr.effects) {
       if (e.is(restoreFramesEffect)) {
         return e.value;
@@ -342,6 +354,10 @@ export function createEditorState(init: EditorStateInit): EditorState {
     let intersects = false;
     tr.changes.iterChangedRanges((fromA, toA) => {
       for (const r of claimed) {
+        // Pure insertion (fromA === toA) AT a claimed-range boundary is
+        // BEFORE the claim (associativity=1 will push the frame forward).
+        // Allow these so "Enter at end of prose line above wireframe" works.
+        if (fromA === toA && (fromA === r.from || fromA === r.to + 1)) continue;
         if (fromA <= r.to && toA >= r.from) {
           intersects = true;
           break;
