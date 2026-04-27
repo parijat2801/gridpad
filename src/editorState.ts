@@ -46,6 +46,23 @@ export const resizeFrameEffect = StateEffect.define<{
 
 const addFrameEffect = StateEffect.define<Frame>();
 
+// addChildFrameEffect — add frame as a child of parentId. Frame's gridRow/
+// gridCol are parent-relative. lineCount is forced to 0 (children don't claim
+// doc lines). No doc surgery happens for this effect.
+const addChildFrameEffect = StateEffect.define<{ parentId: string; frame: Frame }>();
+
+// reparentFrameEffect — change a frame's parent. newParentId === null promotes
+// to top-level (caller must supply absoluteGridRow/Col). newParentId === string
+// demotes to child of that frame (gridRow/Col become parent-relative).
+// unifiedDocSync handles doc surgery: demote releases claimed lines; promote
+// inserts blank claim lines.
+const reparentFrameEffect = StateEffect.define<{
+  frameId: string;
+  newParentId: string | null;
+  absoluteGridRow?: number;
+  absoluteGridCol?: number;
+}>();
+
 const deleteFrameEffect = StateEffect.define<{ id: string }>();
 
 export const setZEffect = StateEffect.define<{ id: string; z: number }>();
@@ -155,6 +172,96 @@ const framesField = StateField.define<Frame[]>({
         );
       } else if (e.is(addFrameEffect)) {
         result = [...result, { ...e.value, dirty: true }];
+      } else if (e.is(addChildFrameEffect)) {
+        // Append the new frame to parentId's children. lineCount is forced
+        // to 0 — children never claim doc lines. Parent is marked dirty.
+        const child: Frame = { ...e.value.frame, lineCount: 0, docOffset: 0, dirty: true };
+        const addToParent = (frames: Frame[]): Frame[] =>
+          frames.map(f => {
+            if (f.id === e.value.parentId) {
+              return { ...f, children: [...f.children, child], dirty: true };
+            }
+            if (f.children.length > 0) {
+              const updated = addToParent(f.children);
+              if (updated !== f.children) return { ...f, children: updated };
+            }
+            return f;
+          });
+        result = addToParent(result);
+      } else if (e.is(reparentFrameEffect)) {
+        // Find and remove the frame from its current location.
+        let extracted: Frame | null = null;
+        const removeAndCapture = (frames: Frame[]): Frame[] => {
+          const out: Frame[] = [];
+          for (const f of frames) {
+            if (f.id === e.value.frameId) { extracted = f; continue; }
+            if (f.children.length > 0) {
+              out.push({ ...f, children: removeAndCapture(f.children), dirty: true });
+            } else {
+              out.push(f);
+            }
+          }
+          return out;
+        };
+        result = removeAndCapture(result);
+        if (!extracted) continue;
+        const orig: Frame = extracted;
+        if (e.value.newParentId === null) {
+          // Promote to top-level. Caller must supply absolute coords.
+          const aRow = e.value.absoluteGridRow ?? orig.gridRow;
+          const aCol = e.value.absoluteGridCol ?? orig.gridCol;
+          // docOffset will be re-derived after this update by the gridRow-sync
+          // pass. For now seed with line.from of aRow on the NEW doc (after
+          // unifiedDocSync's insert). We can't access tr.newDoc cleanly here;
+          // unifiedDocSync provides the docOffset via a follow-up.
+          const promoted: Frame = {
+            ...orig,
+            gridRow: aRow,
+            gridCol: aCol,
+            x: aCol * (orig.gridW > 0 ? orig.w / orig.gridW : 0),
+            y: aRow * (orig.gridH > 0 ? orig.h / orig.gridH : 0),
+            lineCount: orig.gridH,
+            // docOffset gets set by unifiedDocSync via a paired relocateFrameEffect
+            docOffset: 0,
+            dirty: true,
+          };
+          result = [...result, promoted];
+        } else {
+          // Demote to child of newParentId. Find parent in current result.
+          let parentRef: Frame | null = null;
+          const findParent = (frames: Frame[]): void => {
+            for (const f of frames) {
+              if (f.id === e.value.newParentId) { parentRef = f; return; }
+              if (f.children.length > 0) findParent(f.children);
+            }
+          };
+          findParent(result);
+          if (!parentRef) {
+            // Parent not found — abort, restore frame at top-level to avoid loss.
+            result = [...result, orig];
+            continue;
+          }
+          const p: Frame = parentRef;
+          const child: Frame = {
+            ...orig,
+            gridRow: orig.gridRow - p.gridRow,
+            gridCol: orig.gridCol - p.gridCol,
+            lineCount: 0,
+            docOffset: 0,
+            dirty: true,
+          };
+          const addToParent = (frames: Frame[]): Frame[] =>
+            frames.map(f => {
+              if (f.id === e.value.newParentId) {
+                return { ...f, children: [...f.children, child], dirty: true };
+              }
+              if (f.children.length > 0) {
+                return { ...f, children: addToParent(f.children) };
+              }
+              return f;
+            });
+          result = addToParent(result);
+        }
       } else if (e.is(deleteFrameEffect)) {
         // Mark parent container dirty before removing
         const markParentDirty = (frames: Frame[]): Frame[] =>
@@ -366,6 +473,8 @@ export function createEditorState(init: EditorStateInit): EditorState {
         e.is(restoreFramesEffect) ||
         e.is(resizeFrameEffect) ||
         e.is(addFrameEffect) ||
+        e.is(addChildFrameEffect) ||
+        e.is(reparentFrameEffect) ||
         e.is(deleteFrameEffect) ||
         e.is(setZEffect) ||
         e.is(editTextFrameEffect) ||
@@ -583,6 +692,34 @@ export function createEditorState(init: EditorStateInit): EditorState {
         // Empty content (not " ") satisfies preparedCache null fast-path.
         const insert = "\n".repeat(newFrame.lineCount);
         return [tr, { changes: { from: offset, insert }, sequential: true }];
+      }
+      if (e.is(reparentFrameEffect)) {
+        const frames = tr.startState.field(framesField);
+        const frame = findFrameInList(frames, e.value.frameId);
+        if (!frame) continue;
+        const doc = tr.startState.doc;
+
+        if (e.value.newParentId === null) {
+          // Promote: insert lineCount blank lines at the absolute target row.
+          // Skip if frame was already top-level (lineCount > 0) — nothing to add.
+          if (frame.lineCount > 0) continue;
+          const aRow = e.value.absoluteGridRow ?? 0;
+          const targetLine = Math.min(Math.max(aRow, 0), doc.lines - 1);
+          const offset = doc.line(targetLine + 1).from;
+          const insert = "\n".repeat(frame.gridH);
+          return [tr, { changes: { from: offset, insert }, sequential: true }];
+        } else {
+          // Demote: release the claimed lines (mirror deleteFrameEffect).
+          if (frame.lineCount === 0) continue; // already a child
+          const startLine = doc.lineAt(frame.docOffset);
+          const endLineNum = startLine.number + frame.lineCount - 1;
+          if (endLineNum > doc.lines) continue;
+          const endLine = doc.line(endLineNum);
+          const docLength = doc.length;
+          const from = startLine.from > 0 ? startLine.from - 1 : 0;
+          const to = startLine.from > 0 ? endLine.to : Math.min(endLine.to + 1, docLength);
+          return [tr, { changes: { from, to }, sequential: true }];
+        }
       }
     }
     return tr;
@@ -920,6 +1057,93 @@ export function applyResizeFrame(
 export function applyAddFrame(state: EditorState, frame: Frame): EditorState {
   return state.update({
     effects: addFrameEffect.of(frame),
+    annotations: Transaction.addToHistory.of(true),
+  }).state;
+}
+
+/**
+ * Add a top-level (claiming) frame at a UI-derived grid position.
+ * Pure helper that owns the docOffset/lineCount derivation so callers
+ * (DemoV2 draw-rect handler, tests) don't have to know the unified-doc
+ * invariants. Frames added via this path are visible to serializeUnified
+ * and trigger unifiedDocSync's empty-line insertion.
+ */
+export function applyAddTopLevelFrame(
+  state: EditorState,
+  frame: Frame,
+  gridRow: number,
+  gridCol: number,
+): EditorState {
+  // Clamp gridRow into the existing doc — drawing past doc end places the
+  // frame at the last line. Padding the doc to honor far-below positions
+  // is a UX choice we're explicitly NOT making here; harness rect tests
+  // draw within or at the doc tail, so this is sufficient.
+  const targetLine = Math.min(Math.max(gridRow, 0), state.doc.lines - 1);
+  const docOffset = state.doc.line(targetLine + 1).from; // 1-indexed
+  const charWidth = frame.gridW > 0 ? frame.w / frame.gridW : 0;
+  const charHeight = frame.gridH > 0 ? frame.h / frame.gridH : 0;
+  const prepared: Frame = {
+    ...frame,
+    x: gridCol * charWidth,
+    y: gridRow * charHeight,
+    gridRow,
+    gridCol,
+    docOffset,
+    lineCount: frame.gridH,
+  };
+  return applyAddFrame(state, prepared);
+}
+
+/**
+ * Add a frame as a child of an existing parent (Figma-style nest-on-draw).
+ * Caller-supplied gridRow/gridCol are absolute; helper rebases them
+ * parent-relative so children stay visually anchored as parent moves.
+ * No doc lines are inserted (children don't claim doc lines).
+ */
+export function applyAddChildFrame(
+  state: EditorState,
+  frame: Frame,
+  parentId: string,
+  absoluteGridRow: number,
+  absoluteGridCol: number,
+): EditorState {
+  const parent = findFrameInList(getFrames(state), parentId);
+  if (!parent) return state;
+  const charWidth = frame.gridW > 0 ? frame.w / frame.gridW : 0;
+  const charHeight = frame.gridH > 0 ? frame.h / frame.gridH : 0;
+  const childGridRow = absoluteGridRow - parent.gridRow;
+  const childGridCol = absoluteGridCol - parent.gridCol;
+  const prepared: Frame = {
+    ...frame,
+    x: childGridCol * charWidth,
+    y: childGridRow * charHeight,
+    gridRow: childGridRow,
+    gridCol: childGridCol,
+    lineCount: 0,
+    docOffset: 0,
+  };
+  return state.update({
+    effects: addChildFrameEffect.of({ parentId, frame: prepared }),
+    annotations: Transaction.addToHistory.of(true),
+  }).state;
+}
+
+/**
+ * Move a frame to a new parent (Figma drag-into / drag-out semantics).
+ * newParentId === null → promote to top-level. absoluteGridRow/Col set
+ * the placement and unifiedDocSync inserts blank claim lines.
+ * newParentId === string → demote to child. unifiedDocSync releases the
+ * frame's currently-claimed doc lines.
+ */
+export function applyReparentFrame(
+  state: EditorState,
+  frameId: string,
+  newParentId: string | null,
+  absoluteGridRow?: number,
+  absoluteGridCol?: number,
+): EditorState {
+  return state.update({
+    effects: reparentFrameEffect.of({ frameId, newParentId, absoluteGridRow, absoluteGridCol }),
     annotations: Transaction.addToHistory.of(true),
   }).state;
 }

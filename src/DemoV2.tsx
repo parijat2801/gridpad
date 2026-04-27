@@ -9,7 +9,7 @@ import {
   createEditorStateUnified, getDoc, getFrames,
   selectFrameEffect, getSelectedId,
   moveFrameEffect, resizeFrameEffect, setZEffect,
-  applyAddFrame, applyDeleteFrame, applyClearDirty,
+  applyAddTopLevelFrame, applyAddChildFrame, applyReparentFrame, applyDeleteFrame, applyClearDirty,
   proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
@@ -195,8 +195,8 @@ export default function DemoV2() {
   const blinkRef = useRef(true);
   const textEditRef = useRef<{ frameId: string; col: number } | null>(null);
   const lastClickRef = useRef<{ time: number; px: number; py: number } | null>(null);
-  const drawPreviewRef = useRef<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
-  const textPlacementRef = useRef<{ x: number; y: number; chars: string } | null>(null);
+  const drawPreviewRef = useRef<{ startX: number; startY: number; curX: number; curY: number; parentId: string | null } | null>(null);
+  const textPlacementRef = useRef<{ x: number; y: number; chars: string; parentId: string | null } | null>(null);
   const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -467,18 +467,18 @@ export default function DemoV2() {
     const tool = activeToolRef.current;
     // Single hit-test for the whole click handler
     const hit = hitTestFrames(framesRef.current, px, py);
-    // Drawing tools only activate on empty space — clicking anything selects it + reverts to Select
-    if (tool !== "select" && hit) {
-      setTool("select"); // auto-revert to select on click
-    }
-    if (!hit && (tool === "rect" || tool === "line")) {
-      drawPreviewRef.current = { startX: px, startY: py, curX: px, curY: py };
+    // Resolve hit's top-level ancestor — used as parent for nested draws.
+    const parentTopLevel = hit ? framesRef.current.find(f => f.id === hit.id || hasDescendant(f, hit.id)) ?? null : null;
+    if (tool === "rect" || tool === "line") {
+      // Draw activates whether or not we hit a frame. If we hit one, the new
+      // frame nests as a child of its top-level ancestor (Figma-style).
+      drawPreviewRef.current = { startX: px, startY: py, curX: px, curY: py, parentId: parentTopLevel?.id ?? null };
       paint(); return;
     }
-    if (!hit && tool === "text") {
+    if (tool === "text") {
       const cw = cwRef.current, ch = chRef.current;
       const snappedX = Math.floor(px / cw) * cw, snappedY = Math.floor(py / ch) * ch;
-      textPlacementRef.current = { x: snappedX, y: snappedY, chars: "" };
+      textPlacementRef.current = { x: snappedX, y: snappedY, chars: "", parentId: parentTopLevel?.id ?? null };
       paint(); return;
     }
     const currentSelectedId = getSelectedId(stateRef.current);
@@ -627,7 +627,7 @@ export default function DemoV2() {
     doLayout(); paint();
   }
 
-  function onMouseUp() {
+  function onMouseUp(e?: React.MouseEvent) {
     if (dragRef.current) {
       // Deferred drill-down: if user clicked without dragging, apply the
       // drill-down selection now (selects the child instead of the container)
@@ -636,6 +636,47 @@ export default function DemoV2() {
           effects: selectFrameEffect.of(dragRef.current.pendingDrillDownId),
         }).state;
         paint();
+      }
+      // Reparent on drop: if mouseup cursor lands inside a different
+      // top-level frame than where the dragged frame's current parent is,
+      // demote into that frame (or promote out of one). Figma-style.
+      if (dragRef.current.hasMoved && e) {
+        const canvasEl = canvasRef.current;
+        if (canvasEl) {
+          const rect = canvasEl.getBoundingClientRect();
+          const upPx = e.clientX - rect.left;
+          const upPy = e.clientY - rect.top + (canvasEl.parentElement?.scrollTop ?? 0);
+          const draggedId = dragRef.current.frameId;
+          const draggedTopAncestor = framesRef.current.find(f => f.id === draggedId || hasDescendant(f, draggedId));
+          const hitTopLevel = (() => {
+            const hit = hitTestFrames(framesRef.current, upPx, upPy);
+            if (!hit) return null;
+            return framesRef.current.find(f => f.id === hit.id || hasDescendant(f, hit.id)) ?? null;
+          })();
+          // Decide reparent: cursor inside a different top-level → demote,
+          // BUT only when the target is strictly larger than the dragged
+          // frame (Figma-style: you can't nest a big thing inside a small
+          // one). Without this guard, dragging two same-size boxes past
+          // each other unintentionally nests them.
+          const draggedFrame = draggedTopAncestor ? findFrameById(framesRef.current, draggedId)?.frame ?? null : null;
+          const targetIsLarger = !!hitTopLevel && !!draggedFrame
+            && hitTopLevel.gridW > draggedFrame.gridW
+            && hitTopLevel.gridH > draggedFrame.gridH;
+          if (hitTopLevel && draggedTopAncestor && hitTopLevel.id !== draggedTopAncestor.id && hitTopLevel.id !== draggedId && targetIsLarger) {
+            const cw = cwRef.current, ch = chRef.current;
+            const aRow = Math.round(upPy / ch);
+            const aCol = Math.round(upPx / cw);
+            stateRef.current = applyReparentFrame(stateRef.current, draggedId, hitTopLevel.id, aRow, aCol);
+            syncRefsFromState();
+          } else if (!hitTopLevel && draggedTopAncestor && draggedTopAncestor.id !== draggedId) {
+            // Dragged a child out into empty space → promote.
+            const cw = cwRef.current, ch = chRef.current;
+            const aRow = Math.round(upPy / ch);
+            const aCol = Math.round(upPx / cw);
+            stateRef.current = applyReparentFrame(stateRef.current, draggedId, null, aRow, aCol);
+            syncRefsFromState();
+          }
+        }
       }
       dragRef.current = null; scheduleAutosave();
     }
@@ -649,12 +690,17 @@ export default function DemoV2() {
     if (tool === "rect" && x2 - x1 >= cw && y2 - y1 >= ch) {
       const f = createRectFrame({ gridW: Math.max(2, Math.round((x2 - x1) / cw)), gridH: Math.max(2, Math.round((y2 - y1) / ch)), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
       const gridR = Math.round(y1 / ch), gridC = Math.round(x1 / cw);
-      stateRef.current = applyAddFrame(stateRef.current, { ...f, x: gridC * cw, y: gridR * ch, gridRow: gridR, gridCol: gridC });
+      stateRef.current = preview.parentId
+        ? applyAddChildFrame(stateRef.current, f, preview.parentId, gridR, gridC)
+        : applyAddTopLevelFrame(stateRef.current, f, gridR, gridC);
       syncRefsFromState(); scheduleAutosave();
     } else if (tool === "line") {
       const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
       if (r1 !== r2 || c1 !== c2) {
-        stateRef.current = applyAddFrame(stateRef.current, createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch }));
+        const f = createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch });
+        stateRef.current = preview.parentId
+          ? applyAddChildFrame(stateRef.current, f, preview.parentId, f.gridRow, f.gridCol)
+          : applyAddTopLevelFrame(stateRef.current, f, f.gridRow, f.gridCol);
         syncRefsFromState(); scheduleAutosave();
       }
     }
@@ -832,7 +878,10 @@ export default function DemoV2() {
           e.preventDefault();
           if (tp.chars.length > 0) {
             const cw = cwRef.current, ch = chRef.current;
-            stateRef.current = applyAddFrame(stateRef.current, createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch }));
+            const tf = createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch });
+            stateRef.current = tp.parentId
+              ? applyAddChildFrame(stateRef.current, tf, tp.parentId, tf.gridRow, tf.gridCol)
+              : applyAddTopLevelFrame(stateRef.current, tf, tf.gridRow, tf.gridCol);
             syncRefsFromState();
             scheduleAutosave(); doLayout();
           }

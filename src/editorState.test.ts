@@ -16,6 +16,9 @@ import {
   applyMoveFrame,
   applyResizeFrame,
   applyAddFrame,
+  applyAddTopLevelFrame,
+  applyAddChildFrame,
+  applyReparentFrame,
   applyDeleteFrame,
   applyClearDirty,
   moveFrameEffect,
@@ -40,7 +43,7 @@ import {
   applySetOriginalProseSegments,
   type CursorPos,
 } from "./editorState";
-import { createFrame, createTextFrame, createRectFrame, type Frame } from "./frame";
+import { createFrame, createTextFrame, createRectFrame, createLineFrame, type Frame } from "./frame";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -2219,6 +2222,162 @@ describe("add wireframe in unified mode", () => {
     expect(updated.doc.line(1).text).toBe("");
     expect(updated.doc.line(2).text).toBe("");
     expect(updated.doc.line(3).text).toBe("World");
+  });
+
+  // Reproduces the e2e harness "add: draw new rect" failure.
+  // DemoV2's onMouseUp rect-tool branch creates a frame from a UI grid
+  // position (gridR, gridC) and gridW/gridH. Pre-fix it called applyAddFrame
+  // with lineCount=0, so the frame was invisible to serializeUnified and
+  // unifiedDocSync inserted no claimed lines. applyAddTopLevelFrame is the
+  // pure helper that owns the docOffset/lineCount derivation so DemoV2 stays
+  // thin and the contract is testable.
+  it("applyAddTopLevelFrame: serializeUnified output contains a newly-drawn rect", async () => {
+    const { serializeUnified } = await import("./serializeUnified");
+    const text = "Just some prose.\n\nAnother paragraph.\n\nA third one.";
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(text, cw, ch);
+
+    const f = createRectFrame({ gridW: 12, gridH: 3, style: STYLE, charWidth: cw, charHeight: ch });
+    state = applyAddTopLevelFrame(state, f, 4, 5);
+
+    const out = serializeUnified(getDoc(state), getFrames(state));
+    expect(out).toContain("┌");
+    expect(out).toContain("└");
+    expect(out).toContain("Just some prose.");
+    expect(out).toContain("A third one.");
+  });
+
+  it("applyAddTopLevelFrame: drawing into empty doc still serializes the rect", async () => {
+    const { serializeUnified } = await import("./serializeUnified");
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified("", cw, ch);
+    const f = createRectFrame({ gridW: 6, gridH: 3, style: STYLE, charWidth: cw, charHeight: ch });
+    state = applyAddTopLevelFrame(state, f, 0, 0);
+    const out = serializeUnified(getDoc(state), getFrames(state));
+    expect(out).toContain("┌");
+    expect(out).toContain("└");
+  });
+
+  // Line tool: users draw horizontal, vertical, and diagonal lines.
+  // createLineFrame returns lineCount=0 by default — same trap as rect.
+  it("applyAddTopLevelFrame: horizontal line round-trips through serializeUnified", async () => {
+    const { serializeUnified } = await import("./serializeUnified");
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified("Top.\n\nBottom.", cw, ch);
+    const line = createLineFrame({ r1: 1, c1: 0, r2: 1, c2: 8, charWidth: cw, charHeight: ch });
+    state = applyAddTopLevelFrame(state, line, line.gridRow, line.gridCol);
+    const out = serializeUnified(getDoc(state), getFrames(state));
+    expect(out).toContain("─");
+    expect(out).toContain("Top.");
+    expect(out).toContain("Bottom.");
+  });
+
+  it("applyAddTopLevelFrame: vertical line round-trips through serializeUnified", async () => {
+    const { serializeUnified } = await import("./serializeUnified");
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified("Top.\n\n\n\nBottom.", cw, ch);
+    const line = createLineFrame({ r1: 1, c1: 4, r2: 3, c2: 4, charWidth: cw, charHeight: ch });
+    state = applyAddTopLevelFrame(state, line, line.gridRow, line.gridCol);
+    const out = serializeUnified(getDoc(state), getFrames(state));
+    expect(out).toContain("│");
+    expect(out).toContain("Top.");
+    expect(out).toContain("Bottom.");
+  });
+
+  // Cursor-driven parentage rule: if the user starts a new draw with the
+  // mousedown cursor inside an existing top-level frame, the new frame is
+  // added as a child of that frame. No doc lines are inserted; the new
+  // frame inherits child semantics (lineCount=0, parent-relative gridRow).
+  it("applyAddChildFrame: child rect drawn inside parent does not insert doc lines", async () => {
+    const cw = 9.6, ch = 18;
+    const text = "Prose above\n\n┌──────┐\n│      │\n│      │\n└──────┘\n\nProse below";
+    let state = createEditorStateUnified(text, cw, ch);
+    const docBefore = getDoc(state);
+    const parent = getFrames(state)[0];
+    const parentLineCountBefore = parent.lineCount;
+
+    const child = createRectFrame({ gridW: 4, gridH: 2, style: STYLE, charWidth: cw, charHeight: ch });
+    // Cursor at gridRow 3, gridCol 1 — inside parent (rows 2..5, cols 0..7).
+    state = applyAddChildFrame(state, child, parent.id, 3, 1);
+
+    expect(getDoc(state)).toBe(docBefore);
+    const after = getFrames(state);
+    expect(after.length).toBe(1);
+    expect(after[0].children.length).toBe(1);
+    const addedChild = after[0].children[0];
+    expect(addedChild.lineCount).toBe(0);
+    // gridRow on a child is parent-relative.
+    expect(addedChild.gridRow).toBe(3 - parent.gridRow);
+    expect(addedChild.gridCol).toBe(1 - parent.gridCol);
+    // Parent unchanged.
+    expect(after[0].lineCount).toBe(parentLineCountBefore);
+  });
+
+  // Reparent: moving a top-level frame so its mouseup cursor lands inside
+  // another top-level frame demotes it to a child of that frame. Its
+  // claimed doc lines are released back to blanks (count preserved by
+  // having lineCount=0).
+  it("applyReparentFrame: top-level → child releases claimed doc lines", async () => {
+    const cw = 9.6, ch = 18;
+    // Build the two-top-level-frame state by hand to avoid the scanner's
+    // synthetic-container reparenting.
+    let state = createEditorStateUnified("Top.\n\nMid.\n\nBot.", cw, ch);
+    const big = createRectFrame({ gridW: 10, gridH: 4, style: STYLE, charWidth: cw, charHeight: ch });
+    state = applyAddTopLevelFrame(state, big, 0, 0);
+    const small = createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: cw, charHeight: ch });
+    state = applyAddTopLevelFrame(state, small, 8, 0);
+    const frames = getFrames(state);
+    expect(frames.length).toBe(2); // sanity
+    const bigId = frames[0].id;
+    const smallId = frames[1].id;
+    const docLinesBefore = state.doc.lines;
+    const smallLineCount = frames[1].lineCount;
+
+    state = applyReparentFrame(state, smallId, bigId);
+
+    const after = getFrames(state);
+    expect(after.length).toBe(1); // small absorbed
+    expect(after[0].id).toBe(bigId);
+    expect(after[0].children.length).toBe(1);
+    expect(after[0].children[0].id).toBe(smallId);
+    expect(after[0].children[0].lineCount).toBe(0);
+    // Doc shrinks by exactly smallLineCount lines (the released claim).
+    expect(state.doc.lines).toBe(docLinesBefore - smallLineCount);
+  });
+
+  // Reverse reparent: a child dragged outside any frame becomes top-level
+  // and must reclaim doc lines so it survives serialization.
+  it("applyReparentFrame: child → top-level inserts doc lines for the new claim", async () => {
+    const cw = 9.6, ch = 18;
+    const text = "Prose above\n\n┌──────┐\n│ ┌─┐  │\n│ └─┘  │\n│      │\n└──────┘\n\nProse below";
+    let state = createEditorStateUnified(text, cw, ch);
+    const top = getFrames(state)[0];
+    expect(top.children.length).toBeGreaterThan(0); // sanity
+    const child = top.children[0];
+    const docLinesBefore = state.doc.lines;
+
+    // Promote child to top-level at row 0 (cursor lands in empty space above).
+    state = applyReparentFrame(state, child.id, null, 0, 0);
+
+    const after = getFrames(state);
+    expect(after.length).toBe(2);
+    const promoted = after.find(f => f.id === child.id)!;
+    expect(promoted.lineCount).toBeGreaterThan(0);
+    expect(state.doc.lines).toBe(docLinesBefore + promoted.lineCount);
+  });
+
+  // Text tool: users place a single-line label. createTextFrame returns
+  // lineCount=0 — the label vanishes on save without applyAddTopLevelFrame.
+  it("applyAddTopLevelFrame: text label round-trips through serializeUnified", async () => {
+    const { serializeUnified } = await import("./serializeUnified");
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified("Above.\n\n\nBelow.", cw, ch);
+    const txt = createTextFrame({ text: "Hello", row: 2, col: 4, charWidth: cw, charHeight: ch });
+    state = applyAddTopLevelFrame(state, txt, txt.gridRow, txt.gridCol);
+    const out = serializeUnified(getDoc(state), getFrames(state));
+    expect(out).toContain("Hello");
+    expect(out).toContain("Above.");
+    expect(out).toContain("Below.");
   });
 });
 
