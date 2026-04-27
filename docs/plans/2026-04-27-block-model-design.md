@@ -28,30 +28,40 @@ blocks: [
 
 `groupIntoContainers` stays. If two wireframes are side by side in the .md file, the scanner + groupIntoContainers wraps them into one container frame. That container becomes one WireframeBlock.
 
-### Unified layout pass
+### Unified layout pass (Pretext-interleaved)
 
-One pass walks blocks top-to-bottom, accumulating Y:
+Convert blocks to a `LayoutEntry[]` array and feed it to `reflowLayout`. Pretext's `lineTop` accumulator positions everything — prose and wireframes — in one pass.
 
-```
-y = 0
-for each block in blocks:
-  block.y = y
-  if prose:
-    reflow text at full canvas width starting at y (via Pretext)
-    y += reflowed height
-  if wireframe:
-    place frame at y
-    y += frame height in rows * charHeight
+```ts
+type LayoutEntry = PreparedTextWithSegments | null | WireframeBand;
+
+interface WireframeBand {
+  type: "wireframe";
+  ids: string[];      // frame IDs in this band
+  heightPx: number;   // band height in pixels
+}
 ```
 
+Block list -> LayoutEntry[] conversion:
+- ProseBlock: prepare each line via Pretext, emit as PreparedTextWithSegments or null (empty lines)
+- WireframeBlock: emit a WireframeBand marker with the frame's height
+
+In `reflowLayout`'s main loop:
+- Prose entry (PreparedTextWithSegments | null): existing Pretext layoutNextLine logic, advances lineTop
+- WireframeBand entry: record Y for all frame IDs, advance lineTop by heightPx
+
+Result includes `wireframeYs: Map<string, number>` and `sourceLineYs: Map<number, number>` alongside the existing `PositionedLine[]`.
+
+Properties:
 - `reflowLayout` no longer takes obstacles. Prose gets full width always.
-- Wireframe screen Y comes from block position, not `gridRow * charHeight`.
+- Wireframe screen Y comes from block position in the entry array, not `gridRow * charHeight`.
 - Enter above wireframe -> prose block grows -> all blocks below shift down.
 - Delete wireframe -> block removed -> everything below shifts up.
+- No `proseSegmentMap` needed — block order is the source of truth.
 
 ### Pretext
 
-Stays for prose line-breaking and measurement. Handles Unicode segmentation, CJK/kinsoku, bidi, subpixel glyph measurement, proportional fonts. Only change: no obstacles passed.
+Stays as the single layout engine. Handles Unicode segmentation, CJK/kinsoku, bidi, subpixel glyph measurement, proportional fonts. Wireframe bands are interleaved into its input so it positions everything in one pass.
 
 ### Drag interactions
 
@@ -126,9 +136,10 @@ Markdown text round-trips (serialize -> parse -> serialize produces same output)
 1. Create `src/blockModel.ts` with `ProseBlock`, `WireframeBlock`, `Block` types.
 2. Add `buildBlockList(frames, proseSegments)` — takes existing scanToFrames output and produces ordered block list. Pure function, testable.
 3. Add `blockSerialize(blocks)` — walks blocks, writes prose lines and frame cells in order. Uses existing `collectFrameCells` and `repairJunctions`. Pure function, testable.
-4. Add `blockLayout(blocks, canvasWidth, lineHeight, charHeight)` — unified layout pass returning wireframeYs, sourceLineYs, positionedLines. Pure function, testable.
-5. Write unit tests for all three: build, serialize, layout. Test round-trip: parse -> buildBlockList -> blockSerialize -> parse -> compare.
-6. Run existing harness/diagnostic tests to verify nothing regressed (no UI wired yet).
+4. Add `blocksToLayoutEntries(blocks, preparedCache)` — converts block list to `LayoutEntry[]` by interleaving prepared prose lines and WireframeBand markers. Pure function.
+5. Update `reflowLayout` signature: replace `obstacles` param with `LayoutEntry[]` input. Add `WireframeBand` branch to main loop. Return `wireframeYs` and `sourceLineYs` in result.
+6. Write unit tests for all four: buildBlockList, blockSerialize, blocksToLayoutEntries, updated reflowLayout. Test round-trip: parse -> buildBlockList -> blockSerialize -> parse -> compare.
+7. Run existing harness/diagnostic tests to verify nothing regressed (no UI wired yet).
 
 ### Phase 2: Wire block model into EditorState
 1. Add `blocksField` StateField to editorState.ts. Stores Block[].
@@ -139,7 +150,7 @@ Markdown text round-trips (serialize -> parse -> serialize produces same output)
 6. Unit test undo/redo of block operations.
 
 ### Phase 3: Wire into DemoV2 (layout + rendering)
-1. Replace `doLayout()` with call to `blockLayout()`.
+1. Replace `doLayout()`: call `blocksToLayoutEntries()` then `reflowLayout()`.
 2. Store `wireframeYsRef` and `sourceLineYsRef` from layout result.
 3. Update `paint()` to use `wireframeYsRef` for top-level frame Y.
 4. Update hit testing to use `wireframeYsRef`.
