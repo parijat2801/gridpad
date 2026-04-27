@@ -366,6 +366,55 @@ export function createEditorStateFromText(
   });
 }
 
+/**
+ * Unified document factory — CM doc holds the FULL .md text with claimed
+ * (wireframe) lines replaced by empty strings. Frames track which lines they
+ * own via docOffset (CM character offset of first claimed line) + lineCount.
+ *
+ * Empty strings (not " ") are used so preparedCache.ts maps them to the
+ * null fast-path and reflowLayout skips them as obstacle-bands instead of
+ * generating spurious PositionedLines.
+ */
+export function createEditorStateUnified(
+  text: string,
+  charWidth: number,
+  charHeight: number,
+): EditorState {
+  const { frames } = scanToFrames(text, charWidth, charHeight);
+
+  // Build set of source lines claimed by any top-level frame.
+  const claimedLines = new Set<number>();
+  for (const f of frames) {
+    for (let i = f.gridRow; i < f.gridRow + f.gridH; i++) {
+      claimedLines.add(i);
+    }
+  }
+
+  // Build unified doc: prose lines preserved, claimed lines → empty string.
+  const sourceLines = text.split("\n");
+  const unifiedLines = sourceLines.map((line, i) =>
+    claimedLines.has(i) ? "" : line,
+  );
+  const unifiedText = unifiedLines.join("\n");
+
+  // Recompute docOffset for each frame in the unified doc (line lengths shrank).
+  const lineOffsets: number[] = [];
+  {
+    let offset = 0;
+    for (let i = 0; i < unifiedLines.length; i++) {
+      lineOffsets.push(offset);
+      offset += unifiedLines[i].length + 1;
+    }
+  }
+  for (const f of frames) {
+    if (f.gridRow >= 0 && f.gridRow < lineOffsets.length) {
+      f.docOffset = lineOffsets[f.gridRow];
+    }
+  }
+
+  return createEditorState({ prose: unifiedText, frames });
+}
+
 // ── Accessors ──────────────────────────────────────────────────────────────
 
 export function getDoc(state: EditorState): string {

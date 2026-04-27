@@ -86,6 +86,20 @@ Same for `proseMoveUp` (decrement, check `targetRow < 0`).
 
 **Task 15 (do NOT remove gridRow) — CRITICAL.** Child frames use `child.gridRow` for relative positioning inside their parent (see Task 7 `renderFrameRow` line `localRow - child.gridRow`). `docOffset` is a 1D top-level CM offset and cannot replace 2D child positioning. Keep `gridRow` on the Frame interface. Update Task 15's file list to remove only `proseSegmentMap`-related fields, not `gridRow`.
 
+## Sub-agent code-audit corrections (2026-04-27)
+
+**Task 3 (claimed-line filler should be empty string, not single space) — IMPORTANT.** `preparedCache.ts:12` maps `line.length > 0 → non-null`, so claimed lines filled with `" "` produce one spurious `PositionedLine` per row in `linesRef.current`. Empty strings hit the null path and generate no positioned line — and `reflowLayout.ts:98-107` already advances `lineTop` past the obstacle correctly. Use `""` (empty) for claimed lines in `createEditorStateUnified`. Recompute `docOffset` accordingly: empty-line "" is 0 chars, so claimed-line spans become `\n\n\n` (n-1 newlines for n claimed lines + leading newline if any).
+
+**Task 4 (note re-filtering semantics) — DOC.** When `transactionFilter` (Tasks 10–13) returns an array of specs, CM merges them via `resolveTransaction(state, filtered, false)` — the `false` means `changeFilter` is NOT re-applied. So `claimFilter`'s rejection of edits-into-claimed-ranges does NOT block the programmatic delete+insert emitted by the drag transactionFilter. This is correct and intentional — add a comment in `claimFilter` noting this so future maintainers don't try to "fix" it.
+
+**Task 12 (drag undo gap) — IMPORTANT.** No existing test mixes a frame effect WITH a CM doc change in one transaction. Drag is the first such case. Mandatory tests:
+1. Drag down `dRow:2` → undo restores pre-drag doc + pre-drag `docOffset`.
+2. Drag up `dRow:-2` → same. Covers `insertAt < deleteFrom` branch.
+3. After drag, `undoDepth === 1` (one entry covers both doc + frame changes atomically).
+4. Redo after undo restores the post-drag state.
+5. Drag → prose-edit → undo twice. Each undo independent.
+6. After undo, `mapPos` in `framesField.update` runs first but `restoreFramesEffect` overwrites — verify final `docOffset` matches pre-drag snapshot exactly.
+
 ---
 
 ## Phase 1: Frame model — add docOffset/lineCount alongside gridRow (incremental)

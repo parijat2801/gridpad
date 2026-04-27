@@ -1,11 +1,12 @@
 // src/editorState.test.ts
 // Tests for editorState.ts — Phase 3 plan verification.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { Transaction } from "@codemirror/state";
 import {
   createEditorState,
   createEditorStateFromText,
+  createEditorStateUnified,
   getDoc,
   getFrames,
   getCursor,
@@ -1049,7 +1050,7 @@ describe("applyClearDirty (Phase 2)", () => {
   it("resets dirty flag on all frames", () => {
     const f = createFrame({ x: 0, y: 0, w: 50, h: 50 });
     let state = createEditorState({ prose: "", frames: [f], proseSegmentMap: [] });
-    state = applyMoveFrame(state, f.id, 10, 10);
+    state = applyMoveFrame(state, f.id, 10, 10, 9.6, 18.4);
     expect(getFrames(state)[0].dirty).toBe(true);
     state = applyClearDirty(state);
     expect(getFrames(state)[0].dirty).toBe(false);
@@ -1062,7 +1063,7 @@ describe("applyClearDirty (Phase 2)", () => {
       children: [child],
     };
     let state = createEditorState({ prose: "", frames: [container], proseSegmentMap: [] });
-    state = applyMoveFrame(state, child.id, 5, 5);
+    state = applyMoveFrame(state, child.id, 5, 5, 9.6, 18.4);
     expect(getFrames(state)[0].dirty).toBe(true);
     expect(getFrames(state)[0].children[0].dirty).toBe(true);
     state = applyClearDirty(state);
@@ -1176,11 +1177,13 @@ describe("delete cascade", () => {
       id: "child1", x: 0, y: 0, w: 100, h: 50,
       z: 0, children: [], content: { type: "rect", cells: new Map(), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" } },
       clip: false, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0,
+      docOffset: 0, lineCount: 0,
     };
     const parent: Frame = {
       id: "parent1", x: 0, y: 0, w: 200, h: 100,
       z: 0, children: [child], content: null,
       clip: true, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0,
+      docOffset: 0, lineCount: 0,
     };
     const state = createEditorState({
       prose: "", frames: [parent], proseSegmentMap: [],
@@ -1194,15 +1197,18 @@ describe("delete cascade", () => {
       id: "c1", x: 0, y: 0, w: 50, h: 50, z: 0, children: [],
       content: { type: "rect", cells: new Map(), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" } },
       clip: false, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0,
+      docOffset: 0, lineCount: 0,
     };
     const child2: Frame = {
       id: "c2", x: 60, y: 0, w: 50, h: 50, z: 0, children: [],
       content: { type: "rect", cells: new Map(), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" } },
       clip: false, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0,
+      docOffset: 0, lineCount: 0,
     };
     const parent: Frame = {
       id: "p1", x: 0, y: 0, w: 200, h: 100, z: 0,
       children: [child1, child2], content: null, clip: true, dirty: false, gridRow: 0, gridCol: 0, gridW: 0, gridH: 0,
+      docOffset: 0, lineCount: 0,
     };
     const state = createEditorState({ prose: "", frames: [parent], proseSegmentMap: [] });
     const updated = applyDeleteFrame(state, "c1");
@@ -1224,5 +1230,127 @@ describe("originalProseSegments refresh", () => {
     const newSegs = [{ row: 0, col: 0, text: "Updated" }];
     const updated = applySetOriginalProseSegments(state, newSegs);
     expect(getOriginalProseSegments(updated)).toEqual(newSegs);
+  });
+});
+
+// ── Task 3: createEditorStateUnified ────────────────────────────────────────
+
+describe("createEditorStateUnified", () => {
+  beforeAll(() => {
+    const origCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+      const el = origCreateElement(tag);
+      if (tag === "canvas") {
+        (el as HTMLCanvasElement).getContext = (() => ({
+          font: "", fillStyle: "", textBaseline: "", fillText: () => {},
+          measureText: (text: string) => ({
+            width: text.length * 9.6,
+            actualBoundingBoxAscent: 12,
+            actualBoundingBoxDescent: 4,
+          }),
+        })) as unknown as HTMLCanvasElement["getContext"];
+      }
+      return el;
+    });
+  });
+
+  it("CM doc preserves line count with empty strings for wireframe lines", () => {
+    // Plan amendment: claimed lines are "" (empty), not " " — preparedCache.ts:12
+    // maps non-empty strings to non-null PreparedTextWithSegments, generating
+    // spurious PositionedLines. Empty strings hit the null fast-path.
+    const text = "Hello\n\n┌──────┐\n│ Box  │\n└──────┘\n\nGoodbye";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const doc = getDoc(state);
+    const lines = doc.split("\n");
+    expect(lines.length).toBe(7);
+    expect(lines[0]).toBe("Hello");
+    expect(lines[1]).toBe("");
+    expect(lines[5]).toBe("");
+    expect(lines[6]).toBe("Goodbye");
+    expect(lines[2]).toBe(""); // claimed
+    expect(lines[3]).toBe(""); // claimed
+    expect(lines[4]).toBe(""); // claimed
+  });
+
+  it("frames have correct docOffset pointing into unified doc", () => {
+    const text = "Hello\n\n┌──────┐\n│ Box  │\n└──────┘\n\nGoodbye";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frames = getFrames(state);
+    expect(frames.length).toBeGreaterThanOrEqual(1);
+    const frame = frames[0];
+    expect(frame.lineCount).toBe(3);
+    // Unified doc lines: "Hello"(5) + \n + ""(0) + \n = 7 → frame starts at 7
+    expect(frame.docOffset).toBe(7);
+  });
+
+  it("pure prose passes through unchanged", () => {
+    const text = "Just some prose\nNo wireframes";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    expect(getDoc(state)).toBe(text);
+    expect(getFrames(state)).toHaveLength(0);
+  });
+
+  it("wireframe at start of file has docOffset 0", () => {
+    const text = "┌──┐\n│Hi│\n└──┘\nbye";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frame = getFrames(state)[0];
+    expect(frame.docOffset).toBe(0);
+    expect(frame.lineCount).toBe(3);
+    const lines = getDoc(state).split("\n");
+    expect(lines[0]).toBe("");
+    expect(lines[1]).toBe("");
+    expect(lines[2]).toBe("");
+    expect(lines[3]).toBe("bye");
+  });
+
+  it("wireframe at end of file with no trailing newline", () => {
+    const text = "Hello\n┌──┐\n│Hi│\n└──┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frame = getFrames(state)[0];
+    expect(frame.lineCount).toBe(3);
+    const lines = getDoc(state).split("\n");
+    expect(lines.length).toBe(4);
+    expect(lines[0]).toBe("Hello");
+    expect(lines[1]).toBe("");
+    expect(lines[2]).toBe("");
+    expect(lines[3]).toBe("");
+    // docOffset = "Hello\n" = 6
+    expect(frame.docOffset).toBe(6);
+  });
+
+  it("two wireframes separated by enough prose remain separate top-level frames", () => {
+    // groupIntoContainers merges shapes within charHeight pixels gap.
+    // Need a gap of (charHeight + 1) pixels — translate to cellHeight=18 → > 1 row.
+    // Use multiple blank rows + prose between to guarantee separation.
+    const text = "┌──┐\n│A │\n└──┘\n\n\n\n\n\nbetween\n\n\n\n\n\n┌──┐\n│B │\n└──┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frames = getFrames(state);
+    expect(frames.length).toBe(2);
+    const [first, second] = frames;
+    expect(first.lineCount).toBe(3);
+    expect(second.lineCount).toBe(3);
+    expect(first.docOffset).toBe(0);
+    // Verify second is positioned below the prose
+    expect(second.gridRow).toBeGreaterThan(first.gridRow + first.gridH);
+  });
+
+  it("preserves docOffset 0 for first claimed line at file start", () => {
+    const text = "┌─┐\n└─┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frame = getFrames(state)[0];
+    expect(frame.docOffset).toBe(0);
+    expect(frame.lineCount).toBe(2);
+  });
+
+  it("docOffset accounts for empty-line shrinkage in unified doc", () => {
+    // Source lines: "AAAA" (4) "┌─┐" (3) "└─┘" (3) "BBBB" (4)
+    // Unified lines: "AAAA" (4) "" (0) "" (0) "BBBB" (4)
+    // Frame docOffset = "AAAA\n" = 5
+    const text = "AAAA\n┌─┐\n└─┘\nBBBB";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frame = getFrames(state)[0];
+    expect(frame.docOffset).toBe(5);
+    expect(frame.lineCount).toBe(2);
+    expect(getDoc(state)).toBe("AAAA\n\n\nBBBB");
   });
 });
