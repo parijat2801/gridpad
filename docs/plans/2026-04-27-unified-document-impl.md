@@ -12,6 +12,82 @@
 
 ---
 
+## Plan-Review Corrections (Gemini, 2026-04-27)
+
+These corrections override the original task code below. Apply them when implementing each task.
+
+**Task 4 (changeFilter inverted) — CRITICAL.** `EditorState.changeFilter.of` returning an array of numbers specifies the *allowed* ranges, not the suppressed ones. Returning `dominated` would *only* allow edits inside wireframe lines. Replace with a boolean filter that returns `false` when any change intersects a claimed range, and bypass for non-user transactions:
+
+```typescript
+const claimFilter = EditorState.changeFilter.of((tr) => {
+  // Allow programmatic changes (move, resize, delete, add — they aren't user input)
+  if (!tr.isUserEvent("input") && !tr.isUserEvent("delete")) return true;
+  const frames = tr.startState.field(framesField);
+  if (frames.length === 0) return true;
+  const claimed: Array<{ from: number; to: number }> = [];
+  for (const f of frames) {
+    if (f.lineCount === 0) continue;
+    const startLine = tr.startState.doc.lineAt(f.docOffset);
+    const endLineNum = Math.min(startLine.number + f.lineCount - 1, tr.startState.doc.lines);
+    const endLine = tr.startState.doc.line(endLineNum);
+    claimed.push({ from: startLine.from, to: endLine.to });
+  }
+  let intersects = false;
+  tr.changes.iterChangedRanges((fromA, toA) => {
+    for (const r of claimed) {
+      if (fromA <= r.to && toA >= r.from) { intersects = true; break; }
+    }
+  });
+  return !intersects;
+});
+```
+
+**Task 5 (mapPos associativity) — IMPORTANT.** Default `mapPos` associativity is `-1` (stay before insertions). For a frame's `docOffset`, we want it to *follow* preceding insertions (Enter above pushes frame down). Use `tr.changes.mapPos(f.docOffset, 1)`.
+
+**Task 11 (delete merges prose) — CRITICAL.** Removing `[startLine.from - 1, endLine.to + 1]` deletes both the leading and trailing newlines, concatenating prose-above with prose-below. Delete only one newline:
+
+```typescript
+const from = startLine.from > 0 ? startLine.from - 1 : startLine.from;
+const to = endLine.to;  // do not extend past trailing newline
+return [tr, { changes: { from, to }, sequential: true }];
+```
+
+(If frame is at doc start, the trailing newline is the only separator; in that case use `from = 0, to = endLine.to + 1`.)
+
+**Task 12 (drag offset drift) — CRITICAL.** `sequential: true` makes the second spec see the post-delete doc, so `insertAt` becomes invalid. Compute the insertion point in *post-delete* coordinates by mapping it through the deletion:
+
+```typescript
+// After deleting [deleteFrom, deleteTo], characters shift by -(deleteTo - deleteFrom)
+// for any position >= deleteTo. Compute mappedInsertAt accordingly.
+const mappedInsertAt = insertAt > deleteTo
+  ? insertAt - (deleteTo - deleteFrom)
+  : insertAt;
+return [
+  { effects: [...tr.effects, relocateFrameEffect.of({ id: frame.id, newDocOffset: mappedInsertAt })],
+    changes: { from: deleteFrom, to: deleteTo } },
+  { changes: { from: mappedInsertAt, insert: claimedContent + "\n" }, sequential: true },
+];
+```
+
+Prefer a single `changes` array over `sequential: true` when feasible. Test drag-up and drag-down both.
+
+**Task 14 (cursor stuck on adjacent frames) — IMPORTANT.** Replace `if (claimed)` with `while`:
+
+```typescript
+let claimed = getClaimedLineRange(state, targetRow);
+while (claimed) {
+  targetRow = claimed.end + 1;
+  if (targetRow >= state.doc.lines) return state;
+  claimed = getClaimedLineRange(state, targetRow);
+}
+```
+
+Same for `proseMoveUp` (decrement, check `targetRow < 0`).
+
+**Task 15 (do NOT remove gridRow) — CRITICAL.** Child frames use `child.gridRow` for relative positioning inside their parent (see Task 7 `renderFrameRow` line `localRow - child.gridRow`). `docOffset` is a 1D top-level CM offset and cannot replace 2D child positioning. Keep `gridRow` on the Frame interface. Update Task 15's file list to remove only `proseSegmentMap`-related fields, not `gridRow`.
+
+---
+
 ## Phase 1: Frame model — add docOffset/lineCount alongside gridRow (incremental)
 
 ### Task 1: Add docOffset + lineCount to Frame interface

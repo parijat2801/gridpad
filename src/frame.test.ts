@@ -238,3 +238,50 @@ describe("Fix 1: wire chars should not leak into prose", () => {
     expect(mixedTexts.length).toBeGreaterThan(0);
   });
 });
+
+describe("Frame docOffset/lineCount", () => {
+  it("createFrame includes docOffset and lineCount defaults", () => {
+    const f = createFrame({ x: 0, y: 0, w: 100, h: 50 });
+    expect(f.docOffset).toBe(0);
+    expect(f.lineCount).toBe(0);
+  });
+
+  it("createRectFrame includes docOffset and lineCount defaults", () => {
+    const f = createRectFrame({
+      gridW: 10,
+      gridH: 5,
+      style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" },
+      charWidth: CW,
+      charHeight: CH,
+    });
+    expect(f.docOffset).toBe(0);
+    expect(f.lineCount).toBe(0);
+  });
+
+  it("createTextFrame includes docOffset and lineCount defaults", () => {
+    const f = createTextFrame({ text: "hi", row: 2, col: 3, charWidth: CW, charHeight: CH });
+    expect(f.docOffset).toBe(0);
+    expect(f.lineCount).toBe(0);
+  });
+
+  it("createLineFrame includes docOffset and lineCount defaults", () => {
+    const f = createLineFrame({ r1: 0, c1: 0, r2: 0, c2: 5, charWidth: CW, charHeight: CH });
+    expect(f.docOffset).toBe(0);
+    expect(f.lineCount).toBe(0);
+  });
+
+  it("groupIntoContainers (via framesFromScan) sets docOffset/lineCount on container", () => {
+    // Two side-by-side rects in same row range — produces a container
+    const scanResult = scan("┌─┐ ┌─┐\n│ │ │ │\n└─┘ └─┘");
+    const frames = framesFromScan(scanResult, CW, CH);
+    expect(frames).toHaveLength(1);
+    const container = frames[0];
+    expect(container.docOffset).toBe(0);
+    expect(container.lineCount).toBe(0);
+    expect(container.children.length).toBeGreaterThan(0);
+    for (const child of container.children) {
+      expect(child.docOffset).toBe(0);
+      expect(child.lineCount).toBe(0);
+    }
+  });
+});

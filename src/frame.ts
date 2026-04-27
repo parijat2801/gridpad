@@ -41,6 +41,10 @@ export interface Frame {
   gridCol: number;
   gridW: number;
   gridH: number;
+  /** CM doc character offset — start of first claimed line. 0 = not yet placed. */
+  docOffset: number;
+  /** Number of CM doc lines this frame claims. 0 = not yet placed. */
+  lineCount: number;
 }
 
 export interface Obstacle {
@@ -82,6 +86,8 @@ export function createFrame(params: {
     gridCol: 0,
     gridW: 0,
     gridH: 0,
+    docOffset: 0,
+    lineCount: 0,
   };
 }
 
@@ -111,6 +117,8 @@ export function createRectFrame(params: {
     gridRow: 0, gridCol: 0, // caller sets position
     gridW,
     gridH,
+    docOffset: 0,
+    lineCount: 0,
   };
 }
 
@@ -144,6 +152,8 @@ export function createTextFrame(params: {
     gridCol: col,
     gridW: codepoints.length,
     gridH: 1,
+    docOffset: 0,
+    lineCount: 0,
   };
 }
 
@@ -174,6 +184,8 @@ export function createLineFrame(params: {
     gridCol: bbox.col,
     gridW: bbox.w,
     gridH: bbox.h,
+    docOffset: 0,
+    lineCount: 0,
   };
 }
 
@@ -340,7 +352,7 @@ export function framesFromScan(
       content = { type: "rect", cells: rebasedCells, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" } };
     }
 
-    return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: true, dirty: false, gridRow: layer.bbox.row, gridCol: layer.bbox.col, gridW: layer.bbox.w, gridH: layer.bbox.h };
+    return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: true, dirty: false, gridRow: layer.bbox.row, gridCol: layer.bbox.col, gridW: layer.bbox.w, gridH: layer.bbox.h, docOffset: 0, lineCount: 0 };
   });
 
   reparentChildren(frames, charWidth, charHeight);
@@ -479,6 +491,8 @@ function groupIntoContainers(
       gridCol: minCol,
       gridW: maxCol - minCol,
       gridH: maxRow - minRow,
+      docOffset: 0,
+      lineCount: 0,
     });
   }
 
