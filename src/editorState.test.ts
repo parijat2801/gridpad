@@ -1580,3 +1580,66 @@ describe("docOffset remapping through edits", () => {
     expect(updatedFrames[1].docOffset).toBe(before2 + 1);
   });
 });
+
+// ── Task 9: Enter/Backspace above wireframe ────────────────────────────────
+
+describe("Enter/Backspace above wireframe (should work via mapPos)", () => {
+  it("Enter at end of prose line above wireframe shifts frame down by 1", () => {
+    // Unified doc: "Hi\n\n\n\n" — frame at docOffset=3 (lines 1-3 claimed).
+    const text = "Hi\n┌────┐\n│ Bx │\n└────┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    // Simulate "Enter at end of 'Hi'" — insert \n at offset 2
+    const updated = state.update({
+      changes: { from: 2, insert: "\n" },
+      userEvent: "input.type",
+    }).state;
+    const after = getFrames(updated)[0];
+    expect(after.docOffset).toBe(before.docOffset + 1);
+    expect(after.lineCount).toBe(before.lineCount); // claim size unchanged
+    expect(updated.doc.lines).toBe(state.doc.lines + 1);
+  });
+
+  it("Backspace on blank prose line above wireframe shifts frame up by 1", () => {
+    const text = "Hi\n\n┌────┐\n│ Bx │\n└────┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    // Delete the \n at position 2 (the blank line above frame)
+    const updated = state.update({
+      changes: { from: 2, to: 3 },
+      userEvent: "delete.backward",
+    }).state;
+    const after = getFrames(updated)[0];
+    expect(after.docOffset).toBe(before.docOffset - 1);
+    expect(after.lineCount).toBe(before.lineCount);
+  });
+
+  it("typing a character in prose line above wireframe shifts frame by +1", () => {
+    const text = "Hi\n┌────┐\n│ Bx │\n└────┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    // Insert "X" at end of "Hi" (offset 2)
+    const updated = state.update({
+      changes: { from: 2, insert: "X" },
+      userEvent: "input.type",
+    }).state;
+    const after = getFrames(updated)[0];
+    expect(after.docOffset).toBe(before.docOffset + 1);
+    expect(after.lineCount).toBe(before.lineCount);
+  });
+
+  it("Enter above wireframe is undoable — frame returns to original position", () => {
+    const text = "Hi\n┌────┐\n│ Bx │\n└────┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    let s = state.update({
+      changes: { from: 2, insert: "\n" },
+      userEvent: "input.type",
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    expect(getFrames(s)[0].docOffset).toBe(before.docOffset + 1);
+    s = editorUndo(s);
+    expect(getFrames(s)[0].docOffset).toBe(before.docOffset);
+    expect(getDoc(s)).toBe(getDoc(state));
+  });
+});
