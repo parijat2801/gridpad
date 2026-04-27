@@ -51,29 +51,6 @@ export interface ReflowResult {
   totalHeight: number;
 }
 
-interface Interval {
-  left: number;
-  right: number;
-}
-
-// From editorial-engine.ts — carve available slots from blocked intervals
-function carveSlots(base: Interval, blocked: Interval[]): Interval[] {
-  let slots = [base];
-  for (const interval of blocked) {
-    const next: Interval[] = [];
-    for (const slot of slots) {
-      if (interval.right <= slot.left || interval.left >= slot.right) {
-        next.push(slot);
-        continue;
-      }
-      if (interval.left > slot.left) next.push({ left: slot.left, right: interval.left });
-      if (interval.right < slot.right) next.push({ left: interval.right, right: slot.right });
-    }
-    slots = next;
-  }
-  return slots.filter(s => s.right - s.left >= 20); // min slot width
-}
-
 function buildSegToCol(prepared: PreparedTextWithSegments): number[] {
   const result: number[] = [];
   let col = 0;
