@@ -2428,8 +2428,23 @@ test.describe("shared walls", () => {
   // ── Multi-step: drag, save, drag again ──
 
   test("drag box right, save, drag same box down, save — L-path", async ({ page }) => {
-    await load(page, SIMPLE_BOX);
-    writeArtifact("wall-L-path", "input.md", SIMPLE_BOX);
+    // Use a fixture with several blank lines below the box so drag-down has
+    // rotation budget. Drag is rotation-only by design — motion clamps to
+    // consecutive blank lines around the frame, doc length preserved across
+    // drag transactions. Users who want to drag past prose must create
+    // space first (press Enter outside the frame's claim).
+    const fixture = `Prose above
+
+┌──────────────┐
+│              │
+│              │
+└──────────────┘
+
+
+
+Prose below`;
+    await load(page, fixture);
+    writeArtifact("wall-L-path", "input.md", fixture);
 
     // Step 1: drag right
     await clickFrame(page, 0);
@@ -2438,7 +2453,7 @@ test.describe("shared walls", () => {
     const save1 = await save(page);
     writeArtifact("wall-L-path", "save1.md", save1);
 
-    // Step 2: drag down
+    // Step 2: drag down — has 3 blank lines of rotation budget below box.
     await clickFrame(page, 0);
     await dragSelected(page, 0, 60);
     await clickProse(page, 5, 5);
@@ -3598,5 +3613,161 @@ End`;
       n.children.every((c: any) => c.contentType !== "rect" && noNestedRect(c));
     expect(noNestedRect(treeAfter[0])).toBe(true);
     expect(noNestedRect(treeAfter[1])).toBe(true);
+  });
+});
+
+// ── Drag independence: dragging one frame must not move another ──────────────
+//
+// Architectural invariant: each top-level frame's docOffset/gridRow is owned
+// by THAT frame alone. Dragging frame A vertically (which rotates newlines
+// around A's claim) must not shift any other top-level frame's anchor.
+//
+// User-reported failure: after promoting a child to top-level, dragging the
+// original parent moves the promoted frame too — they share a region of
+// blank-line claim that mapPos shifts together.
+
+test.describe("drag independence", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  // STACKED: two clearly-distinct top-level frames separated by prose.
+  const STACKED = `Top prose
+
+┌────┐
+│ A  │
+│    │
+└────┘
+
+middle prose
+
+┌────────┐
+│   B    │
+│        │
+└────────┘
+
+Bottom prose`;
+
+  test("drag frame A down: frame B's y stays put", async ({ page }) => {
+    await load(page, STACKED);
+    writeArtifact("drag-indep-down", "input.md", STACKED);
+    await screenshot(page, "drag-indep-down", "1-before");
+
+    const before = await getFrames(page);
+    expect(before.length).toBe(2);
+    const aBefore = before[0];
+    const bBefore = before[1];
+
+    // Drag A down by 30px (well within rotation slack — should not affect B).
+    await clickFrame(page, 0);
+    await dragSelected(page, 0, 30);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "drag-indep-down", "2-after-drag");
+
+    const after = await getFrames(page);
+    const bAfter = after.find(f => f.id === bBefore.id);
+    expect(bAfter).toBeTruthy();
+    // B's y must be unchanged (within 1px tolerance for rounding).
+    expect(Math.abs(bAfter!.y - bBefore.y)).toBeLessThanOrEqual(1);
+    // A should have moved.
+    const aAfter = after.find(f => f.id === aBefore.id);
+    expect(aAfter!.y).toBeGreaterThan(aBefore.y);
+  });
+
+  test("drag frame A up: frame B's y stays put", async ({ page }) => {
+    await load(page, STACKED);
+    writeArtifact("drag-indep-up", "input.md", STACKED);
+
+    const before = await getFrames(page);
+    expect(before.length).toBe(2);
+    const bBefore = before[1];
+
+    // Drag B up. A above it must stay put.
+    await clickFrame(page, 1);
+    await dragSelected(page, 0, -30);
+    await clickProse(page, 5, 5);
+
+    const after = await getFrames(page);
+    const aAfter = after.find(f => f.id === before[0].id);
+    expect(aAfter).toBeTruthy();
+    expect(Math.abs(aAfter!.y - before[0].y)).toBeLessThanOrEqual(1);
+  });
+
+  test("drag frame A past frame B: B does not move", async ({ page }) => {
+    await load(page, STACKED);
+    writeArtifact("drag-indep-past", "input.md", STACKED);
+
+    const before = await getFrames(page);
+    const aBefore = before[0];
+    const bBefore = before[1];
+
+    // Drag A way down (past B's bottom).
+    await clickFrame(page, 0);
+    const dy = (bBefore.y + bBefore.h + 50) - aBefore.y;
+    await dragSelected(page, 0, dy);
+    await clickProse(page, 5, 5);
+
+    const after = await getFrames(page);
+    const bAfter = after.find(f => f.id === bBefore.id);
+    expect(bAfter).toBeTruthy();
+    // B's y must be unchanged.
+    expect(Math.abs(bAfter!.y - bBefore.y)).toBeLessThanOrEqual(1);
+  });
+
+  // The user-reported case: promote a child to top-level, then drag the
+  // ex-parent. The promoted frame must NOT move with its old parent.
+  test("promote then drag old parent: promoted frame stays put", async ({ page }) => {
+    const fixture = `Top prose
+
+┌────────────────────────┐
+│  Outer                 │
+│  ┌──────────────────┐  │
+│  │  Inner           │  │
+│  └──────────────────┘  │
+└────────────────────────┘
+
+Bottom prose`;
+    await load(page, fixture);
+    writeArtifact("drag-indep-promoted", "input.md", fixture);
+
+    // Step 1: promote Inner to top-level by dragging it below Outer.
+    await clickChild(page, 0);
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    const child = flat.find(f => f.depth > 0);
+    expect(child).toBeTruthy();
+    const outerBefore = (await getFrames(page))[0];
+    const canvas = page.locator("canvas");
+    const cbox = await canvas.boundingBox();
+    const cx = cbox!.x + child!.absX + child!.w / 2;
+    const cy = cbox!.y + child!.absY + child!.h / 2;
+    const dropY = cbox!.y + outerBefore.y + outerBefore.h + 80;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx, dropY, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "drag-indep-promoted", "2-after-promote");
+
+    // After promote, two top-level frames.
+    const afterPromote = await getFrames(page);
+    expect(afterPromote.length).toBe(2);
+    const promotedFrame = afterPromote[1]; // Inner is now bottom top-level
+    const promotedY = promotedFrame.y;
+
+    // Step 2: drag Outer down by 20px.
+    await clickFrame(page, 0);
+    await dragSelected(page, 0, 20);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "drag-indep-promoted", "3-after-outer-drag");
+
+    // The promoted Inner frame must NOT have moved.
+    const finalFrames = await getFrames(page);
+    const promotedFinal = finalFrames.find(f => f.id === promotedFrame.id);
+    expect(promotedFinal).toBeTruthy();
+    expect(Math.abs(promotedFinal!.y - promotedY)).toBeLessThanOrEqual(1);
   });
 });

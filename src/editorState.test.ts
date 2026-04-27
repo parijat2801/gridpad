@@ -2014,17 +2014,18 @@ describe("drag wireframe in unified mode", () => {
     expect(updated.doc.lineAt(updatedFrame.docOffset).number - 1).toBe(updatedFrame.gridRow);
   });
 
-  it("drag down past prose grows the doc by the deficit (Figma-style)", () => {
+  it("drag down past prose is clamped to no-op (no empty lines to absorb)", () => {
     // Frame at rows 1-3, no empty lines between frame and "World".
-    // Drag-down by 3 with no rotation slack → 3 newlines inserted above the
-    // frame; frame ends up at row 4 (3 rows below original).
+    // Drag is rotation-only; with no blank-line slack below, motion clamps
+    // to zero. Users who want to push past prose must create space first
+    // (e.g. press Enter on the line above the frame).
     const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
     const { state, frame } = makeState(text);
-    const linesBefore = state.doc.lines;
+    const preDoc = getDoc(state);
     const updated = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
-    expect(updated.doc.lines).toBe(linesBefore + 3);
+    expect(getDoc(updated)).toBe(preDoc);
     const updatedFrame = getFrames(updated)[0];
-    expect(updatedFrame.gridRow).toBe(frame.gridRow + 3);
+    expect(updatedFrame.gridRow).toBe(frame.gridRow);
   });
 
   it("drag up by 1 into adjacent empty line", () => {
@@ -2536,37 +2537,30 @@ describe("top-level frame gridRow == lineAt(docOffset).number - 1", () => {
   });
 });
 
-// ── Drag must move frame the full requested distance ────────────────────────
+// ── Drag is rotation-only; motion clamped to blank-line slack ────────────────
 //
-// Reproduces the L-path harness failure: drag-down past available blank lines
-// must INSERT the deficit as new blank lines so the frame ends up where the
-// user dropped it. Pure rotation (current behavior) clamps motion to existing
-// blank-line slack, contradicting user expectation.
+// Architectural invariant: drag mutates only the dragged frame's docOffset.
+// We rotate newlines around the frame's claim — no net char insertion.
+// Motion beyond the consecutive-blank slack is a no-op. Doc length is
+// preserved across drag transactions, so other frames' mapPos sees +N then
+// -N with net-zero shift.
 
-describe("drag inserts blanks when motion exceeds slack", () => {
-  it("drag-down by 3 with 1-blank slack moves the full 3 rows", () => {
-    const cw = 9.6, ch = 18;
-    const SIMPLE_BOX = "Prose above\n\n┌────┐\n│    │\n│    │\n└────┘\n\nProse below";
-    let state = createEditorStateUnified(SIMPLE_BOX, cw, ch);
-    const id = getFrames(state)[0].id;
-    const before = getFrames(state)[0];
-    expect(before.gridRow).toBe(2); // sanity
-
-    state = applyMoveFrame(state, id, 0, 3, cw, ch);
-
-    const after = getFrames(state)[0];
-    expect(after.gridRow).toBe(5); // moved 3 rows down from row 2
-  });
-
-  it("drag-down by 3 with 1-blank slack: doc grows by the deficit", () => {
+describe("drag is rotation-only", () => {
+  it("drag-down clamped to blank-line slack: doc length preserved", () => {
     const cw = 9.6, ch = 18;
     const SIMPLE_BOX = "Prose above\n\n┌────┐\n│    │\n│    │\n└────┘\n\nProse below";
     let state = createEditorStateUnified(SIMPLE_BOX, cw, ch);
     const linesBefore = state.doc.lines;
     const id = getFrames(state)[0].id;
+    const before = getFrames(state)[0];
+    expect(before.gridRow).toBe(2); // sanity
+
+    // 1 blank below frame is the only rotation budget. Drag-down by 3 is
+    // clamped to 1; doc length stays the same.
     state = applyMoveFrame(state, id, 0, 3, cw, ch);
-    // 1 blank below frame + 1 blank above frame = 2 rotation slack max.
-    // Drag by 3 → maxDown=1 rotates, 2 extra inserted → doc grows by 2.
-    expect(state.doc.lines).toBe(linesBefore + 2);
+
+    expect(state.doc.lines).toBe(linesBefore);
+    const after = getFrames(state)[0];
+    expect(after.gridRow).toBe(before.gridRow + 1);
   });
 });
