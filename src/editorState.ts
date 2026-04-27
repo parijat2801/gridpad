@@ -671,22 +671,54 @@ export function proseMoveRight(state: EditorState): EditorState {
   return state;
 }
 
+/** Find the claimed-line range covering `lineNum` (0-indexed), or null. */
+function getClaimedLineRange(
+  state: EditorState,
+  lineNum: number,
+): { start: number; end: number } | null {
+  const frames = state.field(framesField);
+  for (const f of frames) {
+    if (f.lineCount === 0) continue;
+    if (f.docOffset < 0 || f.docOffset > state.doc.length) continue;
+    const startLine = state.doc.lineAt(f.docOffset).number - 1; // 0-indexed
+    const endLine = startLine + f.lineCount - 1;
+    if (lineNum >= startLine && lineNum <= endLine) {
+      return { start: startLine, end: endLine };
+    }
+  }
+  return null;
+}
+
 export function proseMoveUp(state: EditorState): EditorState {
   const cursor = getCursor(state);
   if (!cursor) return state;
   if (cursor.row === 0) return state;
-  const prevLine = state.doc.line(cursor.row); // line above (1-indexed = cursor.row)
+  let targetRow = cursor.row - 1;
+  let claimed = getClaimedLineRange(state, targetRow);
+  while (claimed) {
+    targetRow = claimed.start - 1;
+    if (targetRow < 0) return state;
+    claimed = getClaimedLineRange(state, targetRow);
+  }
+  const prevLine = state.doc.line(targetRow + 1); // 1-indexed
   const prevGraphemes = [...segmenter.segment(prevLine.text)].length;
-  return moveCursorTo(state, { row: cursor.row - 1, col: Math.min(cursor.col, prevGraphemes) });
+  return moveCursorTo(state, { row: targetRow, col: Math.min(cursor.col, prevGraphemes) });
 }
 
 export function proseMoveDown(state: EditorState): EditorState {
   const cursor = getCursor(state);
   if (!cursor) return state;
   if (cursor.row >= state.doc.lines - 1) return state;
-  const nextLine = state.doc.line(cursor.row + 2); // line below (1-indexed = cursor.row + 2)
+  let targetRow = cursor.row + 1;
+  let claimed = getClaimedLineRange(state, targetRow);
+  while (claimed) {
+    targetRow = claimed.end + 1;
+    if (targetRow >= state.doc.lines) return state;
+    claimed = getClaimedLineRange(state, targetRow);
+  }
+  const nextLine = state.doc.line(targetRow + 1); // 1-indexed
   const nextGraphemes = [...segmenter.segment(nextLine.text)].length;
-  return moveCursorTo(state, { row: cursor.row + 1, col: Math.min(cursor.col, nextGraphemes) });
+  return moveCursorTo(state, { row: targetRow, col: Math.min(cursor.col, nextGraphemes) });
 }
 
 // ── Frame operations ───────────────────────────────────────────────────────

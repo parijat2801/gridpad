@@ -40,7 +40,7 @@ import {
   applySetOriginalProseSegments,
   type CursorPos,
 } from "./editorState";
-import { createFrame, createTextFrame, type Frame } from "./frame";
+import { createFrame, createTextFrame, createRectFrame, type Frame } from "./frame";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1753,5 +1753,230 @@ describe("resize wireframe in unified mode", () => {
       const line = updated.doc.line(startLine + i);
       expect(line.text).toBe("");
     }
+  });
+});
+
+// ── Task 11: delete wireframe in unified mode ─────────────────────────────────
+
+describe("delete wireframe in unified mode", () => {
+  it("deleting a frame removes its claimed lines from CM doc", () => {
+    // "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld" → 5 lines → after delete → 2 lines "Hello\nWorld"
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    expect(state.doc.lines).toBe(5);
+    const frame = getFrames(state)[0];
+    const after = applyDeleteFrame(state, frame.id);
+    expect(getDoc(after)).toBe("Hello\nWorld");
+    expect(after.doc.lines).toBe(2);
+    expect(getFrames(after)).toHaveLength(0);
+  });
+
+  it("deleting frame at file start removes claimed lines + their trailing newline", () => {
+    // "┌────┐\n│ Bx │\n└────┘\nWorld" → after delete → "World"
+    const text = "┌────┐\n│ Bx │\n└────┘\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frame = getFrames(state)[0];
+    const after = applyDeleteFrame(state, frame.id);
+    expect(getDoc(after)).toBe("World");
+    expect(getFrames(after)).toHaveLength(0);
+  });
+
+  it("deleting frame at file end removes claimed lines + their leading newline", () => {
+    // "Hello\n┌────┐\n│ Bx │\n└────┘" → after delete → "Hello"
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frame = getFrames(state)[0];
+    const after = applyDeleteFrame(state, frame.id);
+    expect(getDoc(after)).toBe("Hello");
+    expect(getFrames(after)).toHaveLength(0);
+  });
+
+  it("deleting frame is undoable — doc and frames restored", () => {
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const origDoc = getDoc(state);
+    const origFrameId = getFrames(state)[0].id;
+    const afterDelete = applyDeleteFrame(state, origFrameId);
+    expect(getFrames(afterDelete)).toHaveLength(0);
+    const afterUndo = editorUndo(afterDelete);
+    expect(getDoc(afterUndo)).toBe(origDoc);
+    expect(getFrames(afterUndo)).toHaveLength(1);
+    expect(getFrames(afterUndo)[0].id).toBe(origFrameId);
+  });
+
+  it("deleting one of two frames preserves the other's docOffset relative to its line", () => {
+    // Build two frames manually so we don't rely on scanner behavior.
+    // doc: "Above\n\n\n\nMiddle\n\n\n\nBelow" (each "\n\n\n" = 3 claimed lines for each frame)
+    // Frame 1 claims lines 2-4 (0-indexed gridRow=1, lineCount=3, docOffset=6 "Above\n" = 6)
+    // Frame 2 claims lines 6-8 (0-indexed gridRow=5, lineCount=3, docOffset after "Above\n\n\n\nMiddle\n" = 18)
+    const prose = "Above\n\n\n\nMiddle\n\n\n\nBelow";
+    const f1 = { ...createFrame({ x: 0, y: 18, w: 58, h: 54 }), lineCount: 3, docOffset: 6 };
+    const f2 = { ...createFrame({ x: 0, y: 108, w: 58, h: 54 }), lineCount: 3, docOffset: 18 };
+    const state = createEditorState({ prose, frames: [f1, f2] });
+    expect(getFrames(state)).toHaveLength(2);
+    const after = applyDeleteFrame(state, f1.id);
+    expect(getFrames(after)).toHaveLength(1);
+    const remaining = getFrames(after)[0];
+    expect(remaining.id).toBe(f2.id);
+    // docOffset must be in-bounds for the updated doc
+    expect(remaining.docOffset).toBeGreaterThanOrEqual(0);
+    expect(remaining.docOffset).toBeLessThanOrEqual(after.doc.length);
+    // The line at the new docOffset should still be an empty claimed line
+    expect(after.doc.lineAt(remaining.docOffset).text).toBe("");
+  });
+
+  it("deleting child frame inside container does NOT touch CM doc", () => {
+    // Child frames have lineCount === 0, so the filter must skip them.
+    // Use a parent rect frame with a text child — parent has content so cascade won't remove it.
+    const parent = createRectFrame({ gridW: 10, gridH: 6, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" }, charWidth: 9.6, charHeight: 18 });
+    const child = createTextFrame({ text: "hi", row: 1, col: 1, charWidth: 9.6, charHeight: 18 });
+    const childWithLineCount = { ...child, lineCount: 0 };
+    const parentWithChild = { ...parent, lineCount: 3, docOffset: 0, children: [childWithLineCount] };
+    const prose = "\n\n\nSome prose";
+    const state = createEditorState({ prose, frames: [parentWithChild] });
+    const docBefore = getDoc(state);
+    // Delete only the child
+    const after = applyDeleteFrame(state, child.id);
+    // Doc must be unchanged — child deletion doesn't affect CM doc
+    expect(getDoc(after)).toBe(docBefore);
+    // Parent still present, child gone
+    const remaining = getFrames(after);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].children).toHaveLength(0);
+  });
+
+  it("prose lines surrounding the deleted frame are joined cleanly (single newline)", () => {
+    // "Above\n┌──┐\n└──┘\nBelow" → after delete → "Above\nBelow" exactly
+    const text = "Above\n┌──┐\n└──┘\nBelow";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const frame = getFrames(state)[0];
+    const after = applyDeleteFrame(state, frame.id);
+    expect(getDoc(after)).toBe("Above\nBelow");
+  });
+});
+
+// ── Task 14: cursor skips claimed line ranges ─────────────────────────────────
+
+describe("cursor skips claimed lines (Task 14)", () => {
+  it("proseMoveDown skips a 3-line wireframe", () => {
+    // Doc: line0=prose, lines1-3=wireframe, line4=prose
+    const text = `Hello
+┌────┐
+│ Bx │
+└────┘
+World`;
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(text, cw, ch);
+    state = moveCursorTo(state, { row: 0, col: 5 });
+    state = proseMoveDown(state);
+    const cursor = getCursor(state);
+    expect(cursor).not.toBeNull();
+    expect(cursor!.row).toBe(4); // skipped lines 1-3
+  });
+
+  it("proseMoveUp skips a 3-line wireframe", () => {
+    const text = `Hello
+┌────┐
+│ Bx │
+└────┘
+World`;
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(text, cw, ch);
+    state = moveCursorTo(state, { row: 4, col: 0 });
+    state = proseMoveUp(state);
+    const cursor = getCursor(state);
+    expect(cursor).not.toBeNull();
+    expect(cursor!.row).toBe(0); // skipped lines 1-3
+  });
+
+  it("proseMoveDown skips two adjacent wireframes (regression: while-loop, not if)", () => {
+    // Build state manually with two frames: frame1 claims lines 1-3, frame2 claims lines 4-6.
+    // Prose: line0="prose-line-0", lines 1-6="", line7="prose-line-7"
+    const prose = "prose-line-0\n\n\n\n\n\n\nprose-line-7";
+    // frame1: claims lines 1-3, docOffset = offset of line 1
+    // line0 = "prose-line-0" (12 chars) + newline = 13 chars, so line1 starts at offset 13
+    const frame1: Frame = {
+      ...createFrame({ x: 0, y: 18, w: 96, h: 54 }),
+      gridRow: 1, gridCol: 0, gridW: 10, gridH: 3,
+      docOffset: 13, lineCount: 3,
+    };
+    // line4 starts at: 13 (line1 start) + 3 lines of "" + 3 newlines = 13 + 3 = 16
+    const frame2: Frame = {
+      ...createFrame({ x: 0, y: 72, w: 96, h: 54 }),
+      gridRow: 4, gridCol: 0, gridW: 10, gridH: 3,
+      docOffset: 16, lineCount: 3,
+    };
+    const state = createEditorState({ prose, frames: [frame1, frame2] });
+    let s = moveCursorTo(state, { row: 0, col: 0 });
+    s = proseMoveDown(s);
+    const cursor = getCursor(s);
+    expect(cursor).not.toBeNull();
+    expect(cursor!.row).toBe(7); // skipped lines 1-6 (two adjacent wireframes)
+  });
+
+  it("proseMoveUp skips two adjacent wireframes (regression: while-loop, not if)", () => {
+    const prose = "prose-line-0\n\n\n\n\n\n\nprose-line-7";
+    const frame1: Frame = {
+      ...createFrame({ x: 0, y: 18, w: 96, h: 54 }),
+      gridRow: 1, gridCol: 0, gridW: 10, gridH: 3,
+      docOffset: 13, lineCount: 3,
+    };
+    const frame2: Frame = {
+      ...createFrame({ x: 0, y: 72, w: 96, h: 54 }),
+      gridRow: 4, gridCol: 0, gridW: 10, gridH: 3,
+      docOffset: 16, lineCount: 3,
+    };
+    const state = createEditorState({ prose, frames: [frame1, frame2] });
+    let s = moveCursorTo(state, { row: 7, col: 0 });
+    s = proseMoveUp(s);
+    const cursor = getCursor(s);
+    expect(cursor).not.toBeNull();
+    expect(cursor!.row).toBe(0); // skipped lines 1-6 (two adjacent wireframes)
+  });
+
+  it("proseMoveDown at last prose line is no-op", () => {
+    const text = `Hello
+┌────┐
+│ Bx │
+└────┘
+World`;
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(text, cw, ch);
+    state = moveCursorTo(state, { row: 4, col: 0 });
+    const before = getCursor(state);
+    state = proseMoveDown(state);
+    const after = getCursor(state);
+    expect(after!.row).toBe(before!.row);
+  });
+
+  it("proseMoveUp at first prose line is no-op", () => {
+    const text = `Hello
+┌────┐
+│ Bx │
+└────┘
+World`;
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(text, cw, ch);
+    state = moveCursorTo(state, { row: 0, col: 0 });
+    state = proseMoveUp(state);
+    const cursor = getCursor(state);
+    expect(cursor!.row).toBe(0);
+  });
+
+  it("proseMoveDown preserves column clamped to next line length", () => {
+    // line 0: "Hello" (5 chars), line 4: "Hi" (2 chars) → col 5 → clamped to 2
+    const text = `Hello
+┌────┐
+│ Bx │
+└────┘
+Hi`;
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(text, cw, ch);
+    state = moveCursorTo(state, { row: 0, col: 5 });
+    state = proseMoveDown(state);
+    const cursor = getCursor(state);
+    expect(cursor).not.toBeNull();
+    expect(cursor!.row).toBe(4);
+    expect(cursor!.col).toBe(2); // "Hi" has 2 graphemes, col 5 clamped to 2
   });
 });
