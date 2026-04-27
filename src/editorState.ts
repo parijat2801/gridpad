@@ -418,6 +418,24 @@ export function createEditorState(init: EditorStateInit): EditorState {
           return [tr, { changes: { from: keepLast.to, to: endLine.to }, sequential: true }];
         }
       }
+      if (e.is(deleteFrameEffect)) {
+        const frames = tr.startState.field(framesField);
+        const frame = findFrameInList(frames, e.value.id);
+        // Skip child frames (lineCount===0) — they don't claim doc lines.
+        if (!frame || frame.lineCount === 0) continue;
+
+        const startLine = tr.startState.doc.lineAt(frame.docOffset);
+        const endLineNum = startLine.number + frame.lineCount - 1;
+        const endLine = tr.startState.doc.line(endLineNum);
+        const docLength = tr.startState.doc.length;
+
+        // Delete exactly ONE newline (the boundary separator), not both.
+        // Frame at file start: trailing newline is the only separator → from=0, to=endLine.to + 1
+        // Frame elsewhere: leading newline is the separator → from=startLine.from - 1, to=endLine.to
+        const from = startLine.from > 0 ? startLine.from - 1 : 0;
+        const to = startLine.from > 0 ? endLine.to : Math.min(endLine.to + 1, docLength);
+        return [tr, { changes: { from, to }, sequential: true }];
+      }
     }
     return tr;
   });
