@@ -556,9 +556,11 @@ export function createEditorState(init: EditorStateInit): EditorState {
         const dRow = e.value.dRow;
         const changes: Array<{ from: number; to: number; insert?: string }> = [];
 
-        // Clamp dRow by counting consecutive EMPTY lines around the frame.
-        // Drag-down can absorb up to N empty lines below the frame.
-        // Drag-up can absorb up to N empty lines above the frame.
+        // Count consecutive EMPTY lines around the frame — these are the
+        // "rotation budget" that lets the frame move without changing doc
+        // length. When motion exceeds the budget, drag-down also INSERTS the
+        // deficit as new blank lines below the frame so the frame ends up
+        // where the user dropped it (matches Figma-style direct manipulation).
         let maxDown = 0;
         for (let n = endLineNum + 1; n <= doc.lines; n++) {
           const ln = doc.line(n);
@@ -571,63 +573,49 @@ export function createEditorState(init: EditorStateInit): EditorState {
           if (ln.length === 0) maxUp++;
           else break;
         }
-        const effectiveDRow = dRow > 0
-          ? Math.min(dRow, maxDown)
-          : Math.max(dRow, -maxUp);
-        if (effectiveDRow === 0) continue; // no room to move
 
-        if (effectiveDRow > 0) {
-          // Drag down: for each step, take the newline AFTER the frame and
-          // move it to BEFORE the frame. Equivalently: delete one newline at
-          // endLine.to + (already-moved offset), insert one newline at
-          // startLine.from + (already-moved offset).
-          //
-          // For dRow steps, we delete `effectiveDRow` chars starting at
-          // endLine.to (those are the newlines following the frame, each
-          // belonging to a line below) and insert `effectiveDRow` chars
-          // starting at startLine.from.
-          // But pulling N chars from "after frame" pulls them from positions
-          // endLine.to .. endLine.to + effectiveDRow. The doc must have at
-          // least effectiveDRow characters there (i.e. effectiveDRow lines
-          // below). maxStartLine clamp guarantees this.
-          //
-          // Net effect: frame moves down by effectiveDRow rows, prose
-          // around it stays in its absolute positions.
+        if (dRow > 0) {
+          // Drag down by dRow rows.
+          // - Rotation: take min(dRow, maxDown) newlines from after the frame
+          //   and move them above. Doc length preserved over this part.
+          // - Extra: if dRow > maxDown, insert (dRow - maxDown) extra newlines
+          //   above the frame. Doc grows. Frame still moves the full dRow.
+          const rotateBy = Math.min(dRow, maxDown);
+          const extra = dRow - rotateBy;
           const deleteFrom = endLine.to;
-          const deleteTo = endLine.to + effectiveDRow;
-          if (deleteTo > doc.length) {
-            // Defensive: clamp didn't fully prevent overflow; skip.
-            continue;
-          }
-          // The chars we're moving are newlines (since we're moving past
-          // empty prose lines). Insert the same number of newlines above.
-          const movedChars = doc.sliceString(deleteFrom, deleteTo);
-          changes.push({ from: deleteFrom, to: deleteTo });
-          changes.push({ from: startLine.from, to: startLine.from, insert: movedChars });
+          const deleteTo = endLine.to + rotateBy;
+          if (deleteTo > doc.length) continue; // defensive
+          const insertAtTop = "\n".repeat(rotateBy + extra);
+          // Delete `rotateBy` chars after frame, insert `dRow` newlines before.
+          if (rotateBy > 0) changes.push({ from: deleteFrom, to: deleteTo });
+          if (insertAtTop.length > 0) changes.push({ from: startLine.from, to: startLine.from, insert: insertAtTop });
+          if (changes.length === 0) continue;
         } else {
-          // Drag up by |effectiveDRow|. Mirror: take newlines from BEFORE the
-          // frame and move them AFTER.
-          const n = -effectiveDRow;
-          const deleteFrom2 = startLine.from - n;
+          // Drag up by |dRow|. Symmetric to drag-down's rotation: pull
+          // newlines from above, push them below. We do NOT grow the doc on
+          // drag-up — pushing prose above off the top of the doc isn't
+          // meaningful, so motion clamps to maxUp.
+          const n = -dRow;
+          const rotateBy = Math.min(n, maxUp);
+          if (rotateBy === 0) continue;
+          const deleteFrom2 = startLine.from - rotateBy;
           const deleteTo2 = startLine.from;
           if (deleteFrom2 < 0) continue;
           const movedChars = doc.sliceString(deleteFrom2, deleteTo2);
-          // Delete the n newlines above the frame.
           changes.push({ from: deleteFrom2, to: deleteTo2 });
-          // Insert them after the frame (at original endLine.to).
           changes.push({ from: endLine.to, to: endLine.to, insert: movedChars });
         }
 
-        // newDocOffset for drag-down: frame's new startLine.from is the
-        // original startLine.from + 0 (chars inserted at startLine.from
-        // shift it forward by `effectiveDRow`, so docOffset += effectiveDRow).
-        // For drag-up: docOffset -= n, since we deleted n chars before it.
-        const newDocOffset = effectiveDRow > 0
-          ? startLine.from + effectiveDRow
-          : startLine.from - (-effectiveDRow);
-        // sliceString call signature note: changes already accumulated above
-        // reference ORIGINAL doc positions; we send them as a single changes
-        // array (CM merges them, applying both relative to the original doc).
+        // newDocOffset for drag-down: dRow newlines are inserted at
+        // startLine.from, shifting the frame's start to startLine.from + dRow.
+        // For drag-up: rotateBy chars are deleted before startLine, so
+        // docOffset shifts to startLine.from - rotateBy.
+        const rotateByForOffset = dRow > 0
+          ? dRow
+          : Math.min(-dRow, maxUp);
+        const newDocOffset = dRow > 0
+          ? startLine.from + rotateByForOffset
+          : startLine.from - rotateByForOffset;
         return [
           {
             effects: [...tr.effects, relocateFrameEffect.of({ id: frame.id, newDocOffset })],
