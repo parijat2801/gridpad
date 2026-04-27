@@ -1993,105 +1993,118 @@ describe("drag wireframe in unified mode", () => {
     return { state, frame };
   }
 
-  it("drag down by 3 relocates claimed lines, updates docOffset", () => {
-    // Frame at doc lines 2-4 (docOffset=6, lineCount=3), drag down past "World"
-    // Expected result: "Hello\nWorld\n\n\n\nEnd"
-    // Frame ends up at doc lines 3-5 (from=12)
-    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+  // NOTE: drag-vertical is now a NEWLINE ROTATION model — it moves the frame
+  // by absorbing adjacent empty (claim-eligible) lines, not by pushing past
+  // prose. dRow is clamped to the count of consecutive empty lines on the
+  // appropriate side.
+
+  it("drag down by 1 into adjacent empty line moves the claim", () => {
+    // Frame at rows 1-3 (lines 2-4 1-indexed). One empty line below at L4.
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\n\nWorld";
     const { state, frame } = makeState(text);
     expect(frame.lineCount).toBe(3);
-    expect(state.doc.lines).toBe(6);
-
-    const updated = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
-
-    // Line count preserved
+    const updated = applyMoveFrame(state, frame.id, 0, 1, cw, ch);
+    // Doc length preserved; frame moved down by 1.
     expect(updated.doc.lines).toBe(state.doc.lines);
-    // Doc matches expected layout
-    expect(getDoc(updated)).toBe("Hello\nWorld\n\n\n\nEnd");
-    // Frame docOffset points to start of first claimed line in new position
     const updatedFrame = getFrames(updated)[0];
-    expect(updatedFrame.docOffset).toBe(12);
-    // Verify doc.lineAt(docOffset) is an empty line (still claimed)
-    expect(updated.doc.lineAt(updatedFrame.docOffset).text).toBe("");
+    expect(updatedFrame.gridRow).toBe(frame.gridRow + 1);
+    expect(updated.doc.lineAt(updatedFrame.docOffset).number - 1).toBe(updatedFrame.gridRow);
   });
 
-  it("drag up by 1 relocates claimed lines, updates docOffset", () => {
-    // Frame at doc lines 3-4 (docOffset=4, lineCount=2), drag up by 1
-    // Expected result: "A\n\n\nB\nC"
-    // Frame ends up at doc lines 2-3 (from=2)
-    const text = "A\nB\n┌─┐\n└─┘\nC";
-    const { state, frame } = makeState(text);
-    expect(frame.lineCount).toBe(2);
-    expect(state.doc.lines).toBe(5);
-
-    const updated = applyMoveFrame(state, frame.id, 0, -1, cw, ch);
-
-    expect(updated.doc.lines).toBe(state.doc.lines);
-    expect(getDoc(updated)).toBe("A\n\n\nB\nC");
-    const updatedFrame = getFrames(updated)[0];
-    expect(updatedFrame.docOffset).toBe(2);
-    expect(updated.doc.lineAt(updatedFrame.docOffset).text).toBe("");
-  });
-
-  it("drag down + undo restores pre-drag doc and docOffset", () => {
+  it("drag down past prose is clamped to no-op (no empty lines to absorb)", () => {
+    // Frame at rows 1-3, no empty lines between frame and "World".
     const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+    const { state, frame } = makeState(text);
+    const preDoc = getDoc(state);
+    const updated = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
+    // No empty lines below → no-op. Doc unchanged.
+    expect(getDoc(updated)).toBe(preDoc);
+    const updatedFrame = getFrames(updated)[0];
+    expect(updatedFrame.gridRow).toBe(frame.gridRow);
+  });
+
+  it("drag up by 1 into adjacent empty line", () => {
+    const text = "A\n\nB\n┌─┐\n└─┘\nC";
+    const { state, frame } = makeState(text);
+    // No empty line above frame — clamp to no-op.
+    const preDoc = getDoc(state);
+    const updated = applyMoveFrame(state, frame.id, 0, -1, cw, ch);
+    expect(getDoc(updated)).toBe(preDoc);
+    expect(getFrames(updated)[0].gridRow).toBe(frame.gridRow);
+  });
+
+  it("drag up by 1 with empty line above", () => {
+    // Frame at L3-L4 (1-indexed) with empty L2 above.
+    const text = "A\n\n┌─┐\n└─┘\nC";
+    const { state, frame } = makeState(text);
+    const updated = applyMoveFrame(state, frame.id, 0, -1, cw, ch);
+    expect(updated.doc.lines).toBe(state.doc.lines);
+    const updatedFrame = getFrames(updated)[0];
+    expect(updatedFrame.gridRow).toBe(frame.gridRow - 1);
+  });
+
+  it("drag down + undo restores pre-drag docOffset", () => {
+    // Doc length is invariant under newline-rotation drag, but docOffset
+    // does change. Undo must restore docOffset to its pre-drag value.
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\n\nWorld";
     const { state, frame } = makeState(text);
     const preDragDoc = getDoc(state);
     const preDragOffset = frame.docOffset;
 
-    const dragged = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
-    expect(getDoc(dragged)).not.toBe(preDragDoc);
+    const dragged = applyMoveFrame(state, frame.id, 0, 1, cw, ch);
+    expect(getFrames(dragged)[0].docOffset).not.toBe(preDragOffset);
 
     const restored = editorUndo(dragged);
     expect(getDoc(restored)).toBe(preDragDoc);
-    const restoredFrame = getFrames(restored)[0];
-    expect(restoredFrame.docOffset).toBe(preDragOffset);
+    expect(getFrames(restored)[0].docOffset).toBe(preDragOffset);
   });
 
-  it("drag up + undo restores pre-drag doc and docOffset", () => {
-    const text = "A\nB\n┌─┐\n└─┘\nC";
+  it("drag up + undo restores pre-drag docOffset", () => {
+    const text = "A\n\n┌─┐\n└─┘\nC";
     const { state, frame } = makeState(text);
     const preDragDoc = getDoc(state);
     const preDragOffset = frame.docOffset;
 
     const dragged = applyMoveFrame(state, frame.id, 0, -1, cw, ch);
-    expect(getDoc(dragged)).not.toBe(preDragDoc);
+    expect(getFrames(dragged)[0].docOffset).not.toBe(preDragOffset);
 
     const restored = editorUndo(dragged);
     expect(getDoc(restored)).toBe(preDragDoc);
-    const restoredFrame = getFrames(restored)[0];
-    expect(restoredFrame.docOffset).toBe(preDragOffset);
+    expect(getFrames(restored)[0].docOffset).toBe(preDragOffset);
   });
 
   it("undoDepth === 1 after a single drag", () => {
-    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\n\nWorld";
     const { state, frame } = makeState(text);
-    const dragged = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
+    const dragged = applyMoveFrame(state, frame.id, 0, 1, cw, ch);
     // The drag (doc change + frame effect) should land as exactly one history entry.
     expect(undoDepth(dragged)).toBe(1);
   });
 
   it("redo after undo restores post-drag state", () => {
-    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\n\nWorld";
     const { state, frame } = makeState(text);
-    const postDrag = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
+    const postDrag = applyMoveFrame(state, frame.id, 0, 1, cw, ch);
     const postDragDoc = getDoc(postDrag);
+    const postDragOffset = getFrames(postDrag)[0].docOffset;
 
     const undone = editorUndo(postDrag);
     const redone = editorRedo(undone);
     expect(getDoc(redone)).toBe(postDragDoc);
     const redoneFrame = getFrames(redone)[0];
-    expect(redoneFrame.docOffset).toBe(12);
+    expect(redoneFrame.docOffset).toBe(postDragOffset);
   });
 
   it("drag then prose-edit then undo twice — each undo is independent", () => {
-    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\n\nWorld";
     const { state, frame } = makeState(text);
     const preDragDoc = getDoc(state);
 
+    const preDragOffset = frame.docOffset;
     // Step 1: drag
-    const afterDrag = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
+    const afterDrag = applyMoveFrame(state, frame.id, 0, 1, cw, ch);
     const afterDragDoc = getDoc(afterDrag);
+    expect(getFrames(afterDrag)[0].docOffset).not.toBe(preDragOffset);
 
     // Step 2: prose edit — insert "X" at start of "Hello"
     const afterEdit = proseInsert(afterDrag, { row: 0, col: 0 }, "X");
@@ -2109,15 +2122,14 @@ describe("drag wireframe in unified mode", () => {
 
   it("docOffset after undo equals pre-drag snapshot exactly", () => {
     // Verify restoreFramesEffect overrides any mapPos result during undo.
-    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\n\nWorld";
     const { state, frame } = makeState(text);
-    const snapshotOffset = frame.docOffset; // 6
+    const snapshotOffset = frame.docOffset;
 
-    const dragged = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
+    const dragged = applyMoveFrame(state, frame.id, 0, 1, cw, ch);
     const undone = editorUndo(dragged);
 
     const undoneFrame = getFrames(undone)[0];
-    // Must match the exact snapshot — restoreFramesEffect overrides mapPos.
     expect(undoneFrame.docOffset).toBe(snapshotOffset);
   });
 });
@@ -2277,5 +2289,87 @@ describe("top-level frame gridRow == lineAt(docOffset).number - 1", () => {
     const after = getFrames(state)[0];
     const expectedRow = state.doc.lineAt(after.docOffset).number - 1;
     expect(after.gridRow).toBe(expectedRow);
+  });
+
+  it("drag past doc end clamps lineCount so frame doesn't claim prose lines", () => {
+    // Reproduces e2e harness "prose order preserved when dragging wireframe down".
+    // 5-line frame (gridH=5: top + 3 inner + bottom) starts at row 2.
+    // Drag down 8 rows → would land at row 10 in a doc that only has 8 lines.
+    // Without proper clamp, the frame's claimed range overlaps "Prose B".
+    const fixture = "Prose A first\n\n┌──────────────┐\n│              │\n│   Wireframe  │\n│              │\n└──────────────┘\n\nProse B second";
+    let state = createEditorStateUnified(fixture, 9.6, 18);
+    const before = getFrames(state)[0];
+    state = state.update({
+      effects: moveFrameEffect.of({
+        id: before.id, dCol: 0, dRow: 8,
+        charWidth: 9.6, charHeight: 18,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    const after = getFrames(state)[0];
+    // Compute the line that contains "Prose B second" in the post-drag doc.
+    const doc = getDoc(state);
+    const proseBLine = doc.split("\n").findIndex(l => l.includes("Prose B"));
+    expect(proseBLine).toBeGreaterThanOrEqual(0);
+    // The frame must NOT claim the "Prose B" line.
+    const claimedEnd = after.gridRow + after.lineCount - 1;
+    expect(after.gridRow).toBeLessThan(proseBLine);
+    expect(claimedEnd).toBeLessThan(proseBLine);
+  });
+
+  it("drag past doc end: serializeUnified output preserves Prose B intact", async () => {
+    // The hard one: after the drag-clamp, does serializeUnified produce
+    // output containing literal "Prose B second"?
+    const { serializeUnified } = await import("./serializeUnified");
+    const fixture = "Prose A first\n\n┌──────────────┐\n│              │\n│   Wireframe  │\n│              │\n└──────────────┘\n\nProse B second";
+    let state = createEditorStateUnified(fixture, 9.6, 18);
+    const before = getFrames(state)[0];
+    state = state.update({
+      effects: moveFrameEffect.of({
+        id: before.id, dCol: 0, dRow: 8,
+        charWidth: 9.6, charHeight: 18,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    const out = serializeUnified(getDoc(state), getFrames(state));
+    expect(out).toContain("Prose A first");
+    expect(out).toContain("Prose B second");
+    expect(out).toContain("Wireframe");
+  });
+
+  it("incremental drag (10 small dRow=1 steps) preserves Prose B", async () => {
+    const { serializeUnified } = await import("./serializeUnified");
+    const fixture = "Prose A first\n\n┌──────────────┐\n│              │\n│   Wireframe  │\n│              │\n└──────────────┘\n\nProse B second";
+    let state = createEditorStateUnified(fixture, 9.6, 18);
+    const id = getFrames(state)[0].id;
+    const dump = (label: string) => {
+      const f = getFrames(state)[0];
+      const doc = getDoc(state);
+      const lines = doc.split("\n");
+      // eslint-disable-next-line no-console
+      console.log(`\n${label}: gridRow=${f.gridRow} docOffset=${f.docOffset} lineCount=${f.lineCount} doc.length=${doc.length} doc=${JSON.stringify(doc)}`);
+      for (let li = 0; li < lines.length; li++) {
+        const claimed = li >= f.gridRow && li < f.gridRow + f.lineCount;
+        // eslint-disable-next-line no-console
+        console.log(`  L${li}: ${claimed ? "[CLAIM]" : "[prose]"} ${JSON.stringify(lines[li])}`);
+      }
+    };
+    dump("initial");
+    for (let i = 0; i < 5; i++) {
+      state = state.update({
+        effects: moveFrameEffect.of({
+          id, dCol: 0, dRow: 1,
+          charWidth: 9.6, charHeight: 18,
+        }),
+        annotations: Transaction.addToHistory.of(i === 0),
+      }).state;
+      dump(`after step ${i}`);
+    }
+    const out = serializeUnified(getDoc(state), getFrames(state));
+    // eslint-disable-next-line no-console
+    console.log("=== serialized ===\n" + out);
+    expect(out).toContain("Prose A first");
+    expect(out).toContain("Prose B second");
+    expect(out).toContain("Wireframe");
   });
 });

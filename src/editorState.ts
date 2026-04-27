@@ -429,58 +429,100 @@ export function createEditorState(init: EditorStateInit): EditorState {
       if (e.is(moveFrameEffect) && e.value.dRow !== 0) {
         const frames = tr.startState.field(framesField);
         const frame = findFrameInList(frames, e.value.id);
-        // Only top-level frames claim doc lines (lineCount > 0).
         if (!frame || frame.lineCount === 0) continue;
 
         const doc = tr.startState.doc;
         const startLine = doc.lineAt(frame.docOffset);
         const endLineNum = startLine.number + frame.lineCount - 1;
+        if (endLineNum > doc.lines) continue; // claim is malformed; skip
         const endLine = doc.line(endLineNum);
 
-        // claimedContent = the raw bytes of the claimed lines (empty strings + newlines).
-        // For 3 empty lines this will be "\n\n" (the newline chars that ARE positions
-        // startLine.from through endLine.to - 1, i.e. the trailing newlines of each line).
-        const claimedContent = doc.sliceString(startLine.from, endLine.to);
+        // Vertical drag = swap newlines at the frame's boundaries.
+        // Drag down by 1 = delete \n above frame, insert \n below.
+        // Drag up by 1 = inverse. Net char count is 0; the frame's claimed
+        // empty lines stay empty; surrounding prose is untouched.
+        //
+        // For dRow=N, we rotate N newlines across the boundary.
 
-        // Compute target line number — clamped to doc bounds.
-        const targetLineNum = Math.max(1, Math.min(doc.lines, startLine.number + e.value.dRow));
-        if (targetLineNum === startLine.number) continue; // dRow is out-of-bounds no-op
+        const dRow = e.value.dRow;
+        const changes: Array<{ from: number; to: number; insert?: string }> = [];
 
-        // Determine delete range — include ONE boundary newline (the leading one if possible).
-        const deleteIncludesLeading = startLine.from > 0;
-        const deleteFrom = deleteIncludesLeading ? startLine.from - 1 : startLine.from;
-        const deleteTo = deleteIncludesLeading ? endLine.to : Math.min(endLine.to + 1, doc.length);
+        // Clamp dRow by counting consecutive EMPTY lines around the frame.
+        // Drag-down can absorb up to N empty lines below the frame.
+        // Drag-up can absorb up to N empty lines above the frame.
+        let maxDown = 0;
+        for (let n = endLineNum + 1; n <= doc.lines; n++) {
+          const ln = doc.line(n);
+          if (ln.length === 0) maxDown++;
+          else break;
+        }
+        let maxUp = 0;
+        for (let n = startLine.number - 1; n >= 1; n--) {
+          const ln = doc.line(n);
+          if (ln.length === 0) maxUp++;
+          else break;
+        }
+        const effectiveDRow = dRow > 0
+          ? Math.min(dRow, maxDown)
+          : Math.max(dRow, -maxUp);
+        if (effectiveDRow === 0) continue; // no room to move
 
-        // Compute rawInsertAt in ORIGINAL doc coordinates:
-        //   - drag down: insert at start of the line AFTER the target line (frame goes after target)
-        //   - drag up:   insert at start of the target line itself (frame goes before target)
-        const rawInsertAt = e.value.dRow > 0
-          ? doc.line(Math.min(doc.lines, targetLineNum + 1)).from
-          : doc.line(targetLineNum).from;
+        if (effectiveDRow > 0) {
+          // Drag down: for each step, take the newline AFTER the frame and
+          // move it to BEFORE the frame. Equivalently: delete one newline at
+          // endLine.to + (already-moved offset), insert one newline at
+          // startLine.from + (already-moved offset).
+          //
+          // For dRow steps, we delete `effectiveDRow` chars starting at
+          // endLine.to (those are the newlines following the frame, each
+          // belonging to a line below) and insert `effectiveDRow` chars
+          // starting at startLine.from.
+          // But pulling N chars from "after frame" pulls them from positions
+          // endLine.to .. endLine.to + effectiveDRow. The doc must have at
+          // least effectiveDRow characters there (i.e. effectiveDRow lines
+          // below). maxStartLine clamp guarantees this.
+          //
+          // Net effect: frame moves down by effectiveDRow rows, prose
+          // around it stays in its absolute positions.
+          const deleteFrom = endLine.to;
+          const deleteTo = endLine.to + effectiveDRow;
+          if (deleteTo > doc.length) {
+            // Defensive: clamp didn't fully prevent overflow; skip.
+            continue;
+          }
+          // The chars we're moving are newlines (since we're moving past
+          // empty prose lines). Insert the same number of newlines above.
+          const movedChars = doc.sliceString(deleteFrom, deleteTo);
+          changes.push({ from: deleteFrom, to: deleteTo });
+          changes.push({ from: startLine.from, to: startLine.from, insert: movedChars });
+        } else {
+          // Drag up by |effectiveDRow|. Mirror: take newlines from BEFORE the
+          // frame and move them AFTER.
+          const n = -effectiveDRow;
+          const deleteFrom2 = startLine.from - n;
+          const deleteTo2 = startLine.from;
+          if (deleteFrom2 < 0) continue;
+          const movedChars = doc.sliceString(deleteFrom2, deleteTo2);
+          // Delete the n newlines above the frame.
+          changes.push({ from: deleteFrom2, to: deleteTo2 });
+          // Insert them after the frame (at original endLine.to).
+          changes.push({ from: endLine.to, to: endLine.to, insert: movedChars });
+        }
 
-        // Map rawInsertAt through the deletion (sequential: true makes second spec see
-        // post-delete doc, so positions after the deleted range must be adjusted).
-        const mappedInsertAt = rawInsertAt > deleteTo
-          ? rawInsertAt - (deleteTo - deleteFrom)
-          : rawInsertAt;
-
-        const insertContent = deleteIncludesLeading
-          ? "\n" + claimedContent
-          : claimedContent + "\n";
-
-        // newDocOffset = position of the first claimed empty line in the final doc.
-        // The insert puts insertContent at mappedInsertAt; the first char of insertContent
-        // is the separator newline, so the frame content starts exactly at mappedInsertAt.
-        const newDocOffset = mappedInsertAt;
-
+        // newDocOffset for drag-down: frame's new startLine.from is the
+        // original startLine.from + 0 (chars inserted at startLine.from
+        // shift it forward by `effectiveDRow`, so docOffset += effectiveDRow).
+        // For drag-up: docOffset -= n, since we deleted n chars before it.
+        const newDocOffset = effectiveDRow > 0
+          ? startLine.from + effectiveDRow
+          : startLine.from - (-effectiveDRow);
+        // sliceString call signature note: changes already accumulated above
+        // reference ORIGINAL doc positions; we send them as a single changes
+        // array (CM merges them, applying both relative to the original doc).
         return [
           {
             effects: [...tr.effects, relocateFrameEffect.of({ id: frame.id, newDocOffset })],
-            changes: { from: deleteFrom, to: deleteTo },
-          },
-          {
-            changes: { from: mappedInsertAt, insert: insertContent },
-            sequential: true,
+            changes,
           },
         ];
       }
