@@ -2209,3 +2209,73 @@ describe("add wireframe in unified mode", () => {
     expect(updated.doc.line(3).text).toBe("World");
   });
 });
+
+// ── Top-level frame gridRow must agree with docOffset ──────────────────────
+//
+// For top-level frames, gridRow is a CACHE of "what doc line does docOffset
+// land on". After any mutation, they MUST agree. The serializer reads
+// gridRow; the doc holds claimed lines via docOffset. Drift between them
+// produces output corruption.
+
+describe("top-level frame gridRow == lineAt(docOffset).number - 1", () => {
+  it("after drag-down past doc end, gridRow matches docOffset (clamped)", () => {
+    // Reproduces the e2e harness "drag: move box down" failure exactly.
+    const SIMPLE_BOX = "Prose above\n\n┌──────────────┐\n│              │\n│              │\n└──────────────┘\n\nProse below";
+    let state = createEditorStateUnified(SIMPLE_BOX, 9.6, 18);
+    const before = getFrames(state)[0];
+    state = state.update({
+      effects: moveFrameEffect.of({
+        id: before.id, dCol: 0, dRow: 5,
+        charWidth: 9.6, charHeight: 18,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    const after = getFrames(state)[0];
+    const expectedRow = state.doc.lineAt(after.docOffset).number - 1;
+    expect(after.gridRow).toBe(expectedRow);
+  });
+
+  it("after drag-up, gridRow matches docOffset", () => {
+    const text = "A\nB\n\n\n┌──┐\n│Hi│\n└──┘\nZ";
+    let state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    state = state.update({
+      effects: moveFrameEffect.of({
+        id: before.id, dCol: 0, dRow: -2,
+        charWidth: 9.6, charHeight: 18,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    const after = getFrames(state)[0];
+    const expectedRow = state.doc.lineAt(after.docOffset).number - 1;
+    expect(after.gridRow).toBe(expectedRow);
+  });
+
+  it("after prose Enter above frame, gridRow matches docOffset", () => {
+    const text = "Hi\n┌──┐\n│Bx│\n└──┘";
+    let state = createEditorStateUnified(text, 9.6, 18);
+    state = state.update({
+      changes: { from: 2, insert: "\n" },
+      userEvent: "input.type",
+    }).state;
+    const after = getFrames(state)[0];
+    const expectedRow = state.doc.lineAt(after.docOffset).number - 1;
+    expect(after.gridRow).toBe(expectedRow);
+  });
+
+  it("after resize-grow, gridRow matches docOffset", () => {
+    const text = "Hi\n┌──┐\n└──┘\nWorld";
+    let state = createEditorStateUnified(text, 9.6, 18);
+    const before = getFrames(state)[0];
+    state = state.update({
+      effects: resizeFrameEffect.of({
+        id: before.id, gridW: before.gridW, gridH: 4,
+        charWidth: 9.6, charHeight: 18,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    const after = getFrames(state)[0];
+    const expectedRow = state.doc.lineAt(after.docOffset).number - 1;
+    expect(after.gridRow).toBe(expectedRow);
+  });
+});

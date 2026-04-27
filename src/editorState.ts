@@ -235,6 +235,24 @@ const framesField = StateField.define<Frame[]>({
         result = markDirtyById(result, e.value.id).frames;
       }
     }
+    // gridRow sync: for top-level claiming frames (lineCount > 0), gridRow is
+    // a CACHE of "what doc line does docOffset land on". moveFrame() updates
+    // gridRow blindly by dRow; unifiedDocSync may clamp the doc-side
+    // position. The doc is the single source of truth — re-derive gridRow
+    // here so the serializer (which reads gridRow) never sees drift.
+    // Child frames (lineCount === 0) keep their parent-relative gridRow.
+    const docLen = tr.newDoc.length;
+    const docLines = tr.newDoc.lines;
+    result = result.map(f => {
+      if (f.lineCount === 0) return f;
+      if (f.docOffset < 0 || f.docOffset > docLen) return f;
+      const lineNum = tr.newDoc.lineAt(f.docOffset).number - 1; // 0-indexed
+      if (lineNum === f.gridRow) return f;
+      // Clamp lineCount so gridRow + lineCount stays within doc.
+      const maxLineCount = Math.max(1, docLines - lineNum);
+      const lineCount = Math.min(f.lineCount, maxLineCount);
+      return { ...f, gridRow: lineNum, lineCount };
+    });
     return result;
   },
 });
