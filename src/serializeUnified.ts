@@ -7,7 +7,7 @@ import { repairJunctions } from "./gridSerialize";
 /**
  * Serialize the unified CM doc back to a .md file.
  *
- * @param doc - The CM doc text (prose lines preserved; wireframe lines contain " ")
+ * @param doc - The CM doc text (prose lines preserved; wireframe lines are "")
  * @param frames - Top-level frames with gridRow + lineCount set
  * @returns The reconstructed .md text
  */
