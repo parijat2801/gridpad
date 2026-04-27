@@ -52,6 +52,25 @@ export function scanToFrames(
   const scanResult = scan(text);
   const frames = framesFromScan(scanResult, charWidth, charHeight);
 
+  // Compute docOffset + lineCount from source text line offsets.
+  // A top-level frame's gridRow is its 0-indexed source line number.
+  const sourceLines = text.split("\n");
+  const lineOffsets: number[] = [];
+  {
+    let offset = 0;
+    for (let i = 0; i < sourceLines.length; i++) {
+      lineOffsets.push(offset);
+      offset += sourceLines[i].length + 1; // +1 for \n
+    }
+  }
+  for (const f of frames) {
+    const startLine = f.gridRow;
+    if (startLine >= 0 && startLine < lineOffsets.length) {
+      f.docOffset = lineOffsets[startLine];
+      f.lineCount = f.gridH;
+    }
+  }
+
   // Collect frame bboxes for prose extraction
   const frameBboxes = scanResult.rects.map(r => ({
     row: r.row, col: r.col, w: r.w, h: r.h,

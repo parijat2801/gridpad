@@ -64,3 +64,36 @@ describe("scanToFrames (grid-based)", () => {
     expect(originalGrid).toHaveLength(0);
   });
 });
+
+describe("scanToFrames docOffset/lineCount", () => {
+  it("sets docOffset and lineCount for a simple wireframe", () => {
+    const text = "Hello world\n\n┌──────┐\n│ Box  │\n└──────┘\n\nGoodbye";
+    const result = scanToFrames(text, 9.6, 18);
+    const frames = result.frames;
+    expect(frames.length).toBeGreaterThanOrEqual(1);
+    const rect = frames[0];
+    expect(rect.lineCount).toBe(3);
+    // "Hello world\n" = 12 chars, plus "\n" = 13 → start of line 2 (0-indexed)
+    expect(rect.docOffset).toBe(13);
+  });
+
+  it("sets docOffset for wireframe not at start of file", () => {
+    const text = "Line one\nLine two\nLine three\n┌────┐\n│ Hi │\n└────┘";
+    const result = scanToFrames(text, 9.6, 18);
+    const frames = result.frames;
+    expect(frames.length).toBeGreaterThanOrEqual(1);
+    const rect = frames[0];
+    expect(rect.lineCount).toBe(3);
+    // "Line one\n" = 9, "Line two\n" = 9, "Line three\n" = 11 → 29
+    expect(rect.docOffset).toBe(29);
+  });
+
+  it("sets docOffset=0 and lineCount=gridH for wireframe at file start", () => {
+    const text = "┌──┐\n│Hi│\n└──┘\nbye";
+    const result = scanToFrames(text, 9.6, 18);
+    expect(result.frames.length).toBeGreaterThanOrEqual(1);
+    const rect = result.frames[0];
+    expect(rect.docOffset).toBe(0);
+    expect(rect.lineCount).toBe(3);
+  });
+});
