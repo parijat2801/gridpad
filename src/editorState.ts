@@ -69,6 +69,11 @@ const restoreFramesEffect = StateEffect.define<Frame[]>();
 const clearDirtyEffect = StateEffect.define<null>();
 const setOriginalProseSegmentsEffect = StateEffect.define<ProseSegment[]>();
 
+// relocateFrameEffect — emitted by unifiedDocSync when a drag repositions a
+// top-level frame in the CM doc. Updates docOffset to the new claimed-line
+// start so framesField stays in sync with the doc change in the same transaction.
+const relocateFrameEffect = StateEffect.define<{ id: string; newDocOffset: number }>();
+
 // Mark a frame dirty by id, propagating up to ancestors.
 /** Recursively find a frame by id in a frame tree (incl. children). */
 function findFrameInList(frames: Frame[], id: string): Frame | null {
@@ -129,6 +134,11 @@ const framesField = StateField.define<Frame[]>({
         };
         result = result.map(applyMove);
         result = markDirtyById(result, e.value.id).frames;
+      } else if (e.is(relocateFrameEffect)) {
+        // Update docOffset to the new claimed-line start after drag.
+        result = result.map(f =>
+          f.id === e.value.id ? { ...f, docOffset: e.value.newDocOffset } : f,
+        );
       } else if (e.is(resizeFrameEffect)) {
         const applyResize = (f: Frame): Frame => {
           if (f.id === e.value.id) return resizeFrame(f, { gridW: e.value.gridW, gridH: e.value.gridH }, e.value.charWidth, e.value.charHeight);
@@ -326,9 +336,16 @@ export function createEditorState(init: EditorStateInit): EditorState {
   // snapshot the frames array before the transaction and emit a
   // restoreFramesEffect that replays it on undo.
   const frameInversion = invertedEffects.of((tr) => {
+    // Include restoreFramesEffect so that undo-of-undo (= redo) replays the
+    // correct frames: when the undo transaction carries restoreFramesEffect,
+    // we snapshot the pre-undo (= post-forward) frames and store them as the
+    // "redo effects". This is especially important for drag (Task 12) because
+    // the redo transaction has no original effects — only doc changes.
     const hasFrameEffect = tr.effects.some(
       (e) =>
         e.is(moveFrameEffect) ||
+        e.is(relocateFrameEffect) ||
+        e.is(restoreFramesEffect) ||
         e.is(resizeFrameEffect) ||
         e.is(addFrameEffect) ||
         e.is(deleteFrameEffect) ||
@@ -391,6 +408,64 @@ export function createEditorState(init: EditorStateInit): EditorState {
   // not re-fire on the merged transaction (programmatic edits go through).
   const unifiedDocSync = EditorState.transactionFilter.of((tr) => {
     for (const e of tr.effects) {
+      if (e.is(moveFrameEffect) && e.value.dRow !== 0) {
+        const frames = tr.startState.field(framesField);
+        const frame = findFrameInList(frames, e.value.id);
+        // Only top-level frames claim doc lines (lineCount > 0).
+        if (!frame || frame.lineCount === 0) continue;
+
+        const doc = tr.startState.doc;
+        const startLine = doc.lineAt(frame.docOffset);
+        const endLineNum = startLine.number + frame.lineCount - 1;
+        const endLine = doc.line(endLineNum);
+
+        // claimedContent = the raw bytes of the claimed lines (empty strings + newlines).
+        // For 3 empty lines this will be "\n\n" (the newline chars that ARE positions
+        // startLine.from through endLine.to - 1, i.e. the trailing newlines of each line).
+        const claimedContent = doc.sliceString(startLine.from, endLine.to);
+
+        // Compute target line number — clamped to doc bounds.
+        const targetLineNum = Math.max(1, Math.min(doc.lines, startLine.number + e.value.dRow));
+        if (targetLineNum === startLine.number) continue; // dRow is out-of-bounds no-op
+
+        // Determine delete range — include ONE boundary newline (the leading one if possible).
+        const deleteIncludesLeading = startLine.from > 0;
+        const deleteFrom = deleteIncludesLeading ? startLine.from - 1 : startLine.from;
+        const deleteTo = deleteIncludesLeading ? endLine.to : Math.min(endLine.to + 1, doc.length);
+
+        // Compute rawInsertAt in ORIGINAL doc coordinates:
+        //   - drag down: insert at start of the line AFTER the target line (frame goes after target)
+        //   - drag up:   insert at start of the target line itself (frame goes before target)
+        const rawInsertAt = e.value.dRow > 0
+          ? doc.line(Math.min(doc.lines, targetLineNum + 1)).from
+          : doc.line(targetLineNum).from;
+
+        // Map rawInsertAt through the deletion (sequential: true makes second spec see
+        // post-delete doc, so positions after the deleted range must be adjusted).
+        const mappedInsertAt = rawInsertAt > deleteTo
+          ? rawInsertAt - (deleteTo - deleteFrom)
+          : rawInsertAt;
+
+        const insertContent = deleteIncludesLeading
+          ? "\n" + claimedContent
+          : claimedContent + "\n";
+
+        // newDocOffset = position of the first claimed empty line in the final doc.
+        // The insert puts insertContent at mappedInsertAt; the first char of insertContent
+        // is the separator newline, so the frame content starts exactly at mappedInsertAt.
+        const newDocOffset = mappedInsertAt;
+
+        return [
+          {
+            effects: [...tr.effects, relocateFrameEffect.of({ id: frame.id, newDocOffset })],
+            changes: { from: deleteFrom, to: deleteTo },
+          },
+          {
+            changes: { from: mappedInsertAt, insert: insertContent },
+            sequential: true,
+          },
+        ];
+      }
       if (e.is(resizeFrameEffect)) {
         const frames = tr.startState.field(framesField);
         const frame = findFrameInList(frames, e.value.id);

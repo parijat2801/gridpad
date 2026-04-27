@@ -1981,6 +1981,147 @@ Hi`;
   });
 });
 
+// ── Task 12: Drag wireframe — cut + insert claimed lines ─────────────────────
+
+describe("drag wireframe in unified mode", () => {
+  const cw = 9.6, ch = 18;
+
+  // Helper: build state and return the first (top-level) frame.
+  function makeState(text: string) {
+    const state = createEditorStateUnified(text, cw, ch);
+    const frame = getFrames(state)[0];
+    return { state, frame };
+  }
+
+  it("drag down by 3 relocates claimed lines, updates docOffset", () => {
+    // Frame at doc lines 2-4 (docOffset=6, lineCount=3), drag down past "World"
+    // Expected result: "Hello\nWorld\n\n\n\nEnd"
+    // Frame ends up at doc lines 3-5 (from=12)
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+    const { state, frame } = makeState(text);
+    expect(frame.lineCount).toBe(3);
+    expect(state.doc.lines).toBe(6);
+
+    const updated = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
+
+    // Line count preserved
+    expect(updated.doc.lines).toBe(state.doc.lines);
+    // Doc matches expected layout
+    expect(getDoc(updated)).toBe("Hello\nWorld\n\n\n\nEnd");
+    // Frame docOffset points to start of first claimed line in new position
+    const updatedFrame = getFrames(updated)[0];
+    expect(updatedFrame.docOffset).toBe(12);
+    // Verify doc.lineAt(docOffset) is an empty line (still claimed)
+    expect(updated.doc.lineAt(updatedFrame.docOffset).text).toBe("");
+  });
+
+  it("drag up by 1 relocates claimed lines, updates docOffset", () => {
+    // Frame at doc lines 3-4 (docOffset=4, lineCount=2), drag up by 1
+    // Expected result: "A\n\n\nB\nC"
+    // Frame ends up at doc lines 2-3 (from=2)
+    const text = "A\nB\n┌─┐\n└─┘\nC";
+    const { state, frame } = makeState(text);
+    expect(frame.lineCount).toBe(2);
+    expect(state.doc.lines).toBe(5);
+
+    const updated = applyMoveFrame(state, frame.id, 0, -1, cw, ch);
+
+    expect(updated.doc.lines).toBe(state.doc.lines);
+    expect(getDoc(updated)).toBe("A\n\n\nB\nC");
+    const updatedFrame = getFrames(updated)[0];
+    expect(updatedFrame.docOffset).toBe(2);
+    expect(updated.doc.lineAt(updatedFrame.docOffset).text).toBe("");
+  });
+
+  it("drag down + undo restores pre-drag doc and docOffset", () => {
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+    const { state, frame } = makeState(text);
+    const preDragDoc = getDoc(state);
+    const preDragOffset = frame.docOffset;
+
+    const dragged = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
+    expect(getDoc(dragged)).not.toBe(preDragDoc);
+
+    const restored = editorUndo(dragged);
+    expect(getDoc(restored)).toBe(preDragDoc);
+    const restoredFrame = getFrames(restored)[0];
+    expect(restoredFrame.docOffset).toBe(preDragOffset);
+  });
+
+  it("drag up + undo restores pre-drag doc and docOffset", () => {
+    const text = "A\nB\n┌─┐\n└─┘\nC";
+    const { state, frame } = makeState(text);
+    const preDragDoc = getDoc(state);
+    const preDragOffset = frame.docOffset;
+
+    const dragged = applyMoveFrame(state, frame.id, 0, -1, cw, ch);
+    expect(getDoc(dragged)).not.toBe(preDragDoc);
+
+    const restored = editorUndo(dragged);
+    expect(getDoc(restored)).toBe(preDragDoc);
+    const restoredFrame = getFrames(restored)[0];
+    expect(restoredFrame.docOffset).toBe(preDragOffset);
+  });
+
+  it("undoDepth === 1 after a single drag", () => {
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+    const { state, frame } = makeState(text);
+    const dragged = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
+    // The drag (doc change + frame effect) should land as exactly one history entry.
+    expect(undoDepth(dragged)).toBe(1);
+  });
+
+  it("redo after undo restores post-drag state", () => {
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+    const { state, frame } = makeState(text);
+    const postDrag = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
+    const postDragDoc = getDoc(postDrag);
+
+    const undone = editorUndo(postDrag);
+    const redone = editorRedo(undone);
+    expect(getDoc(redone)).toBe(postDragDoc);
+    const redoneFrame = getFrames(redone)[0];
+    expect(redoneFrame.docOffset).toBe(12);
+  });
+
+  it("drag then prose-edit then undo twice — each undo is independent", () => {
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+    const { state, frame } = makeState(text);
+    const preDragDoc = getDoc(state);
+
+    // Step 1: drag
+    const afterDrag = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
+    const afterDragDoc = getDoc(afterDrag);
+
+    // Step 2: prose edit — insert "X" at start of "Hello"
+    const afterEdit = proseInsert(afterDrag, { row: 0, col: 0 }, "X");
+    const afterEditDoc = getDoc(afterEdit);
+    expect(afterEditDoc).not.toBe(afterDragDoc);
+
+    // Undo prose edit → back to post-drag state
+    const undo1 = editorUndo(afterEdit);
+    expect(getDoc(undo1)).toBe(afterDragDoc);
+
+    // Undo drag → back to pre-drag state
+    const undo2 = editorUndo(undo1);
+    expect(getDoc(undo2)).toBe(preDragDoc);
+  });
+
+  it("docOffset after undo equals pre-drag snapshot exactly", () => {
+    // Verify restoreFramesEffect overrides any mapPos result during undo.
+    const text = "Hello\n┌────┐\n│ Bx │\n└────┘\nWorld\nEnd";
+    const { state, frame } = makeState(text);
+    const snapshotOffset = frame.docOffset; // 6
+
+    const dragged = applyMoveFrame(state, frame.id, 0, 3, cw, ch);
+    const undone = editorUndo(dragged);
+
+    const undoneFrame = getFrames(undone)[0];
+    // Must match the exact snapshot — restoreFramesEffect overrides mapPos.
+    expect(undoneFrame.docOffset).toBe(snapshotOffset);
+  });
+});
+
 // ── Task 13: add wireframe in unified mode ────────────────────────────────────
 
 describe("add wireframe in unified mode", () => {
