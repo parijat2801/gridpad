@@ -1980,3 +1980,91 @@ Hi`;
     expect(cursor!.col).toBe(2); // "Hi" has 2 graphemes, col 5 clamped to 2
   });
 });
+
+// ── Task 13: add wireframe in unified mode ────────────────────────────────────
+
+describe("add wireframe in unified mode", () => {
+  const STYLE = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("adding a frame with lineCount=3 inserts 3 blank lines at docOffset", () => {
+    const text = "Hello\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    // "Hello\n" = 6 chars; docOffset=6 points to start of "World"
+    const newFrame = createRectFrame({ gridW: 6, gridH: 3, style: STYLE, charWidth: 9.6, charHeight: 18 });
+    newFrame.docOffset = 6;
+    newFrame.lineCount = 3;
+    newFrame.gridRow = 1;
+    const updated = applyAddFrame(state, newFrame);
+    // Inserting "\n\n\n" at offset 6: "Hello\n" + "\n\n\n" + "World" = "Hello\n\n\n\nWorld"
+    // Lines (1-indexed): 1="Hello", 2="", 3="", 4="", 5="World"
+    expect(updated.doc.lines).toBe(state.doc.lines + 3);
+    expect(updated.doc.line(2).text).toBe("");
+    expect(updated.doc.line(3).text).toBe("");
+    expect(updated.doc.line(4).text).toBe("");
+    expect(updated.doc.line(5).text).toBe("World");
+  });
+
+  it("adding a frame at end of doc inserts blank lines after existing prose", () => {
+    const text = "Hello";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    // doc.length = 5; docOffset=5 = end of doc
+    const newFrame = createRectFrame({ gridW: 6, gridH: 3, style: STYLE, charWidth: 9.6, charHeight: 18 });
+    newFrame.docOffset = 5;
+    newFrame.lineCount = 3;
+    newFrame.gridRow = 1;
+    const updated = applyAddFrame(state, newFrame);
+    // Inserting "\n\n\n" at offset 5: "Hello" + "\n\n\n" = "Hello\n\n\n"
+    // Lines: 1="Hello", 2="", 3="", 4=""
+    expect(updated.doc.lines).toBe(4);
+    expect(updated.doc.line(1).text).toBe("Hello");
+    expect(updated.doc.line(2).text).toBe("");
+    expect(updated.doc.line(3).text).toBe("");
+    expect(updated.doc.line(4).text).toBe("");
+  });
+
+  it("adding a child frame (lineCount=0) does NOT touch the doc", () => {
+    const text = "Hello\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const docBefore = getDoc(state);
+    const childFrame = createRectFrame({ gridW: 4, gridH: 2, style: STYLE, charWidth: 9.6, charHeight: 18 });
+    // lineCount=0 by default from createRectFrame — no claimed lines
+    expect(childFrame.lineCount).toBe(0);
+    const updated = applyAddFrame(state, childFrame);
+    expect(getDoc(updated)).toBe(docBefore);
+    expect(updated.doc.lines).toBe(state.doc.lines);
+  });
+
+  it("add frame is undoable — doc and frames restored", () => {
+    const text = "Hello\nWorld";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    const origDoc = getDoc(state);
+    const origFrameCount = getFrames(state).length;
+    const newFrame = createRectFrame({ gridW: 6, gridH: 3, style: STYLE, charWidth: 9.6, charHeight: 18 });
+    newFrame.docOffset = 6;
+    newFrame.lineCount = 3;
+    newFrame.gridRow = 1;
+    const afterAdd = applyAddFrame(state, newFrame);
+    expect(afterAdd.doc.lines).toBe(state.doc.lines + 3);
+    expect(getFrames(afterAdd).length).toBe(origFrameCount + 1);
+    const afterUndo = editorUndo(afterAdd);
+    expect(getDoc(afterUndo)).toBe(origDoc);
+    expect(getFrames(afterUndo).length).toBe(origFrameCount);
+  });
+
+  it("adding a frame at file start inserts blank lines before existing prose", () => {
+    const text = "World";
+    const state = createEditorStateUnified(text, 9.6, 18);
+    // docOffset=0 = start of doc
+    const newFrame = createRectFrame({ gridW: 6, gridH: 2, style: STYLE, charWidth: 9.6, charHeight: 18 });
+    newFrame.docOffset = 0;
+    newFrame.lineCount = 2;
+    newFrame.gridRow = 0;
+    const updated = applyAddFrame(state, newFrame);
+    // Inserting "\n\n" at offset 0: "\n\n" + "World" = "\n\nWorld"
+    // Lines: 1="", 2="", 3="World"
+    expect(updated.doc.lines).toBe(3);
+    expect(updated.doc.line(1).text).toBe("");
+    expect(updated.doc.line(2).text).toBe("");
+    expect(updated.doc.line(3).text).toBe("World");
+  });
+});

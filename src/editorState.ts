@@ -436,6 +436,19 @@ export function createEditorState(init: EditorStateInit): EditorState {
         const to = startLine.from > 0 ? endLine.to : Math.min(endLine.to + 1, docLength);
         return [tr, { changes: { from, to }, sequential: true }];
       }
+      if (e.is(addFrameEffect)) {
+        const newFrame = e.value;
+        // Child frames (lineCount===0) don't claim doc lines — skip.
+        if (newFrame.lineCount === 0) continue;
+
+        const doc = tr.startState.doc;
+        const offset = Math.max(0, Math.min(newFrame.docOffset, doc.length));
+        // Insert `lineCount` newlines at `offset`. Each "\n" creates one
+        // new empty line. The inserted chars become the claimed blank lines.
+        // Empty content (not " ") satisfies preparedCache null fast-path.
+        const insert = "\n".repeat(newFrame.lineCount);
+        return [tr, { changes: { from: offset, insert }, sequential: true }];
+      }
     }
     return tr;
   });
