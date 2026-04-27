@@ -666,14 +666,14 @@ export default function DemoV2() {
             const cw = cwRef.current, ch = chRef.current;
             const aRow = Math.round(upPy / ch);
             const aCol = Math.round(upPx / cw);
-            stateRef.current = applyReparentFrame(stateRef.current, draggedId, hitTopLevel.id, aRow, aCol);
+            stateRef.current = applyReparentFrame(stateRef.current, draggedId, hitTopLevel.id, aRow, aCol, cw, ch);
             syncRefsFromState();
           } else if (!hitTopLevel && draggedTopAncestor && draggedTopAncestor.id !== draggedId) {
             // Dragged a child out into empty space → promote.
             const cw = cwRef.current, ch = chRef.current;
             const aRow = Math.round(upPy / ch);
             const aCol = Math.round(upPx / cw);
-            stateRef.current = applyReparentFrame(stateRef.current, draggedId, null, aRow, aCol);
+            stateRef.current = applyReparentFrame(stateRef.current, draggedId, null, aRow, aCol, cw, ch);
             syncRefsFromState();
           }
         }

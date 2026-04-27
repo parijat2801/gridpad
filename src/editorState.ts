@@ -61,6 +61,8 @@ const reparentFrameEffect = StateEffect.define<{
   newParentId: string | null;
   absoluteGridRow?: number;
   absoluteGridCol?: number;
+  charWidth: number;
+  charHeight: number;
 }>();
 
 const deleteFrameEffect = StateEffect.define<{ id: string }>();
@@ -206,23 +208,34 @@ const framesField = StateField.define<Frame[]>({
         result = removeAndCapture(result);
         if (!extracted) continue;
         const orig: Frame = extracted;
+        const cw = e.value.charWidth;
+        const ch = e.value.charHeight;
         if (e.value.newParentId === null) {
           // Promote to top-level. Caller must supply absolute coords.
           const aRow = e.value.absoluteGridRow ?? orig.gridRow;
           const aCol = e.value.absoluteGridCol ?? orig.gridCol;
-          // docOffset will be re-derived after this update by the gridRow-sync
-          // pass. For now seed with line.from of aRow on the NEW doc (after
-          // unifiedDocSync's insert). We can't access tr.newDoc cleanly here;
-          // unifiedDocSync provides the docOffset via a follow-up.
+          // Compute docOffset to match unifiedDocSync's insertion point.
+          // unifiedDocSync inserts gridH newlines at:
+          //   line(min(aRow, oldDoc.lines-1) + 1).from   (in old doc coords)
+          // That same character position in the NEW doc is still the start
+          // of the inserted blanks (insertion was AT that position).
+          const oldLines = tr.startState.doc.lines;
+          const targetLineOld = Math.min(Math.max(aRow, 0), oldLines - 1) + 1;
+          const docOffset = tr.startState.doc.line(targetLineOld).from;
+          // Re-derive aRow from the new doc — clamping in unifiedDocSync may
+          // have shifted where the frame actually lands.
+          const lineNum = tr.newDoc.lineAt(docOffset).number - 1;
+          // Use caller-supplied charWidth/charHeight for pixel coords —
+          // dividing orig.w / orig.gridW blows up for line frames whose
+          // gridW or gridH can be 0.
           const promoted: Frame = {
             ...orig,
-            gridRow: aRow,
+            gridRow: lineNum,
             gridCol: aCol,
-            x: aCol * (orig.gridW > 0 ? orig.w / orig.gridW : 0),
-            y: aRow * (orig.gridH > 0 ? orig.h / orig.gridH : 0),
+            x: aCol * cw,
+            y: lineNum * ch,
             lineCount: orig.gridH,
-            // docOffset gets set by unifiedDocSync via a paired relocateFrameEffect
-            docOffset: 0,
+            docOffset,
             dirty: true,
           };
           result = [...result, promoted];
@@ -242,10 +255,24 @@ const framesField = StateField.define<Frame[]>({
             continue;
           }
           const p: Frame = parentRef;
+          // Use caller-supplied absolute coords if available — falling back
+          // to orig.gridRow only works when orig was already top-level. For
+          // a child being moved to a different parent, orig.gridRow is
+          // already parent-relative to the OLD parent, so subtracting the
+          // NEW parent's absolute gridRow produces garbage.
+          const aRow = e.value.absoluteGridRow ?? orig.gridRow;
+          const aCol = e.value.absoluteGridCol ?? orig.gridCol;
+          const childGridRow = aRow - p.gridRow;
+          const childGridCol = aCol - p.gridCol;
           const child: Frame = {
             ...orig,
-            gridRow: orig.gridRow - p.gridRow,
-            gridCol: orig.gridCol - p.gridCol,
+            gridRow: childGridRow,
+            gridCol: childGridCol,
+            // Rebase pixel coords to local-to-parent. The renderer composes
+            // child.x with parent.absX; child.x must be the child's offset
+            // INSIDE the parent, not its absolute screen position.
+            x: childGridCol * cw,
+            y: childGridRow * ch,
             lineCount: 0,
             docOffset: 0,
             dirty: true,
@@ -1127,11 +1154,15 @@ export function applyReparentFrame(
   state: EditorState,
   frameId: string,
   newParentId: string | null,
-  absoluteGridRow?: number,
-  absoluteGridCol?: number,
+  absoluteGridRow: number,
+  absoluteGridCol: number,
+  charWidth: number,
+  charHeight: number,
 ): EditorState {
   return state.update({
-    effects: reparentFrameEffect.of({ frameId, newParentId, absoluteGridRow, absoluteGridCol }),
+    effects: reparentFrameEffect.of({
+      frameId, newParentId, absoluteGridRow, absoluteGridCol, charWidth, charHeight,
+    }),
     annotations: Transaction.addToHistory.of(true),
   }).state;
 }

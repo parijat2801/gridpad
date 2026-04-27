@@ -2334,7 +2334,9 @@ describe("add wireframe in unified mode", () => {
     const docLinesBefore = state.doc.lines;
     const smallLineCount = frames[1].lineCount;
 
-    state = applyReparentFrame(state, smallId, bigId);
+    // Pass child's absolute coords (gridRow=8 from earlier add) and
+    // charWidth/charHeight so the demote path can rebase pixel coords.
+    state = applyReparentFrame(state, smallId, bigId, 8, 0, cw, ch);
 
     const after = getFrames(state);
     expect(after.length).toBe(1); // small absorbed
@@ -2358,7 +2360,7 @@ describe("add wireframe in unified mode", () => {
     const docLinesBefore = state.doc.lines;
 
     // Promote child to top-level at row 0 (cursor lands in empty space above).
-    state = applyReparentFrame(state, child.id, null, 0, 0);
+    state = applyReparentFrame(state, child.id, null, 0, 0, cw, ch);
 
     const after = getFrames(state);
     expect(after.length).toBe(2);
