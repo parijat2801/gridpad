@@ -17,6 +17,8 @@ import {
   applyResizeFrame,
   applyAddFrame,
   applyAddTopLevelFrame,
+  applyAddChildFrame,
+  applyReparentFrame,
   applyDeleteFrame,
   applyClearDirty,
   moveFrameEffect,
@@ -2280,6 +2282,88 @@ describe("add wireframe in unified mode", () => {
     expect(out).toContain("│");
     expect(out).toContain("Top.");
     expect(out).toContain("Bottom.");
+  });
+
+  // Cursor-driven parentage rule: if the user starts a new draw with the
+  // mousedown cursor inside an existing top-level frame, the new frame is
+  // added as a child of that frame. No doc lines are inserted; the new
+  // frame inherits child semantics (lineCount=0, parent-relative gridRow).
+  it("applyAddChildFrame: child rect drawn inside parent does not insert doc lines", async () => {
+    const cw = 9.6, ch = 18;
+    const text = "Prose above\n\n┌──────┐\n│      │\n│      │\n└──────┘\n\nProse below";
+    let state = createEditorStateUnified(text, cw, ch);
+    const docBefore = getDoc(state);
+    const parent = getFrames(state)[0];
+    const parentLineCountBefore = parent.lineCount;
+
+    const child = createRectFrame({ gridW: 4, gridH: 2, style: STYLE, charWidth: cw, charHeight: ch });
+    // Cursor at gridRow 3, gridCol 1 — inside parent (rows 2..5, cols 0..7).
+    state = applyAddChildFrame(state, child, parent.id, 3, 1);
+
+    expect(getDoc(state)).toBe(docBefore);
+    const after = getFrames(state);
+    expect(after.length).toBe(1);
+    expect(after[0].children.length).toBe(1);
+    const addedChild = after[0].children[0];
+    expect(addedChild.lineCount).toBe(0);
+    // gridRow on a child is parent-relative.
+    expect(addedChild.gridRow).toBe(3 - parent.gridRow);
+    expect(addedChild.gridCol).toBe(1 - parent.gridCol);
+    // Parent unchanged.
+    expect(after[0].lineCount).toBe(parentLineCountBefore);
+  });
+
+  // Reparent: moving a top-level frame so its mouseup cursor lands inside
+  // another top-level frame demotes it to a child of that frame. Its
+  // claimed doc lines are released back to blanks (count preserved by
+  // having lineCount=0).
+  it("applyReparentFrame: top-level → child releases claimed doc lines", async () => {
+    const cw = 9.6, ch = 18;
+    // Build the two-top-level-frame state by hand to avoid the scanner's
+    // synthetic-container reparenting.
+    let state = createEditorStateUnified("Top.\n\nMid.\n\nBot.", cw, ch);
+    const big = createRectFrame({ gridW: 10, gridH: 4, style: STYLE, charWidth: cw, charHeight: ch });
+    state = applyAddTopLevelFrame(state, big, 0, 0);
+    const small = createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: cw, charHeight: ch });
+    state = applyAddTopLevelFrame(state, small, 8, 0);
+    const frames = getFrames(state);
+    expect(frames.length).toBe(2); // sanity
+    const bigId = frames[0].id;
+    const smallId = frames[1].id;
+    const docLinesBefore = state.doc.lines;
+    const smallLineCount = frames[1].lineCount;
+
+    state = applyReparentFrame(state, smallId, bigId);
+
+    const after = getFrames(state);
+    expect(after.length).toBe(1); // small absorbed
+    expect(after[0].id).toBe(bigId);
+    expect(after[0].children.length).toBe(1);
+    expect(after[0].children[0].id).toBe(smallId);
+    expect(after[0].children[0].lineCount).toBe(0);
+    // Doc shrinks by exactly smallLineCount lines (the released claim).
+    expect(state.doc.lines).toBe(docLinesBefore - smallLineCount);
+  });
+
+  // Reverse reparent: a child dragged outside any frame becomes top-level
+  // and must reclaim doc lines so it survives serialization.
+  it("applyReparentFrame: child → top-level inserts doc lines for the new claim", async () => {
+    const cw = 9.6, ch = 18;
+    const text = "Prose above\n\n┌──────┐\n│ ┌─┐  │\n│ └─┘  │\n│      │\n└──────┘\n\nProse below";
+    let state = createEditorStateUnified(text, cw, ch);
+    const top = getFrames(state)[0];
+    expect(top.children.length).toBeGreaterThan(0); // sanity
+    const child = top.children[0];
+    const docLinesBefore = state.doc.lines;
+
+    // Promote child to top-level at row 0 (cursor lands in empty space above).
+    state = applyReparentFrame(state, child.id, null, 0, 0);
+
+    const after = getFrames(state);
+    expect(after.length).toBe(2);
+    const promoted = after.find(f => f.id === child.id)!;
+    expect(promoted.lineCount).toBeGreaterThan(0);
+    expect(state.doc.lines).toBe(docLinesBefore + promoted.lineCount);
   });
 
   // Text tool: users place a single-line label. createTextFrame returns
