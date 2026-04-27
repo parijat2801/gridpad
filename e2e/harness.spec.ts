@@ -3770,4 +3770,117 @@ Bottom prose`;
     expect(promotedFinal).toBeTruthy();
     expect(Math.abs(promotedFinal!.y - promotedY)).toBeLessThanOrEqual(1);
   });
+
+  // User-reported scenario A: drag a child OUT to top-level, then drag the
+  // promoted frame. The original parent must NOT move with it.
+  test("promote then drag the promoted frame: old parent stays put", async ({ page }) => {
+    const fixture = `Top prose
+
+┌────────────────────────┐
+│  Outer                 │
+│  ┌──────────────────┐  │
+│  │  Inner           │  │
+│  └──────────────────┘  │
+└────────────────────────┘
+
+
+
+Bottom prose`;
+    await load(page, fixture);
+    writeArtifact("drag-indep-promoted-then-move", "input.md", fixture);
+
+    // Step 1: promote Inner.
+    await clickChild(page, 0);
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    const child = flat.find(f => f.depth > 0);
+    expect(child).toBeTruthy();
+    const outerBefore = (await getFrames(page))[0];
+    const outerYBefore = outerBefore.y;
+    const canvas = page.locator("canvas");
+    const cbox = await canvas.boundingBox();
+    const cx = cbox!.x + child!.absX + child!.w / 2;
+    const cy = cbox!.y + child!.absY + child!.h / 2;
+    const dropY = cbox!.y + outerBefore.y + outerBefore.h + 60;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx, dropY, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "drag-indep-promoted-then-move", "2-after-promote");
+
+    // After promote, two top-level frames.
+    const afterPromote = await getFrames(page);
+    expect(afterPromote.length).toBe(2);
+    const promoted = afterPromote.find(f => f.id !== outerBefore.id);
+    expect(promoted).toBeTruthy();
+
+    // Step 2: drag the PROMOTED frame down a bit. Use raw mouse events
+    // (not dragSelected) so we can observe the result even if motion is
+    // clamped — the test cares whether OUTER moves, not whether promoted
+    // moved.
+    await clickFrame(page, afterPromote.findIndex(f => f.id === promoted!.id));
+    const promotedRect = (await getFrames(page)).find(f => f.id === promoted!.id)!;
+    const px2 = cbox!.x + promotedRect.x + promotedRect.w / 2;
+    const py2 = cbox!.y + promotedRect.y + promotedRect.h / 2;
+    await page.mouse.move(px2, py2);
+    await page.mouse.down();
+    await page.mouse.move(px2, py2 + 20, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "drag-indep-promoted-then-move", "3-after-drag");
+
+    // Outer (the old parent) must NOT have moved.
+    const final = await getFrames(page);
+    const outerAfter = final.find(f => f.id === outerBefore.id);
+    expect(outerAfter).toBeTruthy();
+    expect(Math.abs(outerAfter!.y - outerYBefore)).toBeLessThanOrEqual(1);
+  });
+
+  // User-reported scenario B: draw a NEW rect outside (not inside) an
+  // existing frame, then drag the new rect. The existing frame must stay
+  // put. Tests that freshly-drawn top-level frames participate in the
+  // drag-independence invariant just like scanner-loaded frames.
+  test("draw new rect next to existing frame, drag new rect, existing stays", async ({ page }) => {
+    await load(page, SIMPLE_BOX);
+    writeArtifact("drag-indep-new-rect", "input.md", SIMPLE_BOX);
+
+    const before = await getFrames(page);
+    expect(before.length).toBe(1);
+    const existing = before[0];
+    const existingYBefore = existing.y;
+
+    // Draw a new rect BELOW the existing one (in empty space, not inside).
+    await page.keyboard.press("r");
+    await page.waitForTimeout(200);
+    const canvas = page.locator("canvas");
+    const cbox = await canvas.boundingBox();
+    const sx = cbox!.x + 5;
+    const sy = cbox!.y + existing.y + existing.h + 40;
+    await page.mouse.move(sx, sy);
+    await page.mouse.down();
+    await page.mouse.move(sx + 60, sy + 40, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    await screenshot(page, "drag-indep-new-rect", "2-after-draw");
+
+    // Confirm 2 top-level frames now.
+    const afterDraw = await getFrames(page);
+    expect(afterDraw.length).toBe(2);
+    const newRect = afterDraw.find(f => f.id !== existing.id);
+    expect(newRect).toBeTruthy();
+
+    // Drag the NEW rect up a bit (toward the existing). Existing must not move.
+    await clickFrame(page, afterDraw.findIndex(f => f.id === newRect!.id));
+    await dragSelected(page, 0, -10);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "drag-indep-new-rect", "3-after-drag");
+
+    const final = await getFrames(page);
+    const existingAfter = final.find(f => f.id === existing.id);
+    expect(existingAfter).toBeTruthy();
+    expect(Math.abs(existingAfter!.y - existingYBefore)).toBeLessThanOrEqual(1);
+  });
 });
