@@ -82,9 +82,13 @@ function renderFrameRow(
   colOffset: number,
   rowChars: string[],
 ): void {
-  if (localRow < 0 || localRow >= frame.gridH) return;
-
-  if (frame.content) {
+  // Render this frame's own content only when localRow falls within its bounds.
+  // BUT always recurse to children — the scanner's reparenter sometimes places
+  // text labels at gridRow values that exceed their parent rect's gridH (e.g.
+  // junction-grid: "Bottom L" lives on a row shared with a sibling rect's
+  // border, technically OUTSIDE the parent rect). Each child has its own
+  // gridH check, so an unconditional recursion is safe.
+  if (localRow >= 0 && localRow < frame.gridH && frame.content) {
     for (const [key, ch] of frame.content.cells) {
       const ci = key.indexOf(",");
       const cellRow = Number(key.slice(0, ci));
@@ -99,6 +103,12 @@ function renderFrameRow(
     }
   }
 
+  // Always recurse — the scanner sometimes places child text frames at
+  // gridRow values that exceed their parent rect's gridH (e.g. junction
+  // grids: a label "Bottom L" can be a child of frame-1 with gridRow=3 even
+  // though frame-1 has gridH=3, because the label sits on a row shared with
+  // a sibling rect's top border). Each child's own gridH check inside the
+  // recursive call handles bounds — we mustn't prune here.
   for (const child of frame.children) {
     const childLocalRow = localRow - child.gridRow;
     renderFrameRow(child, childLocalRow, colOffset + child.gridCol, rowChars);

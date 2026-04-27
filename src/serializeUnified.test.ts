@@ -129,6 +129,48 @@ No wireframes here`;
     expect(result).toBe(prose);
   });
 
+  it("round-trips junction wireframe with bottom-row labels", () => {
+    // Reproduces e2e harness "no-edit: junction-chars" failure.
+    // The bottom-row labels "Bottom L" / "Bottom R" are missing from output
+    // even though the input clearly has them.
+    const original = `Header
+
+┌───────────┬───────────┐
+│  Left     │  Right    │
+├───────────┼───────────┤
+│  Bottom L │  Bottom R │
+└───────────┴───────────┘
+
+Footer`;
+    const { unifiedDoc, frames } = buildUnifiedDoc(original);
+    const result = serializeUnified(unifiedDoc, frames);
+    expect(result).toContain("Bottom L");
+    expect(result).toContain("Bottom R");
+    expect(result).toBe(original);
+  });
+
+  it("round-trips form-layout with multi-row label/box pairs", () => {
+    // Reproduces "no-edit: form-layout" failure. The "Name:" label is missing.
+    const original = `Form
+
+┌──────────────────────────┐
+│      Title               │
+├──────────────────────────┤
+│  Name:  ┌─────────────┐  │
+│         │             │  │
+│         └─────────────┘  │
+│  Email: ┌─────────────┐  │
+│         │             │  │
+│         └─────────────┘  │
+└──────────────────────────┘
+
+End`;
+    const { unifiedDoc, frames } = buildUnifiedDoc(original);
+    const result = serializeUnified(unifiedDoc, frames);
+    expect(result).toContain("Name:");
+    expect(result).toContain("Email:");
+  });
+
   it("frame with lineCount === 0 is ignored", () => {
     const original = `Hello world`;
     const { frames } = scanToFrames(original, 9.6, 18);
