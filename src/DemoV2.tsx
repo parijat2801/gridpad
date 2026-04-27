@@ -6,19 +6,17 @@ import { buildPreparedCache, invalidateLine, splitLine, mergeLines, type Prepare
 import type { EditorState } from "@codemirror/state";
 import { Transaction } from "@codemirror/state";
 import {
-  createEditorStateFromText, getDoc, getFrames,
+  createEditorStateUnified, getDoc, getFrames,
   selectFrameEffect, getSelectedId,
   moveFrameEffect, resizeFrameEffect, setZEffect,
-  applyAddFrame, applyDeleteFrame, applyClearDirty, applySetOriginalProseSegments,
+  applyAddFrame, applyDeleteFrame, applyClearDirty,
   proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
-  getProseSegmentMap, getOriginalProseSegments,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
   type CursorPos,
 } from "./editorState";
-import { gridSerialize, rebuildOriginalGrid, snapshotFrameBboxes, framesToProseGaps, type FrameBbox } from "./gridSerialize";
-import { scanToFrames } from "./scanToFrames";
+import { serializeUnified } from "./serializeUnified";
 import { type Frame, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { setTextAlignEffect } from "./editorState";
@@ -201,30 +199,18 @@ export default function DemoV2() {
   const textPlacementRef = useRef<{ x: number; y: number; chars: string } | null>(null);
   const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const originalGridRef = useRef<string[][]>([]);
-  const frameBboxSnapshotRef = useRef<FrameBbox[]>([]);
 
   type WritableHandle = FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> };
   async function saveToHandle(h: FileSystemFileHandle) {
     console.log("saveToHandle called, handle:", h.name);
     try {
       const state = stateRef.current;
-      const md = gridSerialize(
-        getFrames(state), getDoc(state),
-        originalGridRef.current,
-        getOriginalProseSegments(state),
-        frameBboxSnapshotRef.current,
-      );
+      const md = serializeUnified(getDoc(state), getFrames(state));
       const w = await (h as WritableHandle).createWritable();
       await w.write(md);
       await w.close();
       stateRef.current = applyClearDirty(stateRef.current);
-      // Rebuild originalProseSegments from saved output
-      const { proseSegments: newSegs } = scanToFrames(md, cwRef.current, chRef.current);
-      stateRef.current = applySetOriginalProseSegments(stateRef.current, newSegs);
       framesRef.current = getFrames(stateRef.current);
-      originalGridRef.current = rebuildOriginalGrid(md);
-      frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current));
     } catch (err) { console.error("saveToHandle failed:", err); }
   }
   function scheduleAutosave() {
@@ -236,10 +222,7 @@ export default function DemoV2() {
 
   function loadDocument(text: string) {
     const cw = cwRef.current, ch = chRef.current;
-    stateRef.current = createEditorStateFromText(text, cw, ch);
-    const { originalGrid } = scanToFrames(text, cw, ch);
-    originalGridRef.current = originalGrid;
-    frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current));
+    stateRef.current = createEditorStateUnified(text, cw, ch);
     // Sync old refs for un-migrated code paths
     const frames = getFrames(stateRef.current);
     const proseText = getDoc(stateRef.current);
@@ -251,21 +234,44 @@ export default function DemoV2() {
   }
 
   function doLayout() {
-    if (preparedRef.current.length === 0) { linesRef.current = []; return; }
+    if (!stateRef.current) { linesRef.current = []; return; }
     const ch = chRef.current;
-    const sorted = [...framesRef.current].sort((a, b) => a.gridRow - b.gridRow);
-    const merged: { y: number; bottom: number }[] = [];
-    for (const f of sorted) {
-      const fy = f.gridRow * ch;
-      const fb = fy + f.gridH * ch;
-      if (merged.length > 0 && fy <= merged[merged.length - 1].bottom) {
-        merged[merged.length - 1].bottom = Math.max(merged[merged.length - 1].bottom, fb);
+    const frames = getFrames(stateRef.current);
+
+    // Build set of claimed line numbers (0-based)
+    const claimedLines = new Set<number>();
+    for (const f of frames) {
+      if (f.lineCount === 0) continue;
+      const startLine = stateRef.current.doc.lineAt(f.docOffset).number - 1;
+      for (let i = 0; i < f.lineCount; i++) claimedLines.add(startLine + i);
+    }
+
+    // Build preparedLines: null for claimed lines, prepared text for prose
+    const prepared = preparedRef.current;
+    const adjusted = prepared.map((p, i) => claimedLines.has(i) ? null : p);
+
+    // No obstacles in unified mode
+    linesRef.current = reflowLayout(adjusted, sizeRef.current.w, ch, []).lines;
+
+    // Set frame pixel Y from lineTop accumulator
+    let lineTop = 0;
+    const doc = stateRef.current.doc;
+    for (let i = 0; i < doc.lines; i++) {
+      if (claimedLines.has(i)) {
+        for (const f of frames) {
+          if (f.lineCount === 0) continue;
+          const startLine = doc.lineAt(f.docOffset).number - 1;
+          if (i === startLine) {
+            f.y = lineTop;
+            f.x = f.gridCol * cwRef.current;
+          }
+        }
+        lineTop += ch;
       } else {
-        merged.push({ y: fy, bottom: fb });
+        const visualLines = linesRef.current.filter(l => l.sourceLine === i);
+        lineTop += Math.max(visualLines.length, 1) * ch;
       }
     }
-    const obstacles = merged.map(m => ({ x: 0, y: m.y, w: sizeRef.current.w, h: m.bottom - m.y }));
-    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, ch, obstacles).lines;
   }
 
   function paint() {
@@ -661,30 +667,14 @@ export default function DemoV2() {
         loadDocument: (text: string) => { loadDocument(text); doLayout(); paint(); },
         serializeDocument: () => {
           const state = stateRef.current;
-          return gridSerialize(
-            getFrames(state), getDoc(state),
-            originalGridRef.current,
-            getOriginalProseSegments(state),
-            frameBboxSnapshotRef.current,
-          );
+          return serializeUnified(getDoc(state), getFrames(state));
         },
         /** Serialize + update all refs (mirrors real saveToHandle minus file I/O) */
         saveDocument: () => {
           const state = stateRef.current;
-          const cw = cwRef.current, ch = chRef.current;
-          const md = gridSerialize(
-            getFrames(state), getDoc(state),
-            originalGridRef.current,
-            getOriginalProseSegments(state),
-            frameBboxSnapshotRef.current,
-          );
-          // Same ref updates as saveToHandle
+          const md = serializeUnified(getDoc(state), getFrames(state));
           stateRef.current = applyClearDirty(stateRef.current);
-          const { proseSegments: newSegs } = scanToFrames(md, cw, ch);
-          stateRef.current = applySetOriginalProseSegments(stateRef.current, newSegs);
           framesRef.current = getFrames(stateRef.current);
-          originalGridRef.current = rebuildOriginalGrid(md);
-          frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current));
           doLayout(); paint();
           return md;
         },
@@ -1022,8 +1012,8 @@ export default function DemoV2() {
           if (isLineMerge) {
             mergeLines(preparedRef.current, beforeCursor.row, stateRef.current.doc.line(afterCursor.row + 1).text);
             // Shift frames up when a line is deleted via merge
-            const segMap = getProseSegmentMap(stateRef.current);
-            const mergeGridRow = segMap[beforeCursor.row]?.row ?? beforeCursor.row;
+            // In unified doc, cursor.row IS the source/grid row directly
+            const mergeGridRow = beforeCursor.row;
             const ch = chRef.current;
             const cw = cwRef.current;
             for (const f of framesRef.current) {
@@ -1051,8 +1041,8 @@ export default function DemoV2() {
           const secondText = stateRef.current.doc.line(beforeRow + 2).text;
           splitLine(preparedRef.current, beforeRow, firstText, secondText);
           // Shift frames down when a new line is inserted
-          const segMap = getProseSegmentMap(stateRef.current);
-          const editGridRow = segMap[beforeRow]?.row ?? beforeRow;
+          // In unified doc, beforeRow IS the source/grid row directly
+          const editGridRow = beforeRow;
           const ch = chRef.current;
           const cw = cwRef.current;
           for (const f of framesRef.current) {
