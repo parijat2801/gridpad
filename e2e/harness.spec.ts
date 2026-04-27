@@ -3246,3 +3246,337 @@ test.describe("prose-wireframe vertical position", () => {
     expect(r.ghosts).toEqual([]);
   });
 });
+
+// ── Reparent: cursor-driven nest-on-draw and drag-reparent ───────────────────
+//
+// Verifies the Figma-style behavior introduced in PR #2:
+// - Drawing inside an existing top-level frame nests the new frame as a child.
+// - Dragging a top-level frame onto a strictly-larger frame demotes it to child.
+// - Dragging a child out into empty space promotes it to top-level.
+// All operations must round-trip through save/reload.
+
+test.describe("reparent", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  // BIG_AND_SMALL: a tall outer rect followed by a short prose run, so the
+  // outer is the only top-level frame and there's clear empty space below for
+  // promote tests.
+  const BIG_OUTER = `Title
+
+┌──────────────────────────────┐
+│                              │
+│                              │
+│                              │
+│                              │
+│                              │
+└──────────────────────────────┘
+
+End`;
+
+  // TWO_BOXES: a big top frame and a small bottom frame, so we can drag the
+  // small one INTO the big one for the demote test. Different widths and
+  // heights so the size guard accepts the demote. Prose between them keeps
+  // the scanner from synthesizing a wrapping container.
+  const TWO_BOXES = `Above
+
+┌────────────────────────────┐
+│                            │
+│                            │
+│                            │
+│                            │
+└────────────────────────────┘
+
+between
+
+┌────┐
+│ S  │
+└────┘
+
+Below`;
+
+  // Test 1: draw a rect inside an existing frame → becomes child.
+  test("draw rect inside frame: serialized as child of that frame", async ({ page }) => {
+    const r = await roundTrip(page, "reparent-draw-rect-inside", BIG_OUTER, async (p) => {
+      await p.keyboard.press("r"); // rect tool
+      await p.waitForTimeout(200);
+      const frames = await getFrames(p);
+      const outer = frames[0];
+      const canvas = p.locator("canvas");
+      const box = await canvas.boundingBox();
+      // Drag inside the outer's interior (well clear of borders)
+      const sx = box!.x + outer.x + 40;
+      const sy = box!.y + outer.y + 40;
+      await p.mouse.move(sx, sy);
+      await p.mouse.down();
+      await p.mouse.move(sx + 50, sy + 30);
+      await p.mouse.up();
+      await p.waitForTimeout(300);
+    });
+    // Outer survives. New child rect renders inside it (no ghosts).
+    expect(r.output).toContain("Title");
+    expect(r.output).toContain("End");
+    expect(r.ghosts).toEqual([]);
+    // Top-level frame count after reload should still be 1 (child nests).
+    const tree = await getFrameTree(page);
+    expect(tree.length).toBe(1);
+    expect(tree[0].childCount).toBeGreaterThan(0);
+  });
+
+  // Test 2: type a text label inside a frame → child.
+  test("draw text inside frame: text label round-trips as child", async ({ page }) => {
+    const r = await roundTrip(page, "reparent-draw-text-inside", BIG_OUTER, async (p) => {
+      await p.keyboard.press("t"); // text tool
+      await p.waitForTimeout(200);
+      const frames = await getFrames(p);
+      const outer = frames[0];
+      const canvas = p.locator("canvas");
+      const box = await canvas.boundingBox();
+      // Click inside the outer
+      await p.mouse.click(box!.x + outer.x + 40, box!.y + outer.y + 40);
+      await p.waitForTimeout(200);
+      await p.keyboard.type("INSIDE");
+      await p.keyboard.press("Enter");
+      await p.waitForTimeout(300);
+    });
+    expect(r.output).toContain("INSIDE");
+    expect(r.output).toContain("Title");
+    expect(r.ghosts).toEqual([]);
+    // Top-level count still 1 — text label nested as child.
+    const tree = await getFrameTree(page);
+    expect(tree.length).toBe(1);
+  });
+
+  // Test 3: drag a top-level frame INTO a strictly-larger one → demote.
+  test("drag frame into larger frame: demoted to child, both persist after reload", async ({ page }) => {
+    await load(page, TWO_BOXES);
+    writeArtifact("reparent-drag-into-larger", "input.md", TWO_BOXES);
+    await screenshot(page, "reparent-drag-into-larger", "1-before");
+
+    const framesBefore = await getFrames(page);
+    expect(framesBefore.length).toBeGreaterThanOrEqual(2);
+    const big = framesBefore[0];
+    const small = framesBefore[1];
+    expect(big.w).toBeGreaterThan(small.w);
+    expect(big.h).toBeGreaterThan(small.h);
+
+    // Click small to select, then drag its center to inside the big one.
+    await clickFrame(page, 1);
+    const dx = (big.x + big.w / 2) - (small.x + small.w / 2);
+    const dy = (big.y + big.h / 2) - (small.y + small.h / 2);
+    await dragSelected(page, dx, dy);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "reparent-drag-into-larger", "2-after-drag");
+
+    const saved = await save(page);
+    writeArtifact("reparent-drag-into-larger", "output.md", saved);
+
+    // Both ┌ markers must remain (nested rendering)
+    expect(saved.match(/┌/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(saved).toContain("Above");
+    expect(saved).toContain("Below");
+
+    // After reload, top-level should be just the big frame; small nested.
+    await load(page, saved);
+    await screenshot(page, "reparent-drag-into-larger", "4-reloaded");
+    const tree = await getFrameTree(page);
+    expect(tree.length).toBe(1);
+    expect(tree[0].childCount).toBeGreaterThan(0);
+  });
+
+  // Test 4: drag a child OUT of its parent into empty space → promote.
+  test("drag child out into empty space: promoted to top-level after reload", async ({ page }) => {
+    await load(page, WITH_CHILDREN);
+    writeArtifact("reparent-drag-out", "input.md", WITH_CHILDREN);
+    await screenshot(page, "reparent-drag-out", "1-before");
+
+    const treeBefore = await getFrameTree(page);
+    expect(treeBefore.length).toBe(1); // sanity
+    expect(treeBefore[0].childCount).toBeGreaterThan(0);
+
+    // Drill down to inner child
+    await clickChild(page, 0);
+    const childId = await getSelectedId(page);
+    expect(childId).toBeTruthy();
+
+    // Find the child's position via the frame tree (getFrames returns
+    // top-level only; flattenTree exposes children with absolute coords).
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    const child = flat.find(f => f.depth > 0);
+    expect(child).toBeTruthy();
+    const parent = (await getFrames(page))[0];
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+    const cx = box!.x + child!.absX + child!.w / 2;
+    const cy = box!.y + child!.absY + child!.h / 2;
+    // Drop point: well below the parent's bottom edge.
+    const dropY = box!.y + parent.y + parent.h + 100;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx, dropY, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "reparent-drag-out", "2-after-drag");
+
+    const saved = await save(page);
+    writeArtifact("reparent-drag-out", "output.md", saved);
+
+    expect(saved).toContain("Top");
+    expect(saved).toContain("Bottom");
+    // Two distinct ┌ in the output — outer + promoted child.
+    expect(saved.match(/┌/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+
+    // After reload, both should be top-level.
+    await load(page, saved);
+    await screenshot(page, "reparent-drag-out", "4-reloaded");
+    const treeAfter = await getFrameTree(page);
+    expect(treeAfter.length).toBe(2);
+  });
+
+  // Test 5: drag a child from parent A to parent B.
+  test("drag child to a different parent: child nests under new parent", async ({ page }) => {
+    // Construct a doc with two big frames separated by prose so the scanner
+    // doesn't synthesize a wrapping container.
+    const fixture = `Top
+
+┌────────────────────────┐
+│  Outer A               │
+│  ┌──────────────────┐  │
+│  │  Inner           │  │
+│  └──────────────────┘  │
+└────────────────────────┘
+
+middle
+
+┌────────────────────────┐
+│  Outer B               │
+│                        │
+│                        │
+│                        │
+└────────────────────────┘
+
+End`;
+    await load(page, fixture);
+    writeArtifact("reparent-cross-parent", "input.md", fixture);
+    await screenshot(page, "reparent-cross-parent", "1-before");
+
+    const framesBefore = await getFrames(page);
+    expect(framesBefore.length).toBe(2);
+    const a = framesBefore[0];
+    const b = framesBefore[1];
+
+    await clickChild(page, 0); // drill into inner child of A
+    const childId = await getSelectedId(page);
+    expect(childId).toBeTruthy();
+
+    const tree = await getFrameTree(page);
+    const flat = flattenTree(tree);
+    const child = flat.find(f => f.depth > 0);
+    expect(child).toBeTruthy();
+    const canvas = page.locator("canvas");
+    const cbox = await canvas.boundingBox();
+    const cx = cbox!.x + child!.absX + child!.w / 2;
+    const cy = cbox!.y + child!.absY + child!.h / 2;
+    const dropX = cbox!.x + b.x + b.w / 2;
+    const dropY = cbox!.y + b.y + b.h / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(dropX, dropY, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "reparent-cross-parent", "2-after-drag");
+
+    const saved = await save(page);
+    writeArtifact("reparent-cross-parent", "output.md", saved);
+
+    expect(saved).toContain("Outer A");
+    expect(saved).toContain("Outer B");
+    expect(saved).toContain("Inner");
+
+    await load(page, saved);
+    const treeAfter = await getFrameTree(page);
+    expect(treeAfter.length).toBe(2);
+    // The first parent (A) should now have no children; B should have one.
+    const aAfter = treeAfter.find(t => (t.text ?? "").includes("A")) ?? treeAfter[0];
+    const bAfter = treeAfter.find(t => (t.text ?? "").includes("B")) ?? treeAfter[1];
+    expect(bAfter.childCount).toBeGreaterThan(0);
+    expect(aAfter.childCount).toBe(0);
+  });
+
+  // Test 6: dragging two equal-sized frames past each other does NOT nest.
+  // Regression check for the size guard from commit b7eabfa.
+  test("equal-size frames passed through each other do not nest", async ({ page }) => {
+    await load(page, TWO_SEPARATE);
+    writeArtifact("reparent-equal-no-nest", "input.md", TWO_SEPARATE);
+
+    const framesBefore = await getFrames(page);
+    expect(framesBefore.length).toBe(2);
+    expect(framesBefore[0].w).toBe(framesBefore[1].w);
+    expect(framesBefore[0].h).toBe(framesBefore[1].h);
+
+    // Drag frame 0 PAST frame 1 (drop cursor lands below f1's bottom edge,
+    // not on top of it). Same-size guard means no nesting either way; this
+    // also exercises the scanner's reload path with the dragged frame
+    // beyond the original layout.
+    await clickFrame(page, 0);
+    const f0 = framesBefore[0];
+    const f1 = framesBefore[1];
+    const dy = (f1.y + f1.h + 20) - (f0.y + f0.h / 2);
+    await dragSelected(page, 0, dy);
+    await clickProse(page, 5, 5);
+
+    const saved = await save(page);
+    writeArtifact("reparent-equal-no-nest", "output.md", saved);
+
+    // Both ┌ tokens must remain; tree depth stays 1.
+    expect(saved.match(/┌/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    await load(page, saved);
+    const tree = await getFrameTree(page);
+    expect(tree.length).toBe(2);
+    expect(tree[0].childCount).toBe(0);
+    expect(tree[1].childCount).toBe(0);
+  });
+
+  // Test 7: undo a reparent restores the original tree.
+  test("undo a drag-into-frame reparent restores original tree", async ({ page }) => {
+    await load(page, TWO_BOXES);
+    writeArtifact("reparent-undo", "input.md", TWO_BOXES);
+
+    const treeBefore = await getFrameTree(page);
+    expect(treeBefore.length).toBe(2);
+
+    // Reparent: drag small into big.
+    const framesBefore = await getFrames(page);
+    const big = framesBefore[0];
+    const small = framesBefore[1];
+    await clickFrame(page, 1);
+    const dx = (big.x + big.w / 2) - (small.x + small.w / 2);
+    const dy = (big.y + big.h / 2) - (small.y + small.h / 2);
+    await dragSelected(page, dx, dy);
+    // NOTE: do NOT click prose between drag and undo. clicking adds an
+    // extra history entry (cursor move) which Cmd+Z would undo first.
+
+    // Undo via Mod+Z (CodeMirror history)
+    await page.locator("canvas").focus();
+    const isMac = process.platform === "darwin";
+    await page.keyboard.press(isMac ? "Meta+z" : "Control+z");
+    await page.waitForTimeout(300);
+
+    const saved = await save(page);
+    writeArtifact("reparent-undo", "output.md", saved);
+
+    // After undo, two top-level ┌ tokens; saved matches original (modulo
+    // trailing whitespace differences).
+    await load(page, saved);
+    const treeAfter = await getFrameTree(page);
+    expect(treeAfter.length).toBe(2);
+    expect(treeAfter[0].childCount).toBe(0);
+    expect(treeAfter[1].childCount).toBe(0);
+  });
+});
