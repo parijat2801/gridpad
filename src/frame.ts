@@ -169,6 +169,16 @@ export function createLineFrame(params: {
 }): Frame {
   const { r1, c1, r2, c2, charWidth, charHeight } = params;
   const { bbox, cells } = buildLineCells(r1, c1, r2, c2);
+  // Rebase cells to local-to-frame coords (origin 0,0). buildLineCells keys
+  // them in absolute (input) coords; the serializer's renderFrameRow expects
+  // localRow indexing. framesFromScan does the same rebase at frame.ts ~340.
+  const localCells = new Map<string, string>();
+  for (const [k, v] of cells) {
+    const ci = k.indexOf(",");
+    const r = Number(k.slice(0, ci)) - bbox.row;
+    const c = Number(k.slice(ci + 1)) - bbox.col;
+    localCells.set(`${r},${c}`, v);
+  }
   return {
     id: nextId(),
     x: bbox.col * charWidth,
@@ -177,7 +187,7 @@ export function createLineFrame(params: {
     h: bbox.h * charHeight,
     z: 0,
     children: [],
-    content: { type: "line", cells },
+    content: { type: "line", cells: localCells },
     clip: true,
     dirty: false,
     gridRow: bbox.row,

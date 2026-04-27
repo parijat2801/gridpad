@@ -924,6 +924,39 @@ export function applyAddFrame(state: EditorState, frame: Frame): EditorState {
   }).state;
 }
 
+/**
+ * Add a top-level (claiming) frame at a UI-derived grid position.
+ * Pure helper that owns the docOffset/lineCount derivation so callers
+ * (DemoV2 draw-rect handler, tests) don't have to know the unified-doc
+ * invariants. Frames added via this path are visible to serializeUnified
+ * and trigger unifiedDocSync's empty-line insertion.
+ */
+export function applyAddTopLevelFrame(
+  state: EditorState,
+  frame: Frame,
+  gridRow: number,
+  gridCol: number,
+): EditorState {
+  // Clamp gridRow into the existing doc — drawing past doc end places the
+  // frame at the last line. Padding the doc to honor far-below positions
+  // is a UX choice we're explicitly NOT making here; harness rect tests
+  // draw within or at the doc tail, so this is sufficient.
+  const targetLine = Math.min(Math.max(gridRow, 0), state.doc.lines - 1);
+  const docOffset = state.doc.line(targetLine + 1).from; // 1-indexed
+  const charWidth = frame.gridW > 0 ? frame.w / frame.gridW : 0;
+  const charHeight = frame.gridH > 0 ? frame.h / frame.gridH : 0;
+  const prepared: Frame = {
+    ...frame,
+    x: gridCol * charWidth,
+    y: gridRow * charHeight,
+    gridRow,
+    gridCol,
+    docOffset,
+    lineCount: frame.gridH,
+  };
+  return applyAddFrame(state, prepared);
+}
+
 export function applyDeleteFrame(state: EditorState, id: string): EditorState {
   // Check if targetId is the deleted frame or any of its descendants
   const frameContains = (frame: Frame, targetId: string): boolean => {

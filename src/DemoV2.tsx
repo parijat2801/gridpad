@@ -9,7 +9,7 @@ import {
   createEditorStateUnified, getDoc, getFrames,
   selectFrameEffect, getSelectedId,
   moveFrameEffect, resizeFrameEffect, setZEffect,
-  applyAddFrame, applyDeleteFrame, applyClearDirty,
+  applyAddTopLevelFrame, applyDeleteFrame, applyClearDirty,
   proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
@@ -649,12 +649,13 @@ export default function DemoV2() {
     if (tool === "rect" && x2 - x1 >= cw && y2 - y1 >= ch) {
       const f = createRectFrame({ gridW: Math.max(2, Math.round((x2 - x1) / cw)), gridH: Math.max(2, Math.round((y2 - y1) / ch)), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
       const gridR = Math.round(y1 / ch), gridC = Math.round(x1 / cw);
-      stateRef.current = applyAddFrame(stateRef.current, { ...f, x: gridC * cw, y: gridR * ch, gridRow: gridR, gridCol: gridC });
+      stateRef.current = applyAddTopLevelFrame(stateRef.current, f, gridR, gridC);
       syncRefsFromState(); scheduleAutosave();
     } else if (tool === "line") {
       const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
       if (r1 !== r2 || c1 !== c2) {
-        stateRef.current = applyAddFrame(stateRef.current, createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch }));
+        const f = createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch });
+        stateRef.current = applyAddTopLevelFrame(stateRef.current, f, f.gridRow, f.gridCol);
         syncRefsFromState(); scheduleAutosave();
       }
     }
@@ -832,7 +833,8 @@ export default function DemoV2() {
           e.preventDefault();
           if (tp.chars.length > 0) {
             const cw = cwRef.current, ch = chRef.current;
-            stateRef.current = applyAddFrame(stateRef.current, createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch }));
+            const tf = createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch });
+            stateRef.current = applyAddTopLevelFrame(stateRef.current, tf, tf.gridRow, tf.gridCol);
             syncRefsFromState();
             scheduleAutosave(); doLayout();
           }
