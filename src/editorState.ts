@@ -69,7 +69,22 @@ const restoreFramesEffect = StateEffect.define<Frame[]>();
 const clearDirtyEffect = StateEffect.define<null>();
 const setOriginalProseSegmentsEffect = StateEffect.define<ProseSegment[]>();
 
+// relocateFrameEffect — emitted by unifiedDocSync when a drag repositions a
+// top-level frame in the CM doc. Updates docOffset to the new claimed-line
+// start so framesField stays in sync with the doc change in the same transaction.
+const relocateFrameEffect = StateEffect.define<{ id: string; newDocOffset: number }>();
+
 // Mark a frame dirty by id, propagating up to ancestors.
+/** Recursively find a frame by id in a frame tree (incl. children). */
+function findFrameInList(frames: Frame[], id: string): Frame | null {
+  for (const f of frames) {
+    if (f.id === id) return f;
+    const found = findFrameInList(f.children, id);
+    if (found) return found;
+  }
+  return null;
+}
+
 function markDirtyById(frames: Frame[], id: string): { frames: Frame[]; found: boolean } {
   let found = false;
   const result = frames.map(f => {
@@ -88,6 +103,18 @@ const framesField = StateField.define<Frame[]>({
   create: () => [],
   update(frames, tr: Transaction) {
     let result = frames;
+    // Remap docOffset on every doc-changing transaction. Use associativity=1
+    // so frames follow preceding insertions (Enter-above-wireframe pushes
+    // frame down). Also re-runs on undo, where the inverted ChangeSet maps
+    // offsets back; restoreFramesEffect (below) overrides this for frame
+    // mutations, but pure prose edits land here exclusively.
+    if (tr.docChanged) {
+      result = result.map((f) =>
+        f.lineCount === 0
+          ? f
+          : { ...f, docOffset: tr.changes.mapPos(f.docOffset, 1) },
+      );
+    }
     for (const e of tr.effects) {
       if (e.is(restoreFramesEffect)) {
         return e.value;
@@ -107,6 +134,11 @@ const framesField = StateField.define<Frame[]>({
         };
         result = result.map(applyMove);
         result = markDirtyById(result, e.value.id).frames;
+      } else if (e.is(relocateFrameEffect)) {
+        // Update docOffset to the new claimed-line start after drag.
+        result = result.map(f =>
+          f.id === e.value.id ? { ...f, docOffset: e.value.newDocOffset } : f,
+        );
       } else if (e.is(resizeFrameEffect)) {
         const applyResize = (f: Frame): Frame => {
           if (f.id === e.value.id) return resizeFrame(f, { gridW: e.value.gridW, gridH: e.value.gridH }, e.value.charWidth, e.value.charHeight);
@@ -115,6 +147,12 @@ const framesField = StateField.define<Frame[]>({
         };
         result = result.map(applyResize);
         result = markDirtyById(result, e.value.id).frames;
+        // Sync lineCount with new gridH for top-level frames that claim doc lines.
+        result = result.map(f =>
+          f.id === e.value.id && f.lineCount > 0
+            ? { ...f, lineCount: Math.max(2, e.value.gridH) }
+            : f,
+        );
       } else if (e.is(addFrameEffect)) {
         result = [...result, { ...e.value, dirty: true }];
       } else if (e.is(deleteFrameEffect)) {
@@ -197,6 +235,24 @@ const framesField = StateField.define<Frame[]>({
         result = markDirtyById(result, e.value.id).frames;
       }
     }
+    // gridRow sync: for top-level claiming frames (lineCount > 0), gridRow is
+    // a CACHE of "what doc line does docOffset land on". moveFrame() updates
+    // gridRow blindly by dRow; unifiedDocSync may clamp the doc-side
+    // position. The doc is the single source of truth — re-derive gridRow
+    // here so the serializer (which reads gridRow) never sees drift.
+    // Child frames (lineCount === 0) keep their parent-relative gridRow.
+    const docLen = tr.newDoc.length;
+    const docLines = tr.newDoc.lines;
+    result = result.map(f => {
+      if (f.lineCount === 0) return f;
+      if (f.docOffset < 0 || f.docOffset > docLen) return f;
+      const lineNum = tr.newDoc.lineAt(f.docOffset).number - 1; // 0-indexed
+      if (lineNum === f.gridRow) return f;
+      // Clamp lineCount so gridRow + lineCount stays within doc.
+      const maxLineCount = Math.max(1, docLines - lineNum);
+      const lineCount = Math.min(f.lineCount, maxLineCount);
+      return { ...f, gridRow: lineNum, lineCount };
+    });
     return result;
   },
 });
@@ -298,9 +354,16 @@ export function createEditorState(init: EditorStateInit): EditorState {
   // snapshot the frames array before the transaction and emit a
   // restoreFramesEffect that replays it on undo.
   const frameInversion = invertedEffects.of((tr) => {
+    // Include restoreFramesEffect so that undo-of-undo (= redo) replays the
+    // correct frames: when the undo transaction carries restoreFramesEffect,
+    // we snapshot the pre-undo (= post-forward) frames and store them as the
+    // "redo effects". This is especially important for drag (Task 12) because
+    // the redo transaction has no original effects — only doc changes.
     const hasFrameEffect = tr.effects.some(
       (e) =>
         e.is(moveFrameEffect) ||
+        e.is(relocateFrameEffect) ||
+        e.is(restoreFramesEffect) ||
         e.is(resizeFrameEffect) ||
         e.is(addFrameEffect) ||
         e.is(deleteFrameEffect) ||
@@ -313,9 +376,223 @@ export function createEditorState(init: EditorStateInit): EditorState {
     return [restoreFramesEffect.of(tr.startState.field(framesField))];
   });
 
+  // changeFilter: reject user-initiated edits that touch any frame-claimed
+  // line range. Programmatic transactions (no userEvent) are bypassed so the
+  // mutation transactionFilter (Tasks 10-13) can splice claimed lines on
+  // move/resize/delete. Note: when a transactionFilter returns an array of
+  // specs, CM merges them via resolveTransaction(state, filtered, false) —
+  // the `false` skips re-applying changeFilter, so this is consistent.
+  const claimFilter = EditorState.changeFilter.of((tr) => {
+    if (!tr.isUserEvent("input") && !tr.isUserEvent("delete")) return true;
+    const frames = tr.startState.field(framesField);
+    if (frames.length === 0) return true;
+    const claimed: Array<{ from: number; to: number }> = [];
+    const docLen = tr.startState.doc.length;
+    for (const f of frames) {
+      if (f.lineCount === 0) continue;
+      // Defensive: a frame's docOffset is only meaningful in the unified-doc
+      // factory. Other factories (the legacy prose-only path) leave docOffset
+      // pointing into the longer source text; skip those rather than crash.
+      if (f.docOffset < 0 || f.docOffset > docLen) continue;
+      const startLine = tr.startState.doc.lineAt(f.docOffset);
+      const endLineNum = Math.min(
+        startLine.number + f.lineCount - 1,
+        tr.startState.doc.lines,
+      );
+      const endLine = tr.startState.doc.line(endLineNum);
+      claimed.push({ from: startLine.from, to: endLine.to });
+    }
+    let intersects = false;
+    tr.changes.iterChangedRanges((fromA, toA) => {
+      for (const r of claimed) {
+        // Pure insertion (fromA === toA) AT a claimed-range boundary is
+        // BEFORE the claim (associativity=1 will push the frame forward).
+        // Allow these so "Enter at end of prose line above wireframe" works.
+        if (fromA === toA && (fromA === r.from || fromA === r.to + 1)) continue;
+        if (fromA <= r.to && toA >= r.from) {
+          intersects = true;
+          break;
+        }
+      }
+    });
+    return !intersects;
+  });
+
+  // unifiedDocSync: intercept frame mutation effects and add doc changes
+  // that keep the CM doc in sync with the frame model. Empty-string lines
+  // (per Task 3 audit correction) are inserted/removed as the frame grows
+  // or shrinks. When this filter returns an array of specs, CM merges them
+  // via resolveTransaction(state, filtered, false), so changeFilter does
+  // not re-fire on the merged transaction (programmatic edits go through).
+  const unifiedDocSync = EditorState.transactionFilter.of((tr) => {
+    for (const e of tr.effects) {
+      if (e.is(moveFrameEffect) && e.value.dRow !== 0) {
+        const frames = tr.startState.field(framesField);
+        const frame = findFrameInList(frames, e.value.id);
+        if (!frame || frame.lineCount === 0) continue;
+
+        const doc = tr.startState.doc;
+        const startLine = doc.lineAt(frame.docOffset);
+        const endLineNum = startLine.number + frame.lineCount - 1;
+        if (endLineNum > doc.lines) continue; // claim is malformed; skip
+        const endLine = doc.line(endLineNum);
+
+        // Vertical drag = swap newlines at the frame's boundaries.
+        // Drag down by 1 = delete \n above frame, insert \n below.
+        // Drag up by 1 = inverse. Net char count is 0; the frame's claimed
+        // empty lines stay empty; surrounding prose is untouched.
+        //
+        // For dRow=N, we rotate N newlines across the boundary.
+
+        const dRow = e.value.dRow;
+        const changes: Array<{ from: number; to: number; insert?: string }> = [];
+
+        // Clamp dRow by counting consecutive EMPTY lines around the frame.
+        // Drag-down can absorb up to N empty lines below the frame.
+        // Drag-up can absorb up to N empty lines above the frame.
+        let maxDown = 0;
+        for (let n = endLineNum + 1; n <= doc.lines; n++) {
+          const ln = doc.line(n);
+          if (ln.length === 0) maxDown++;
+          else break;
+        }
+        let maxUp = 0;
+        for (let n = startLine.number - 1; n >= 1; n--) {
+          const ln = doc.line(n);
+          if (ln.length === 0) maxUp++;
+          else break;
+        }
+        const effectiveDRow = dRow > 0
+          ? Math.min(dRow, maxDown)
+          : Math.max(dRow, -maxUp);
+        if (effectiveDRow === 0) continue; // no room to move
+
+        if (effectiveDRow > 0) {
+          // Drag down: for each step, take the newline AFTER the frame and
+          // move it to BEFORE the frame. Equivalently: delete one newline at
+          // endLine.to + (already-moved offset), insert one newline at
+          // startLine.from + (already-moved offset).
+          //
+          // For dRow steps, we delete `effectiveDRow` chars starting at
+          // endLine.to (those are the newlines following the frame, each
+          // belonging to a line below) and insert `effectiveDRow` chars
+          // starting at startLine.from.
+          // But pulling N chars from "after frame" pulls them from positions
+          // endLine.to .. endLine.to + effectiveDRow. The doc must have at
+          // least effectiveDRow characters there (i.e. effectiveDRow lines
+          // below). maxStartLine clamp guarantees this.
+          //
+          // Net effect: frame moves down by effectiveDRow rows, prose
+          // around it stays in its absolute positions.
+          const deleteFrom = endLine.to;
+          const deleteTo = endLine.to + effectiveDRow;
+          if (deleteTo > doc.length) {
+            // Defensive: clamp didn't fully prevent overflow; skip.
+            continue;
+          }
+          // The chars we're moving are newlines (since we're moving past
+          // empty prose lines). Insert the same number of newlines above.
+          const movedChars = doc.sliceString(deleteFrom, deleteTo);
+          changes.push({ from: deleteFrom, to: deleteTo });
+          changes.push({ from: startLine.from, to: startLine.from, insert: movedChars });
+        } else {
+          // Drag up by |effectiveDRow|. Mirror: take newlines from BEFORE the
+          // frame and move them AFTER.
+          const n = -effectiveDRow;
+          const deleteFrom2 = startLine.from - n;
+          const deleteTo2 = startLine.from;
+          if (deleteFrom2 < 0) continue;
+          const movedChars = doc.sliceString(deleteFrom2, deleteTo2);
+          // Delete the n newlines above the frame.
+          changes.push({ from: deleteFrom2, to: deleteTo2 });
+          // Insert them after the frame (at original endLine.to).
+          changes.push({ from: endLine.to, to: endLine.to, insert: movedChars });
+        }
+
+        // newDocOffset for drag-down: frame's new startLine.from is the
+        // original startLine.from + 0 (chars inserted at startLine.from
+        // shift it forward by `effectiveDRow`, so docOffset += effectiveDRow).
+        // For drag-up: docOffset -= n, since we deleted n chars before it.
+        const newDocOffset = effectiveDRow > 0
+          ? startLine.from + effectiveDRow
+          : startLine.from - (-effectiveDRow);
+        // sliceString call signature note: changes already accumulated above
+        // reference ORIGINAL doc positions; we send them as a single changes
+        // array (CM merges them, applying both relative to the original doc).
+        return [
+          {
+            effects: [...tr.effects, relocateFrameEffect.of({ id: frame.id, newDocOffset })],
+            changes,
+          },
+        ];
+      }
+      if (e.is(resizeFrameEffect)) {
+        const frames = tr.startState.field(framesField);
+        const frame = findFrameInList(frames, e.value.id);
+        if (!frame || frame.lineCount === 0) continue;
+
+        const newGridH = Math.max(2, e.value.gridH);
+        const delta = newGridH - frame.lineCount;
+        if (delta === 0) continue;
+
+        const startLine = tr.startState.doc.lineAt(frame.docOffset);
+        const endLineNum = startLine.number + frame.lineCount - 1;
+        const endLine = tr.startState.doc.line(endLineNum);
+
+        if (delta > 0) {
+          // Insert `delta` empty lines AFTER the current claimed range.
+          // Each new line is just "\n" (empty string content).
+          const insert = "\n".repeat(delta);
+          return [tr, { changes: { from: endLine.to, insert }, sequential: true }];
+        } else {
+          // Remove `-delta` lines from the end of the claimed range.
+          // endLineNum + delta + 1 is the first line to keep at the bottom.
+          // Delete from end of (endLineNum + delta) through end of endLine.
+          const keepLastNum = endLineNum + delta; // last claimed line we keep
+          const keepLast = tr.startState.doc.line(keepLastNum);
+          return [tr, { changes: { from: keepLast.to, to: endLine.to }, sequential: true }];
+        }
+      }
+      if (e.is(deleteFrameEffect)) {
+        const frames = tr.startState.field(framesField);
+        const frame = findFrameInList(frames, e.value.id);
+        // Skip child frames (lineCount===0) — they don't claim doc lines.
+        if (!frame || frame.lineCount === 0) continue;
+
+        const startLine = tr.startState.doc.lineAt(frame.docOffset);
+        const endLineNum = startLine.number + frame.lineCount - 1;
+        const endLine = tr.startState.doc.line(endLineNum);
+        const docLength = tr.startState.doc.length;
+
+        // Delete exactly ONE newline (the boundary separator), not both.
+        // Frame at file start: trailing newline is the only separator → from=0, to=endLine.to + 1
+        // Frame elsewhere: leading newline is the separator → from=startLine.from - 1, to=endLine.to
+        const from = startLine.from > 0 ? startLine.from - 1 : 0;
+        const to = startLine.from > 0 ? endLine.to : Math.min(endLine.to + 1, docLength);
+        return [tr, { changes: { from, to }, sequential: true }];
+      }
+      if (e.is(addFrameEffect)) {
+        const newFrame = e.value;
+        // Child frames (lineCount===0) don't claim doc lines — skip.
+        if (newFrame.lineCount === 0) continue;
+
+        const doc = tr.startState.doc;
+        const offset = Math.max(0, Math.min(newFrame.docOffset, doc.length));
+        // Insert `lineCount` newlines at `offset`. Each "\n" creates one
+        // new empty line. The inserted chars become the claimed blank lines.
+        // Empty content (not " ") satisfies preparedCache null fast-path.
+        const insert = "\n".repeat(newFrame.lineCount);
+        return [tr, { changes: { from: offset, insert }, sequential: true }];
+      }
+    }
+    return tr;
+  });
+
   const extensions: Extension[] = [
     history(),
     frameInversion,
+    claimFilter,
+    unifiedDocSync,
     framesField.init(() => frames),
     selectedIdField,
     textEditField,
@@ -337,12 +614,17 @@ export function createEditorState(init: EditorStateInit): EditorState {
 }
 
 // Convenience factory — runs scanToFrames internally.
+// Legacy path: builds a CM doc with prose only (wireframe lines stripped).
+// Frame.docOffset values from scanToFrames refer to the FULL source text,
+// not this shrunken prose doc — clear them so the unified-doc claimFilter
+// (which sees lineCount=0) treats these frames as non-claiming.
 export function createEditorStateFromText(
   text: string,
   charWidth: number,
   charHeight: number,
 ): EditorState {
   const { frames, proseSegments } = scanToFrames(text, charWidth, charHeight);
+  for (const f of frames) { f.docOffset = 0; f.lineCount = 0; }
   const byRow = new Map<number, string>();
   for (const seg of proseSegments) {
     const existing = byRow.get(seg.row) ?? "";
@@ -364,6 +646,55 @@ export function createEditorStateFromText(
     proseSegmentMap,
     originalProseSegments: proseSegments,
   });
+}
+
+/**
+ * Unified document factory — CM doc holds the FULL .md text with claimed
+ * (wireframe) lines replaced by empty strings. Frames track which lines they
+ * own via docOffset (CM character offset of first claimed line) + lineCount.
+ *
+ * Empty strings (not " ") are used so preparedCache.ts maps them to the
+ * null fast-path and reflowLayout skips them as obstacle-bands instead of
+ * generating spurious PositionedLines.
+ */
+export function createEditorStateUnified(
+  text: string,
+  charWidth: number,
+  charHeight: number,
+): EditorState {
+  const { frames } = scanToFrames(text, charWidth, charHeight);
+
+  // Build set of source lines claimed by any top-level frame.
+  const claimedLines = new Set<number>();
+  for (const f of frames) {
+    for (let i = f.gridRow; i < f.gridRow + f.gridH; i++) {
+      claimedLines.add(i);
+    }
+  }
+
+  // Build unified doc: prose lines preserved, claimed lines → empty string.
+  const sourceLines = text.split("\n");
+  const unifiedLines = sourceLines.map((line, i) =>
+    claimedLines.has(i) ? "" : line,
+  );
+  const unifiedText = unifiedLines.join("\n");
+
+  // Recompute docOffset for each frame in the unified doc (line lengths shrank).
+  const lineOffsets: number[] = [];
+  {
+    let offset = 0;
+    for (let i = 0; i < unifiedLines.length; i++) {
+      lineOffsets.push(offset);
+      offset += unifiedLines[i].length + 1;
+    }
+  }
+  for (const f of frames) {
+    if (f.gridRow >= 0 && f.gridRow < lineOffsets.length) {
+      f.docOffset = lineOffsets[f.gridRow];
+    }
+  }
+
+  return createEditorState({ prose: unifiedText, frames });
 }
 
 // ── Accessors ──────────────────────────────────────────────────────────────
@@ -506,22 +837,54 @@ export function proseMoveRight(state: EditorState): EditorState {
   return state;
 }
 
+/** Find the claimed-line range covering `lineNum` (0-indexed), or null. */
+function getClaimedLineRange(
+  state: EditorState,
+  lineNum: number,
+): { start: number; end: number } | null {
+  const frames = state.field(framesField);
+  for (const f of frames) {
+    if (f.lineCount === 0) continue;
+    if (f.docOffset < 0 || f.docOffset > state.doc.length) continue;
+    const startLine = state.doc.lineAt(f.docOffset).number - 1; // 0-indexed
+    const endLine = startLine + f.lineCount - 1;
+    if (lineNum >= startLine && lineNum <= endLine) {
+      return { start: startLine, end: endLine };
+    }
+  }
+  return null;
+}
+
 export function proseMoveUp(state: EditorState): EditorState {
   const cursor = getCursor(state);
   if (!cursor) return state;
   if (cursor.row === 0) return state;
-  const prevLine = state.doc.line(cursor.row); // line above (1-indexed = cursor.row)
+  let targetRow = cursor.row - 1;
+  let claimed = getClaimedLineRange(state, targetRow);
+  while (claimed) {
+    targetRow = claimed.start - 1;
+    if (targetRow < 0) return state;
+    claimed = getClaimedLineRange(state, targetRow);
+  }
+  const prevLine = state.doc.line(targetRow + 1); // 1-indexed
   const prevGraphemes = [...segmenter.segment(prevLine.text)].length;
-  return moveCursorTo(state, { row: cursor.row - 1, col: Math.min(cursor.col, prevGraphemes) });
+  return moveCursorTo(state, { row: targetRow, col: Math.min(cursor.col, prevGraphemes) });
 }
 
 export function proseMoveDown(state: EditorState): EditorState {
   const cursor = getCursor(state);
   if (!cursor) return state;
   if (cursor.row >= state.doc.lines - 1) return state;
-  const nextLine = state.doc.line(cursor.row + 2); // line below (1-indexed = cursor.row + 2)
+  let targetRow = cursor.row + 1;
+  let claimed = getClaimedLineRange(state, targetRow);
+  while (claimed) {
+    targetRow = claimed.end + 1;
+    if (targetRow >= state.doc.lines) return state;
+    claimed = getClaimedLineRange(state, targetRow);
+  }
+  const nextLine = state.doc.line(targetRow + 1); // 1-indexed
   const nextGraphemes = [...segmenter.segment(nextLine.text)].length;
-  return moveCursorTo(state, { row: cursor.row + 1, col: Math.min(cursor.col, nextGraphemes) });
+  return moveCursorTo(state, { row: targetRow, col: Math.min(cursor.col, nextGraphemes) });
 }
 
 // ── Frame operations ───────────────────────────────────────────────────────
