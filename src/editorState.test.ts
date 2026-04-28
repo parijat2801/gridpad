@@ -2798,3 +2798,53 @@ describe("createEditorStateUnified eager bands", () => {
     expect(frames[0].children).toHaveLength(2);
   });
 });
+
+describe("eager-band data correctness regressions", () => {
+  const CW = 8, CH = 18;
+  const rectStyle = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("promoting the sole child of a band releases the band's claim lines", () => {
+    // BUG: empty-band filter prunes the band from state but unifiedDocSync
+    // never sees deleteFrameEffect → orphan claim lines leak forever.
+    const state0 = createEditorState({ prose: "\n\n\n\n\n\n\n\n\n\n", frames: [], proseSegmentMap: [] });
+    const docLenStart = getDoc(state0).length;
+    const rectA = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state1 = applyAddTopLevelFrame(state0, rectA, 0, 0);
+    expect(getDoc(state1).length).toBeGreaterThan(docLenStart); // band claimed 3 lines
+    const rectAId = getFrames(state1)[0].children[0].id;
+
+    // Promote rectA to row 7 (no existing band there). The OLD band at row 0
+    // becomes empty; its claim lines must be released. The NEW band at row 7
+    // claims its own 3 lines. Net: total doc length unchanged from start.
+    const state2 = applyReparentFrame(state1, rectAId, null, 7, 0, CW, CH);
+    expect(getDoc(state2).length).toBe(docLenStart);
+  });
+
+  it("resizing a rect-inside-band taller grows the band's claim", () => {
+    // BUG: resize on the child only updates child.gridH; band's gridH and
+    // claim are untouched. Rect bleeds out of the band visually and into
+    // surrounding prose territory.
+    const state0 = createEditorState({ prose: "\n\n\n\n\n\n\n\n\n", frames: [], proseSegmentMap: [] });
+    const rectA = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state1 = applyAddTopLevelFrame(state0, rectA, 0, 0);
+    const docLenAfterAdd = getDoc(state1).length;
+    const band = getFrames(state1)[0];
+    expect(band.isBand).toBe(true);
+    expect(band.gridH).toBe(3);
+    const rectAId = band.children[0].id;
+
+    // Resize rectA from gridH=3 to gridH=6 (taller by 3). The band must grow
+    // to gridH=6 too (rect can't bleed out), and unifiedDocSync must insert
+    // 3 new claim lines.
+    const state2 = state1.update({
+      effects: resizeFrameEffect.of({ id: rectAId, gridW: 5, gridH: 6, charWidth: CW, charHeight: CH }),
+    }).state;
+
+    const bandAfter = getFrames(state2)[0];
+    // Band must have grown to contain the resized child.
+    expect(bandAfter.gridH).toBeGreaterThanOrEqual(6);
+    expect(bandAfter.lineCount).toBeGreaterThanOrEqual(6);
+    // Doc grew by exactly the band's growth (3 lines).
+    expect(getDoc(state2).length).toBe(docLenAfterAdd + 3);
+  });
+});

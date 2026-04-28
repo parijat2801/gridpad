@@ -240,6 +240,37 @@ async function clickFrame(page: Page, frameIndex: number) {
   }
 }
 
+/** Find a frame by ID anywhere in the full frame tree (recursive search).
+ * Under eager bands, getFrames() only drills one level (band → child). Frames
+ * nested deeper (band → container → rect) require a tree walk. */
+async function findFrameInTree(page: Page, id: string): Promise<{ absX: number; absY: number; w: number; h: number; id: string } | null> {
+  const tree = await getFrameTree(page);
+  function search(nodes: any[]): any {
+    for (const n of nodes) {
+      if (n.id === id) return n;
+      if (n.children?.length) {
+        const found = search(n.children);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  return search(tree);
+}
+
+/** Resolve frame position for dragging/resizing.
+ * getFrames() returns band children (one level deep). Under eager bands, a selected
+ * frame may live deeper (band → container → rect). Falls back to full-tree lookup. */
+async function resolveFramePos(page: Page, selId: string): Promise<{ x: number; y: number; w: number; h: number }> {
+  const frames = await getFrames(page);
+  const f = frames.find(fr => fr.id === selId);
+  if (f) return { x: f.x, y: f.y, w: f.w, h: f.h };
+  // Not found in flat list — look in full tree (handles band→container→rect nesting)
+  const treeNode = await findFrameInTree(page, selId);
+  if (treeNode) return { x: treeNode.absX, y: treeNode.absY, w: treeNode.w, h: treeNode.h };
+  throw new Error(`resolveFramePos: frame ${selId} not found in getFrames or getFrameTree`);
+}
+
 /** Drag the currently-selected frame by (dx, dy) pixels.
  * Verifies a frame is selected before dragging and that it actually moved.
  * Throws if no frame is selected or the frame didn't move. */
@@ -248,9 +279,10 @@ async function dragSelected(page: Page, dx: number, dy: number) {
   const box = await canvas.boundingBox();
   const selId = await getSelectedId(page);
   if (!selId) throw new Error(`dragSelected: no frame selected — call clickFrame first`);
-  const frames = await getFrames(page);
-  const f = frames.find(fr => fr.id === selId);
-  if (!f) throw new Error(`dragSelected: selected frame ${selId} not found in getFrames`);
+  // Under eager bands, getFrames() may not contain the selected frame directly
+  // (e.g. band → container → rect: selected is the rect but getFrames returns the container).
+  // resolveFramePos falls back to the full tree if needed.
+  const f = await resolveFramePos(page, selId);
   const beforeX = f.x, beforeY = f.y;
   // Account for scroll — frame.y is content coords, viewport needs scroll subtracted
   const scrollTop = await page.evaluate(() => document.querySelector("canvas")?.parentElement?.scrollTop ?? 0);
@@ -266,15 +298,15 @@ async function dragSelected(page: Page, dx: number, dy: number) {
   await page.waitForTimeout(300);
   // Verify frame moved (skip check for sub-pixel drags or boundary clamps)
   if (Math.abs(dx) >= 5 || Math.abs(dy) >= 5) {
-    const framesAfter = await getFrames(page);
-    const fAfter = framesAfter.find(fr => fr.id === selId);
-    if (fAfter) {
-      const movedX = Math.abs(fAfter.x - beforeX);
-      const movedY = Math.abs(fAfter.y - beforeY);
+    // Use tree lookup for post-drag verification (same reason as above)
+    const fAfterTree = await findFrameInTree(page, selId);
+    if (fAfterTree) {
+      const movedX = Math.abs(fAfterTree.absX - beforeX);
+      const movedY = Math.abs(fAfterTree.absY - beforeY);
       // Allow no-move if drag would push past boundary (e.g., negative clamp)
       const wouldClamp = (beforeX + dx < 0) || (beforeY + dy < 0);
       if (movedX < 1 && movedY < 1 && !wouldClamp) {
-        throw new Error(`dragSelected: frame ${selId} didn't move (before=${Math.round(beforeX)},${Math.round(beforeY)} after=${Math.round(fAfter.x)},${Math.round(fAfter.y)} dx=${dx} dy=${dy})`);
+        throw new Error(`dragSelected: frame ${selId} didn't move (before=${Math.round(beforeX)},${Math.round(beforeY)} after=${Math.round(fAfterTree.absX)},${Math.round(fAfterTree.absY)} dx=${dx} dy=${dy})`);
       }
     }
   }
@@ -492,8 +524,9 @@ async function dblclickFrame(page: Page, frameIndex: number) {
 async function resizeSelected(page: Page, dw: number, dh: number) {
   const selId = await getSelectedId(page);
   if (!selId) throw new Error(`resizeSelected: no frame selected — call clickFrame first`);
-  const frames = await getFrames(page);
-  const f = frames.find(fr => fr.id === selId) ?? frames[0];
+  // Under eager bands, the selected frame may be nested inside a container;
+  // use resolveFramePos to find its absolute position regardless of nesting depth.
+  const f = await resolveFramePos(page, selId);
   const beforeW = f.w, beforeH = f.h;
   // Bottom-right corner in viewport coords (scroll-aware)
   const { box: rbox, scrollTop: rscroll } = await getScrollState(page);
@@ -507,14 +540,13 @@ async function resizeSelected(page: Page, dw: number, dh: number) {
   }
   await page.mouse.up();
   await page.waitForTimeout(300);
-  // Verify dimensions changed
-  const framesAfter = await getFrames(page);
-  const fAfter = framesAfter.find(fr => fr.id === selId);
-  if (fAfter) {
-    const dWidth = Math.abs(fAfter.w - beforeW);
-    const dHeight = Math.abs(fAfter.h - beforeH);
+  // Verify dimensions changed — use tree lookup for same reason as resolveFramePos
+  const fAfterTree = await findFrameInTree(page, selId);
+  if (fAfterTree) {
+    const dWidth = Math.abs(fAfterTree.w - beforeW);
+    const dHeight = Math.abs(fAfterTree.h - beforeH);
     if (dWidth < 1 && dHeight < 1) {
-      throw new Error(`resizeSelected: frame ${selId} didn't resize (before=${Math.round(beforeW)}x${Math.round(beforeH)} after=${Math.round(fAfter.w)}x${Math.round(fAfter.h)} dw=${dw} dh=${dh})`);
+      throw new Error(`resizeSelected: frame ${selId} didn't resize (before=${Math.round(beforeW)}x${Math.round(beforeH)} after=${Math.round(fAfterTree.w)}x${Math.round(fAfterTree.h)} dw=${dw} dh=${dh})`);
     }
   }
 }
@@ -1214,13 +1246,15 @@ test.describe("harness", () => {
     const textNode = flat.find(f => f.contentType === "text");
     writeArtifact("text-label-edit", "tree.json", JSON.stringify(flat, null, 2));
 
-    if (!textNode) {
-      // If no text child, the label might be in the parent — try clicking center
-      await clickFrame(page, 0);
-    } else {
-      // Drill down: click parent first, then child
-      await clickChild(page, 0);
-    }
+    // Under eager bands the tree is band → rect → text-child. To enter text-edit
+    // mode, we need a dblclick that hits the text child while the rect is already
+    // selected. Do NOT use clickChild here — it may inadvertently trigger text-edit
+    // during its second click, causing the explicit dblclick below to exit it.
+    // Strategy: single-click the rect to select it, wait >300ms so the subsequent
+    // dblclick is NOT counted as a triple-click by the app, then dblclick the
+    // text child to activate text-edit.
+    await clickFrame(page, 0);   // selects the rect (band → rect)
+    await page.waitForTimeout(400); // > 300ms so dblclick below is a fresh double-click
 
     // Double-click to enter text edit mode — use scroll-aware coordinates
     const canvas = page.locator("canvas");
@@ -1281,16 +1315,20 @@ test.describe("harness", () => {
   // STRUCTURAL TESTS — verify the frame tree is correct
   // ═══════════════════════════════════════════════════════
 
-  test("structure: simple box produces 1 rect frame, 0 containers", async ({ page }) => {
+  test("structure: simple box produces 1 band wrapping 1 rect", async ({ page }) => {
     await load(page, SIMPLE_BOX);
     const tree = await getFrameTree(page);
     const flat = flattenTree(tree);
     writeArtifact("struct-simple-box", "tree.json", JSON.stringify(flat, null, 2));
 
-    // 1 top-level rect frame (no container for a single rect)
+    // Under eager bands, every top-level claiming frame is wrapped in a
+    // synthetic full-width band container. The user-visible rect lives at
+    // tree[0].children[0].
     expect(tree).toHaveLength(1);
-    expect(tree[0].contentType).toBe("rect");
-    expect(tree[0].childCount).toBe(0);
+    expect(tree[0].contentType).toBe("container");
+    expect(tree[0].childCount).toBe(1);
+    expect(tree[0].children[0].contentType).toBe("rect");
+    expect(tree[0].children[0].childCount).toBe(0);
   });
 
   test("structure: side-by-side boxes produce 1 container with 2 rect children", async ({ page }) => {
@@ -1568,17 +1606,19 @@ test.describe("ux stress", () => {
     await load(page, TWO_SEPARATE);
     writeArtifact("ux-delete-all", "input.md", TWO_SEPARATE);
 
-    // Delete first wireframe
-    await clickFrame(page, 0);
-    await page.keyboard.press("Delete");
-    await page.waitForTimeout(300);
-
-    // Delete second wireframe (now index 0)
-    const frames2 = await getFrames(page);
-    if (frames2.length > 0) {
-      await clickFrame(page, 0);
+    // Delete wireframes one by one. Under eager bands, getFrames() returns the
+    // user-visible child rect of each band. We programmatically select each
+    // frame by ID (more reliable than click-based selection after a delete)
+    // then press Delete (which cascade-deletes the wrapping band via
+    // applyDeleteFrame's sole-child detection).
+    let frames = await getFrames(page);
+    while (frames.length > 0) {
+      const frameId = frames[0].id;
+      await page.evaluate((id) => (window as any).__gridpad.selectFrame(id), frameId);
+      await page.waitForTimeout(100);
       await page.keyboard.press("Delete");
       await page.waitForTimeout(300);
+      frames = await getFrames(page);
     }
 
     await screenshot(page, "ux-delete-all", "1-all-deleted");
@@ -3495,14 +3535,16 @@ End`;
     const childId = await getSelectedId(page);
     expect(childId).toBeTruthy();
 
+    // Under eager bands the tree is: band-A (depth 0) → outer-A (depth 1) → inner (depth 2).
+    // Use childId (the actually-selected frame) to find the correct drag origin rather
+    // than flat.find(depth > 0) which would pick outer-A (depth 1) instead of inner.
     const tree = await getFrameTree(page);
-    const flat = flattenTree(tree);
-    const child = flat.find(f => f.depth > 0);
-    expect(child).toBeTruthy();
+    const childNode = await findFrameInTree(page, childId!);
+    expect(childNode).toBeTruthy();
     const canvas = page.locator("canvas");
     const cbox = await canvas.boundingBox();
-    const cx = cbox!.x + child!.absX + child!.w / 2;
-    const cy = cbox!.y + child!.absY + child!.h / 2;
+    const cx = cbox!.x + childNode!.absX + childNode!.w / 2;
+    const cy = cbox!.y + childNode!.absY + childNode!.h / 2;
     // Drop near the top-left of B so Inner (18 cols wide) fits comfortably
     // inside B (25 cols wide) without extending past B's right wall.
     const dropX = cbox!.x + b.x + 30;
@@ -3530,11 +3572,16 @@ End`;
     // — the assertion is about the relative shift of the Inner rect, not
     // absolute child counts.)
     const flatAfter = flattenTree(treeAfter);
-    const innerNodes = flatAfter.filter(f => f.depth > 0 && f.contentType === "rect");
-    // Exactly one Inner-style child rect somewhere in the tree.
+    // Under eager bands: band(0) → outer-rect(1) → inner-rect(2).
+    // Use depth > 1 to find truly-nested rects (the inner rect), not outer-rects
+    // (direct children of bands at depth 1).
+    const innerNodes = flatAfter.filter(f => f.depth > 1 && f.contentType === "rect");
+    // Exactly one Inner-style nested rect somewhere in the tree.
     expect(innerNodes.length).toBe(1);
-    // B should be the parent of Inner — find by descending.
-    const bHasInner = treeAfter[1].children.some((c: any) => c.contentType === "rect");
+    // B should contain Inner — band-B.children[0] is outer-B (a rect), and
+    // outer-B.children should include the inner rect.
+    const outerB = treeAfter[1].children[0]; // outer-B under band-B
+    const bHasInner = outerB && outerB.children.some((c: any) => c.contentType === "rect");
     expect(bHasInner).toBe(true);
   });
 
@@ -3843,25 +3890,80 @@ Bottom prose`;
   // existing frame, then drag the new rect. The existing frame must stay
   // put. Tests that freshly-drawn top-level frames participate in the
   // drag-independence invariant just like scanner-loaded frames.
-  test("draw new rect next to existing frame, drag new rect, existing stays", async ({ page }) => {
+  // Reproduces the user-reported bug: drawing a new rect AT THE SAME ROW
+  // as an existing frame (but in a different column) currently pushes the
+  // existing frame down because applyAddTopLevelFrame inserts lineCount
+  // newlines at the row's offset, and mapPos shifts the existing frame's
+  // docOffset forward.
+  test("draw new rect to the RIGHT of existing frame: existing must not move down", async ({ page }) => {
     await load(page, SIMPLE_BOX);
-    writeArtifact("drag-indep-new-rect", "input.md", SIMPLE_BOX);
+    writeArtifact("drag-indep-side-by-side-draw", "input.md", SIMPLE_BOX);
 
     const before = await getFrames(page);
     expect(before.length).toBe(1);
     const existing = before[0];
     const existingYBefore = existing.y;
+    const existingIdBefore = existing.id;
 
-    // Draw a new rect BELOW the existing one (in empty space, not inside).
+    // Draw a new rect to the RIGHT of the existing frame, on the same row band.
     await page.keyboard.press("r");
     await page.waitForTimeout(200);
     const canvas = page.locator("canvas");
     const cbox = await canvas.boundingBox();
-    const sx = cbox!.x + 5;
-    const sy = cbox!.y + existing.y + existing.h + 40;
+    const sx = cbox!.x + existing.x + existing.w + 50; // well to the right
+    const sy = cbox!.y + existing.y + 5; // same row band as existing
     await page.mouse.move(sx, sy);
     await page.mouse.down();
-    await page.mouse.move(sx + 60, sy + 40, { steps: 8 });
+    await page.mouse.move(sx + 80, sy + 30, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    await screenshot(page, "drag-indep-side-by-side-draw", "2-after-draw");
+
+    const afterDraw = await getFrames(page);
+    const existingAfter = afterDraw.find(f => f.id === existingIdBefore);
+    expect(existingAfter).toBeTruthy();
+    // The existing frame must NOT have moved as a result of drawing the new
+    // rect to its right. Same-row drawing at a different column should not
+    // disturb the existing frame's vertical position.
+    expect(Math.abs(existingAfter!.y - existingYBefore)).toBeLessThanOrEqual(1);
+  });
+
+  test("draw new rect next to existing frame, drag new rect down, existing stays", async ({ page }) => {
+    // Use a fixture with 4 blank lines between A and B so both frames have
+    // rotation budget. SIMPLE_BOX only has 1 blank below, so drag-up by
+    // tiny amounts could pass trivially.
+    const fixture = `Prose above
+
+┌──────────────┐
+│              │
+│              │
+└──────────────┘
+
+
+
+
+Prose below`;
+    await load(page, fixture);
+    writeArtifact("drag-indep-new-rect", "input.md", fixture);
+
+    const before = await getFrames(page);
+    expect(before.length).toBe(1);
+    const existing = before[0];
+    const existingYBefore = existing.y;
+    const existingIdBefore = existing.id;
+
+    // Draw a new rect in the BLANK GAP between existing and "Prose below".
+    // This way the new rect is BELOW existing but with enough blank-line
+    // budget around both for rotation.
+    await page.keyboard.press("r");
+    await page.waitForTimeout(200);
+    const canvas = page.locator("canvas");
+    const cbox = await canvas.boundingBox();
+    const sx = cbox!.x + 200;
+    const sy = cbox!.y + existing.y + existing.h + 20;
+    await page.mouse.move(sx, sy);
+    await page.mouse.down();
+    await page.mouse.move(sx + 80, sy + 30, { steps: 8 });
     await page.mouse.up();
     await page.waitForTimeout(400);
     await screenshot(page, "drag-indep-new-rect", "2-after-draw");
@@ -3869,18 +3971,216 @@ Bottom prose`;
     // Confirm 2 top-level frames now.
     const afterDraw = await getFrames(page);
     expect(afterDraw.length).toBe(2);
-    const newRect = afterDraw.find(f => f.id !== existing.id);
+    const newRect = afterDraw.find(f => f.id !== existingIdBefore);
     expect(newRect).toBeTruthy();
+    const newRectYBefore = newRect!.y;
 
-    // Drag the NEW rect up a bit (toward the existing). Existing must not move.
+    // Variant 1: drag the NEW (lower) rect DOWN. Existing (upper) must stay.
     await clickFrame(page, afterDraw.findIndex(f => f.id === newRect!.id));
-    await dragSelected(page, 0, -10);
+    await dragSelected(page, 0, 18);
     await clickProse(page, 5, 5);
-    await screenshot(page, "drag-indep-new-rect", "3-after-drag");
+    await screenshot(page, "drag-indep-new-rect", "3-after-drag-new-down");
+
+    const afterDragNew = await getFrames(page);
+    const existingAfter1 = afterDragNew.find(f => f.id === existingIdBefore);
+    expect(existingAfter1).toBeTruthy();
+    expect(Math.abs(existingAfter1!.y - existingYBefore)).toBeLessThanOrEqual(1);
+  });
+
+  test("draw new rect next to existing frame, drag EXISTING (upper) down, new rect stays", async ({ page }) => {
+    // Same fixture as above but the test asks the harder question:
+    // dragging the UPPER frame must not drag the LOWER frame.
+    const fixture = `Prose above
+
+┌──────────────┐
+│              │
+│              │
+└──────────────┘
+
+
+
+
+Prose below`;
+    await load(page, fixture);
+    writeArtifact("drag-indep-new-rect-upper", "input.md", fixture);
+
+    const before = await getFrames(page);
+    expect(before.length).toBe(1);
+    const existing = before[0];
+    const existingIdBefore = existing.id;
+
+    // Draw a new rect in the gap below the existing.
+    await page.keyboard.press("r");
+    await page.waitForTimeout(200);
+    const canvas = page.locator("canvas");
+    const cbox = await canvas.boundingBox();
+    const sx = cbox!.x + 200;
+    const sy = cbox!.y + existing.y + existing.h + 20;
+    await page.mouse.move(sx, sy);
+    await page.mouse.down();
+    await page.mouse.move(sx + 80, sy + 30, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    await screenshot(page, "drag-indep-new-rect-upper", "2-after-draw");
+
+    const afterDraw = await getFrames(page);
+    expect(afterDraw.length).toBe(2);
+    const newRect = afterDraw.find(f => f.id !== existingIdBefore);
+    expect(newRect).toBeTruthy();
+    const newRectYBefore = newRect!.y;
+
+    // Drag EXISTING (upper) frame DOWN. Critical case: rotation inserts
+    // a newline at existing's startLine (above existing) and deletes one
+    // at existing's endLine (between existing and new rect). The deleted
+    // chars are AT positions BEFORE new rect's docOffset, so mapPos sees
+    // the delete and shifts new rect's offset BACK. Insert above existing
+    // is also before new rect, so insert shifts forward. Net: should be
+    // zero. If they don't perfectly cancel, new rect moves.
+    await clickFrame(page, afterDraw.findIndex(f => f.id === existingIdBefore));
+    await dragSelected(page, 0, 18);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "drag-indep-new-rect-upper", "3-after-drag-existing-down");
 
     const final = await getFrames(page);
-    const existingAfter = final.find(f => f.id === existing.id);
-    expect(existingAfter).toBeTruthy();
-    expect(Math.abs(existingAfter!.y - existingYBefore)).toBeLessThanOrEqual(1);
+    const newRectAfter = final.find(f => f.id === newRect!.id);
+    expect(newRectAfter).toBeTruthy();
+    // The new (lower) rect must NOT have moved when the upper one was dragged.
+    expect(Math.abs(newRectAfter!.y - newRectYBefore)).toBeLessThanOrEqual(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// EAGER-BAND INTERACTIVE UX REGRESSIONS
+// Known bugs in the eager-bands implementation where every
+// top-level wireframe is wrapped in a synthetic full-width band.
+// These tests MUST FAIL until the bugs are fixed.
+// ═══════════════════════════════════════════════════════
+
+test.describe("eager-band interactive UX regressions", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(2000);
+    ensureDir(ARTIFACTS);
+  });
+
+  // BUG A: drag handle on rect resizes THAT rect, not a sibling/band.
+  test("resize handle on a rect resizes only that rect", async ({ page }) => {
+    // Load 2 separate boxes (different bands). Click the upper rect, grab
+    // its bottom-right handle, drag to enlarge. Only the upper rect's
+    // dimensions should change; the lower rect must not have moved.
+    const TWO_BOXES_A = "p\n\n┌──┐\n│A │\n└──┘\n\n\n\n┌──┐\n│B │\n└──┘\n\nq";
+    await load(page, TWO_BOXES_A);
+    const before = await getFrames(page);
+    expect(before.length).toBe(2);
+    const upperBefore = before[0];
+    const lowerBefore = before[1];
+    await clickFrame(page, 0); // select upper
+    await resizeSelected(page, 30, 0); // make it 30px wider via the bottom-right handle
+    const after = await getFrames(page);
+    const upperAfter = after.find(f => f.id === upperBefore.id);
+    const lowerAfter = after.find(f => f.id === lowerBefore.id);
+    expect(upperAfter, "upper rect should still exist").toBeTruthy();
+    expect(lowerAfter, "lower rect should still exist (not consumed by drag)").toBeTruthy();
+    // Lower rect must not have moved — that's the bug we're guarding against.
+    expect(Math.abs(lowerAfter!.x - lowerBefore.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(lowerAfter!.y - lowerBefore.y)).toBeLessThanOrEqual(1);
+    // Upper rect must have changed dimensions.
+    expect(Math.abs(upperAfter!.w - upperBefore.w)).toBeGreaterThan(10);
+  });
+
+  // BUG B: a newly-drawn rect stays at its draw position.
+  test("newly-drawn rect is anchored at its draw position", async ({ page }) => {
+    // Start from a doc with one box. Press R. Draw a new rect to the right
+    // of the existing one (different column, may or may not be same band row).
+    // After mouseup, the drawn rect must be at exactly the draw start point.
+    // Subsequent click elsewhere must not move it.
+    const SIMPLE_BOX_B = "Top prose\n\n┌──────┐\n│      │\n│      │\n└──────┘\n\nBottom prose";
+    await load(page, SIMPLE_BOX_B);
+    const beforeFrames = await getFrames(page);
+    expect(beforeFrames.length).toBe(1);
+    const existing = beforeFrames[0];
+
+    // Drag to draw a new rect from (existing.x + existing.w + 20, existing.y)
+    // size 50x50.
+    const canvas = page.locator("canvas");
+    const box = await canvas.boundingBox();
+    const startX = box!.x + existing.x + existing.w + 20;
+    const startY = box!.y + existing.y + 5;
+    await page.keyboard.press("r");
+    await page.waitForTimeout(50);
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX + 50, startY + 30, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+
+    const afterFrames = await getFrames(page);
+    const newRect = afterFrames.find(f => f.id !== existing.id);
+    expect(newRect, "new rect should exist").toBeTruthy();
+    const newRectXBefore = newRect!.x;
+    const newRectYBefore = newRect!.y;
+
+    // Click on a clearly-empty prose region (well below both rects).
+    await page.mouse.click(box!.x + 5, box!.y + existing.y + existing.h + 100);
+    await page.waitForTimeout(150);
+
+    // The drawn rect must STILL be at the same position.
+    const finalFrames = await getFrames(page);
+    const newRectFinal = finalFrames.find(f => f.id === newRect!.id);
+    expect(newRectFinal, "new rect must still exist").toBeTruthy();
+    expect(Math.abs(newRectFinal!.x - newRectXBefore)).toBeLessThanOrEqual(1);
+    expect(Math.abs(newRectFinal!.y - newRectYBefore)).toBeLessThanOrEqual(1);
+  });
+
+  // BUG C: in-band drag clamps within band bounds.
+  test("dragging a rect up inside its band clamps at band top edge", async ({ page }) => {
+    // Load 2 side-by-side rects in same band. Drag the LEFT rect up. It
+    // should clamp at gridRow=0 within the band — must not move above the
+    // band's top edge. Doc length unchanged.
+    const SIDE_BY_SIDE_C = "Above\n\n┌──┐  ┌──┐\n│A │  │B │\n└──┘  └──┘\n\nBelow";
+    await load(page, SIDE_BY_SIDE_C);
+    const before = await getFrames(page);
+    // Side-by-side rects render as 2 children inside one band — getFrames
+    // returns drilled rects, so 2 entries.
+    expect(before.length).toBe(2);
+    const docBefore = await page.evaluate(() => (window as any).__gridpad.getProseDoc());
+
+    await clickFrame(page, 0); // select rect A
+    await dragSelected(page, 0, -200); // try to drag way up (well past band top)
+    const after = await getFrames(page);
+    const aAfter = after.find(f => f.id === before[0].id);
+    expect(aAfter, "rect A still exists").toBeTruthy();
+    // rect A's y must NOT have gone above the band's top (which is at the
+    // same y as before, since the band is anchored). Allow exact-equal or
+    // slightly-below; must not be much above.
+    expect(aAfter!.y).toBeGreaterThanOrEqual(before[0].y - 1);
+    // Doc should be unchanged (no claim-line changes for in-band motion).
+    const docAfter = await page.evaluate(() => (window as any).__gridpad.getProseDoc());
+    expect(docAfter).toBe(docBefore);
+  });
+
+  // BUG D: dragging a band down doesn't disturb a separate band below.
+  test("drag upper band down: lower band's y stays put (rotation invariant)", async ({ page }) => {
+    // 2 bands separated by 3+ blank lines (so groupIntoContainers doesn't
+    // merge them). Drag rect A down by ~1 row. The lower band's y must not
+    // shift (rotation: net-zero doc-length change).
+    const TWO_BANDS_D = "p\n\n┌──┐\n│A │\n└──┘\n\n\n\n\n┌──┐\n│B │\n└──┘\n\nq";
+    await load(page, TWO_BANDS_D);
+    const before = await getFrames(page);
+    expect(before.length).toBe(2);
+    const upperBefore = before[0];
+    const lowerBefore = before[1];
+
+    await clickFrame(page, 0);
+    await dragSelected(page, 0, 18); // 1 row down (rotation budget exists)
+    const after = await getFrames(page);
+    const upperAfter = after.find(f => f.id === upperBefore.id);
+    const lowerAfter = after.find(f => f.id === lowerBefore.id);
+    expect(upperAfter, "upper rect still exists").toBeTruthy();
+    expect(lowerAfter, "lower rect still exists").toBeTruthy();
+    // Upper rect should have moved down ≈ 1 row.
+    expect(upperAfter!.y - upperBefore.y).toBeGreaterThan(5);
+    // CRITICAL: lower rect must NOT have moved.
+    expect(Math.abs(lowerAfter!.y - lowerBefore.y), "lower must stay anchored").toBeLessThanOrEqual(1);
   });
 });
