@@ -228,28 +228,23 @@ const framesField = StateField.define<Frame[]>({
         };
         result = removeAndCapture(result);
         if (!extracted) continue;
+        // Prune any synthetic bands that became empty after the extraction.
+        // A band with 0 children contributes no visible geometry; leaving it
+        // would leave a stale top-level entry that confuses frame counts.
+        result = result.filter(f => !(f.isBand && f.children.length === 0));
         const orig: Frame = extracted;
         const cw = e.value.charWidth;
         const ch = e.value.charHeight;
         if (e.value.newParentId === null) {
-          // Promote to top-level. Caller must supply absolute coords.
+          // Promote to top-level — wrap in a fresh full-width band container.
+          // The band owns the doc claim; the promoted rect becomes its child.
           const aRow = e.value.absoluteGridRow ?? orig.gridRow;
           const aCol = e.value.absoluteGridCol ?? orig.gridCol;
-          // Compute docOffset to match unifiedDocSync's insertion point.
-          // unifiedDocSync inserts gridH newlines at:
-          //   line(min(aRow, oldDoc.lines-1) + 1).from   (in old doc coords)
-          // That same character position in the NEW doc is still the start
-          // of the inserted blanks (insertion was AT that position).
           const oldLines = tr.startState.doc.lines;
           const targetLineOld = Math.min(Math.max(aRow, 0), oldLines - 1) + 1;
           const docOffset = tr.startState.doc.line(targetLineOld).from;
-          // Re-derive aRow from the new doc — clamping in unifiedDocSync may
-          // have shifted where the frame actually lands.
           const lineNum = tr.newDoc.lineAt(docOffset).number - 1;
-          // Use caller-supplied charWidth/charHeight for pixel coords —
-          // dividing orig.w / orig.gridW blows up for line frames whose
-          // gridW or gridH can be 0.
-          const promoted: Frame = {
+          const placedRect: Frame = {
             ...orig,
             gridRow: lineNum,
             gridCol: aCol,
@@ -259,7 +254,15 @@ const framesField = StateField.define<Frame[]>({
             docOffset,
             dirty: true,
           };
-          result = [...result, promoted];
+          // Generous full-width default for hit-test bounds. Band is
+          // invisible (content=null), so width does not affect serialization.
+          let docWidthCols = 120;
+          for (let i = 1; i <= tr.newDoc.lines; i++) {
+            const ln = tr.newDoc.line(i);
+            if (ln.length > docWidthCols) docWidthCols = ln.length;
+          }
+          const band = wrapAsBand([placedRect], cw, ch, docWidthCols);
+          result = [...result, band];
         } else {
           // Demote to child of newParentId. Find parent in current result.
           let parentRef: Frame | null = null;
@@ -1222,6 +1225,48 @@ export function applyReparentFrame(
   charWidth: number,
   charHeight: number,
 ): EditorState {
+  // Eager-band promote: if newParentId === null AND a band already claims
+  // absoluteGridRow, redirect to demote-into-that-band. If the promoted
+  // frame extends past the band's current bottom, expand the band first
+  // (resizeFrameEffect drives unifiedDocSync to insert blank lines).
+  // unifiedDocSync (after Task 0.5) accumulates BOTH the resize and the
+  // demote into one transaction.
+  if (newParentId === null) {
+    const existingBand = findBandAtRow(getFrames(state), absoluteGridRow);
+    if (existingBand) {
+      const promoted = findFrameInList(getFrames(state), frameId);
+      const effects: StateEffect<unknown>[] = [];
+      if (promoted) {
+        const childRowInBand = absoluteGridRow - existingBand.gridRow;
+        const childBottom = childRowInBand + promoted.gridH;
+        const newBandH = Math.max(existingBand.gridH, childBottom);
+        if (newBandH > existingBand.gridH) {
+          effects.push(resizeFrameEffect.of({
+            id: existingBand.id,
+            gridW: existingBand.gridW,
+            gridH: newBandH,
+            charWidth,
+            charHeight,
+          }));
+        }
+      }
+      effects.push(reparentFrameEffect.of({
+        frameId,
+        newParentId: existingBand.id,
+        absoluteGridRow,
+        absoluteGridCol,
+        charWidth,
+        charHeight,
+      }));
+      return state.update({
+        effects,
+        annotations: Transaction.addToHistory.of(true),
+      }).state;
+    }
+    // No existing band — fall through to the standard promote dispatch.
+    // The framesField effect handler (EDIT 2) wraps the promoted frame in
+    // a fresh band.
+  }
   return state.update({
     effects: reparentFrameEffect.of({
       frameId, newParentId, absoluteGridRow, absoluteGridCol, charWidth, charHeight,

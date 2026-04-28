@@ -2686,3 +2686,54 @@ describe("applyDeleteFrame cascades band cleanup", () => {
     expect(getDoc(state3).length).toBe(docLenWithTwo);
   });
 });
+
+describe("applyReparentFrame eager bands", () => {
+  const CW = 8, CH = 18;
+  const rectStyle = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("promote into a row claimed by an existing band joins the band", () => {
+    const state0 = createEditorState({ prose: "\n\n\n\n\n\n\n\n\n", frames: [], proseSegmentMap: [] });
+    const rectA = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state1 = applyAddTopLevelFrame(state0, rectA, 0, 0);
+    const rectC = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state2 = applyAddTopLevelFrame(state1, rectC, 5, 0);
+    const docBeforePromote = getDoc(state2);
+    const band1 = getFrames(state2)[0];
+    const band2 = getFrames(state2)[1];
+    const rectAId = band1.children[0].id;
+    const rectCId = band2.children[0].id;
+
+    // Reparent rectA "promote" to row 5 (where band2 lives). Eager-bands
+    // should redirect this to demote-into-band2, leaving doc unchanged
+    // and adding rectA as a sibling child of rectC inside band2.
+    const state3 = applyReparentFrame(state2, rectAId, null, 5, 8, CW, CH);
+    expect(getDoc(state3)).toBe(docBeforePromote);
+    const frames = getFrames(state3);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].id).toBe(band2.id);
+    expect(frames[0].children).toHaveLength(2);
+    const childIds = frames[0].children.map(c => c.id);
+    expect(childIds).toContain(rectAId);
+    expect(childIds).toContain(rectCId);
+  });
+
+  it("promote to a row with NO existing band creates a fresh band", () => {
+    const state0 = createEditorState({ prose: "\n\n\n\n\n\n\n\n\n\n", frames: [], proseSegmentMap: [] });
+    const rectA = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state1 = applyAddTopLevelFrame(state0, rectA, 0, 0);
+    const rectInner = createRectFrame({ gridW: 3, gridH: 2, style: rectStyle, charWidth: CW, charHeight: CH });
+    const band1 = getFrames(state1)[0];
+    const state2 = applyAddChildFrame(state1, rectInner, band1.children[0].id, 1, 1);
+    const innerId = getFrames(state2)[0].children[0].children[0].id;
+    // Promote rectInner to top-level at row 7 (no band there).
+    const state3 = applyReparentFrame(state2, innerId, null, 7, 0, CW, CH);
+    const frames = getFrames(state3);
+    expect(frames.length).toBeGreaterThanOrEqual(1);
+    // Find the band that now claims row 7.
+    const band7 = frames.find(f => f.gridRow === 7);
+    expect(band7).toBeTruthy();
+    expect(band7!.isBand).toBe(true);
+    expect(band7!.children).toHaveLength(1);
+    expect(band7!.children[0].id).toBe(innerId);
+  });
+});
