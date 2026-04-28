@@ -567,6 +567,14 @@ export function createEditorState(init: EditorStateInit): EditorState {
   // via resolveTransaction(state, filtered, false), so changeFilter does
   // not re-fire on the merged transaction (programmatic edits go through).
   const unifiedDocSync = EditorState.transactionFilter.of((tr) => {
+    // Collect doc-change specs from each frame mutation effect, then
+    // return them as one merged transaction at the end. sequential:true
+    // ensures positions in later specs are interpreted in the doc state
+    // AFTER earlier specs apply. This lets multi-effect dispatches like
+    // [resize, reparent] do all their doc surgery in one atomic step.
+    const allChanges: Array<{ from: number; to?: number; insert?: string }> = [];
+    const extraEffects: StateEffect<unknown>[] = [];
+
     for (const e of tr.effects) {
       if (e.is(moveFrameEffect) && e.value.dRow !== 0) {
         const frames = tr.startState.field(framesField);
@@ -583,18 +591,12 @@ export function createEditorState(init: EditorStateInit): EditorState {
         // Drag down by 1 = delete \n above frame, insert \n below.
         // Drag up by 1 = inverse. Net char count is 0; the frame's claimed
         // empty lines stay empty; surrounding prose is untouched.
-        //
-        // For dRow=N, we rotate N newlines across the boundary.
-
         const dRow = e.value.dRow;
-        const changes: Array<{ from: number; to: number; insert?: string }> = [];
 
         // Drag = ROTATION ONLY. Motion is clamped to consecutive blank lines
         // around the frame (the "rotation budget"). We do NOT grow the doc
         // when the user drags past the budget — that would insert chars
         // before/after sibling frames and mapPos would drag them along.
-        // Users who want more space below a frame can press Enter outside
-        // the frame's claim; the frame won't move on its own.
         let maxDown = 0;
         for (let n = endLineNum + 1; n <= doc.lines; n++) {
           const ln = doc.line(n);
@@ -620,8 +622,8 @@ export function createEditorState(init: EditorStateInit): EditorState {
           const deleteTo = endLine.to + effectiveDRow;
           if (deleteTo > doc.length) continue; // defensive
           const movedChars = doc.sliceString(deleteFrom, deleteTo);
-          changes.push({ from: deleteFrom, to: deleteTo });
-          changes.push({ from: startLine.from, to: startLine.from, insert: movedChars });
+          allChanges.push({ from: deleteFrom, to: deleteTo });
+          allChanges.push({ from: startLine.from, insert: movedChars });
         } else {
           // Drag up: mirror — pull newlines from before the frame, push them
           // after. Doc length preserved.
@@ -630,8 +632,8 @@ export function createEditorState(init: EditorStateInit): EditorState {
           const deleteTo2 = startLine.from;
           if (deleteFrom2 < 0) continue;
           const movedChars = doc.sliceString(deleteFrom2, deleteTo2);
-          changes.push({ from: deleteFrom2, to: deleteTo2 });
-          changes.push({ from: endLine.to, to: endLine.to, insert: movedChars });
+          allChanges.push({ from: deleteFrom2, to: deleteTo2 });
+          allChanges.push({ from: endLine.to, insert: movedChars });
         }
 
         // Frame's new docOffset: drag-down shifts forward by effectiveDRow
@@ -639,12 +641,8 @@ export function createEditorState(init: EditorStateInit): EditorState {
         const newDocOffset = effectiveDRow > 0
           ? startLine.from + effectiveDRow
           : startLine.from - (-effectiveDRow);
-        return [
-          {
-            effects: [...tr.effects, relocateFrameEffect.of({ id: frame.id, newDocOffset })],
-            changes,
-          },
-        ];
+        extraEffects.push(relocateFrameEffect.of({ id: frame.id, newDocOffset }));
+        continue;
       }
       if (e.is(resizeFrameEffect)) {
         const frames = tr.startState.field(framesField);
@@ -661,17 +659,14 @@ export function createEditorState(init: EditorStateInit): EditorState {
 
         if (delta > 0) {
           // Insert `delta` empty lines AFTER the current claimed range.
-          // Each new line is just "\n" (empty string content).
-          const insert = "\n".repeat(delta);
-          return [tr, { changes: { from: endLine.to, insert }, sequential: true }];
+          allChanges.push({ from: endLine.to, insert: "\n".repeat(delta) });
         } else {
           // Remove `-delta` lines from the end of the claimed range.
-          // endLineNum + delta + 1 is the first line to keep at the bottom.
-          // Delete from end of (endLineNum + delta) through end of endLine.
           const keepLastNum = endLineNum + delta; // last claimed line we keep
           const keepLast = tr.startState.doc.line(keepLastNum);
-          return [tr, { changes: { from: keepLast.to, to: endLine.to }, sequential: true }];
+          allChanges.push({ from: keepLast.to, to: endLine.to });
         }
+        continue;
       }
       if (e.is(deleteFrameEffect)) {
         const frames = tr.startState.field(framesField);
@@ -685,11 +680,10 @@ export function createEditorState(init: EditorStateInit): EditorState {
         const docLength = tr.startState.doc.length;
 
         // Delete exactly ONE newline (the boundary separator), not both.
-        // Frame at file start: trailing newline is the only separator → from=0, to=endLine.to + 1
-        // Frame elsewhere: leading newline is the separator → from=startLine.from - 1, to=endLine.to
         const from = startLine.from > 0 ? startLine.from - 1 : 0;
         const to = startLine.from > 0 ? endLine.to : Math.min(endLine.to + 1, docLength);
-        return [tr, { changes: { from, to }, sequential: true }];
+        allChanges.push({ from, to });
+        continue;
       }
       if (e.is(addFrameEffect)) {
         const newFrame = e.value;
@@ -698,11 +692,8 @@ export function createEditorState(init: EditorStateInit): EditorState {
 
         const doc = tr.startState.doc;
         const offset = Math.max(0, Math.min(newFrame.docOffset, doc.length));
-        // Insert `lineCount` newlines at `offset`. Each "\n" creates one
-        // new empty line. The inserted chars become the claimed blank lines.
-        // Empty content (not " ") satisfies preparedCache null fast-path.
-        const insert = "\n".repeat(newFrame.lineCount);
-        return [tr, { changes: { from: offset, insert }, sequential: true }];
+        allChanges.push({ from: offset, insert: "\n".repeat(newFrame.lineCount) });
+        continue;
       }
       if (e.is(reparentFrameEffect)) {
         const frames = tr.startState.field(framesField);
@@ -712,13 +703,12 @@ export function createEditorState(init: EditorStateInit): EditorState {
 
         if (e.value.newParentId === null) {
           // Promote: insert lineCount blank lines at the absolute target row.
-          // Skip if frame was already top-level (lineCount > 0) — nothing to add.
           if (frame.lineCount > 0) continue;
           const aRow = e.value.absoluteGridRow ?? 0;
           const targetLine = Math.min(Math.max(aRow, 0), doc.lines - 1);
           const offset = doc.line(targetLine + 1).from;
-          const insert = "\n".repeat(frame.gridH);
-          return [tr, { changes: { from: offset, insert }, sequential: true }];
+          allChanges.push({ from: offset, insert: "\n".repeat(frame.gridH) });
+          continue;
         } else {
           // Demote: release the claimed lines (mirror deleteFrameEffect).
           if (frame.lineCount === 0) continue; // already a child
@@ -729,11 +719,21 @@ export function createEditorState(init: EditorStateInit): EditorState {
           const docLength = doc.length;
           const from = startLine.from > 0 ? startLine.from - 1 : 0;
           const to = startLine.from > 0 ? endLine.to : Math.min(endLine.to + 1, docLength);
-          return [tr, { changes: { from, to }, sequential: true }];
+          allChanges.push({ from, to });
+          continue;
         }
       }
     }
-    return tr;
+
+    if (allChanges.length === 0 && extraEffects.length === 0) return tr;
+    return [
+      tr,
+      {
+        ...(extraEffects.length > 0 ? { effects: extraEffects } : {}),
+        changes: allChanges,
+        sequential: true,
+      },
+    ];
   });
 
   const extensions: Extension[] = [
