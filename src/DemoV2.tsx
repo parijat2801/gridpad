@@ -510,14 +510,19 @@ export default function DemoV2() {
     // Drill-down UX: first click selects container, second click on child selects child
     // But drill-down is deferred to mouseUp — on mouseDown we always drag the
     // currently selected frame (or its container) to avoid stealing resize handles.
-    const hitContainer = hit ? framesRef.current.find(f => f.id === hit.id || hasDescendant(f, hit.id)) : null;
+    // Synthetic bands (isBand) are transparent — they have no visible border, so
+    // a click on a rect inside a band selects the rect directly. The band is
+    // never a drill-down container.
+    const hitContainer = hit
+      ? framesRef.current.find(f => !f.isBand && (f.id === hit.id || hasDescendant(f, hit.id))) ?? null
+      : null;
     const wouldDrillDown = hit && hitContainer && currentSelectedId === hitContainer.id && currentSelectedId !== hit.id;
     const targetId = hit ? (
       // If we'd drill down, defer it — keep current selection for dragging
       wouldDrillDown ? currentSelectedId
       // If the hit IS what's already selected, keep it
       : currentSelectedId === hit.id ? hit.id
-      // Otherwise select the container
+      // Otherwise select the container (or the hit itself if no non-band container)
       : hitContainer?.id ?? hit.id
     ) : null;
     const now = Date.now();
@@ -744,14 +749,37 @@ export default function DemoV2() {
           doLayout(); paint();
           return md;
         },
-        /** Get all top-level frame bounding boxes in CSS pixels */
+        /** Get all top-level USER-PERCEIVED frame rects in CSS pixels.
+         * Synthetic bands (isBand) are unwrapped into their children — the
+         * user sees and interacts with the children, not the invisible band.
+         * Coordinates are absolute (band's x/y added to child's x/y).
+         * Non-band top-level frames are returned as-is.
+         */
         getFrameRects: () => {
-          return framesRef.current.map(f => ({
-            id: f.id,
-            x: f.x, y: f.y, w: f.w, h: f.h,
-            hasChildren: f.children.length > 0,
-            contentType: f.content?.type ?? "container",
-          }));
+          const out: Array<{
+            id: string; x: number; y: number; w: number; h: number;
+            hasChildren: boolean; contentType: string;
+          }> = [];
+          for (const f of framesRef.current) {
+            if (f.isBand) {
+              for (const c of f.children) {
+                out.push({
+                  id: c.id,
+                  x: f.x + c.x, y: f.y + c.y, w: c.w, h: c.h,
+                  hasChildren: c.children.length > 0,
+                  contentType: c.content?.type ?? "container",
+                });
+              }
+              continue;
+            }
+            out.push({
+              id: f.id,
+              x: f.x, y: f.y, w: f.w, h: f.h,
+              hasChildren: f.children.length > 0,
+              contentType: f.content?.type ?? "container",
+            });
+          }
+          return out;
         },
         /** Get full frame tree with all children, positions, and content */
         getFrameTree: () => {
