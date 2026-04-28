@@ -2295,23 +2295,30 @@ describe("add wireframe in unified mode", () => {
     const text = "Prose above\n\n┌──────┐\n│      │\n│      │\n└──────┘\n\nProse below";
     let state = createEditorStateUnified(text, cw, ch);
     const docBefore = getDoc(state);
-    const parent = getFrames(state)[0];
-    const parentLineCountBefore = parent.lineCount;
+    const band = getFrames(state)[0];
+    expect(band.isBand).toBe(true);
+    const parentRect = band.children[0]; // the rect inside the band
+    const parentLineCountBefore = band.lineCount;
 
     const child = createRectFrame({ gridW: 4, gridH: 2, style: STYLE, charWidth: cw, charHeight: ch });
-    // Cursor at gridRow 3, gridCol 1 — inside parent (rows 2..5, cols 0..7).
-    state = applyAddChildFrame(state, child, parent.id, 3, 1);
+    // Cursor at gridRow 3, gridCol 1 — inside parentRect.
+    state = applyAddChildFrame(state, child, parentRect.id, 3, 1);
 
     expect(getDoc(state)).toBe(docBefore);
     const after = getFrames(state);
     expect(after.length).toBe(1);
-    expect(after[0].children.length).toBe(1);
-    const addedChild = after[0].children[0];
+    expect(after[0].isBand).toBe(true);
+    expect(after[0].children.length).toBe(1);          // band still has 1 direct child (the rect)
+    const rectAfter = after[0].children[0];
+    expect(rectAfter.children.length).toBe(1);          // the rect gained the new child
+    const addedChild = rectAfter.children[0];
     expect(addedChild.lineCount).toBe(0);
-    // gridRow on a child is parent-relative.
-    expect(addedChild.gridRow).toBe(3 - parent.gridRow);
-    expect(addedChild.gridCol).toBe(1 - parent.gridCol);
-    // Parent unchanged.
+    // gridRow on a child is relative to its immediate parent (parentRect),
+    // using the stored parentRect.gridRow (which is itself band-relative).
+    // applyAddChildFrame computes: childGridRow = absoluteGridRow - parent.gridRow
+    expect(addedChild.gridRow).toBe(3 - parentRect.gridRow);
+    expect(addedChild.gridCol).toBe(1 - parentRect.gridCol);
+    // Band's claim unchanged.
     expect(after[0].lineCount).toBe(parentLineCountBefore);
   });
 
@@ -2330,23 +2337,29 @@ describe("add wireframe in unified mode", () => {
     state = applyAddTopLevelFrame(state, small, 8, 0);
     const frames = getFrames(state);
     expect(frames.length).toBe(2); // sanity
-    const bigId = frames[0].id;
-    const smallId = frames[1].id;
+    // The two top-level frames are bands wrapping the big and small rects.
+    expect(frames[0].isBand).toBe(true);
+    expect(frames[1].isBand).toBe(true);
+    const bigBandId = frames[0].id;
+    const smallBandId = frames[1].id;
     const docLinesBefore = state.doc.lines;
-    const smallLineCount = frames[1].lineCount;
+    const smallBandLineCount = frames[1].lineCount;
 
     // Pass child's absolute coords (gridRow=8 from earlier add) and
     // charWidth/charHeight so the demote path can rebase pixel coords.
-    state = applyReparentFrame(state, smallId, bigId, 8, 0, cw, ch);
+    // Reparent the small BAND so it becomes a child of the big BAND.
+    state = applyReparentFrame(state, smallBandId, bigBandId, 8, 0, cw, ch);
 
     const after = getFrames(state);
     expect(after.length).toBe(1); // small absorbed
-    expect(after[0].id).toBe(bigId);
-    expect(after[0].children.length).toBe(1);
-    expect(after[0].children[0].id).toBe(smallId);
-    expect(after[0].children[0].lineCount).toBe(0);
-    // Doc shrinks by exactly smallLineCount lines (the released claim).
-    expect(state.doc.lines).toBe(docLinesBefore - smallLineCount);
+    expect(after[0].id).toBe(bigBandId);
+    expect(after[0].children.length).toBe(2);  // big rect (existing child) + demoted small band
+    // Find the demoted small-band by id.
+    const demotedSmallBand = after[0].children.find(c => c.id === smallBandId)!;
+    expect(demotedSmallBand).toBeTruthy();
+    expect(demotedSmallBand.lineCount).toBe(0);
+    // Doc shrinks by exactly smallBandLineCount lines (released claim).
+    expect(state.doc.lines).toBe(docLinesBefore - smallBandLineCount);
   });
 
   // Reverse reparent: a child dragged outside any frame becomes top-level
@@ -2356,18 +2369,28 @@ describe("add wireframe in unified mode", () => {
     const text = "Prose above\n\n┌──────┐\n│ ┌─┐  │\n│ └─┘  │\n│      │\n└──────┘\n\nProse below";
     let state = createEditorStateUnified(text, cw, ch);
     const top = getFrames(state)[0];
+    expect(top.isBand).toBe(true);
     expect(top.children.length).toBeGreaterThan(0); // sanity
-    const child = top.children[0];
+    const child = top.children[0]; // the outer rect inside the band
+    const childGridH = child.gridH;
     const docLinesBefore = state.doc.lines;
 
-    // Promote child to top-level at row 0 (cursor lands in empty space above).
+    // Promote child to top-level at row 0. After eager bands: the
+    // original band loses its only child and is cascade-removed; a fresh
+    // band wraps the promoted rect at row 0.
     state = applyReparentFrame(state, child.id, null, 0, 0, cw, ch);
 
     const after = getFrames(state);
-    expect(after.length).toBe(2);
-    const promoted = after.find(f => f.id === child.id)!;
-    expect(promoted.lineCount).toBeGreaterThan(0);
-    expect(state.doc.lines).toBe(docLinesBefore + promoted.lineCount);
+    // Original band cascade-removed (its only child was extracted); a new
+    // band at row 0 wraps the promoted rect.
+    expect(after.length).toBe(1);
+    expect(after[0].isBand).toBe(true);
+    // The promoted child is the band's only child.
+    expect(after[0].children.length).toBe(1);
+    expect(after[0].children[0].id).toBe(child.id);
+    // Band's claim grew the doc by childGridH lines (the new band's lineCount).
+    expect(after[0].lineCount).toBe(childGridH);
+    expect(state.doc.lines).toBe(docLinesBefore + childGridH);
   });
 
   // Text tool: users place a single-line label. createTextFrame returns
