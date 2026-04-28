@@ -467,18 +467,33 @@ export default function DemoV2() {
     const tool = activeToolRef.current;
     // Single hit-test for the whole click handler
     const hit = hitTestFrames(framesRef.current, px, py);
-    // Resolve hit's top-level ancestor — used as parent for nested draws.
-    const parentTopLevel = hit ? framesRef.current.find(f => f.id === hit.id || hasDescendant(f, hit.id)) ?? null : null;
+    // Resolve nest parent for draw-on-frame: the SMALLEST enclosing claiming
+    // frame at the click. hitTestFrames already returns the min-area child,
+    // so when there's a hit, that's our nest target (Figma-style nesting
+    // into a rect inside a band). When there's no hit (empty band space),
+    // fall back to the band that claims the click row.
+    let nestParent: Frame | null = hit;
+    if (!nestParent) {
+      for (const f of framesRef.current) {
+        if (f.isBand
+            && py >= f.y && py < f.y + f.h
+            && px >= f.x && px < f.x + f.w) {
+          nestParent = f;
+          break;
+        }
+      }
+    }
     if (tool === "rect" || tool === "line") {
       // Draw activates whether or not we hit a frame. If we hit one, the new
-      // frame nests as a child of its top-level ancestor (Figma-style).
-      drawPreviewRef.current = { startX: px, startY: py, curX: px, curY: py, parentId: parentTopLevel?.id ?? null };
+      // frame nests as a child of the smallest enclosing claiming frame
+      // (Figma-style: rect-in-band → nest in rect; band space → nest in band).
+      drawPreviewRef.current = { startX: px, startY: py, curX: px, curY: py, parentId: nestParent?.id ?? null };
       paint(); return;
     }
     if (tool === "text") {
       const cw = cwRef.current, ch = chRef.current;
       const snappedX = Math.floor(px / cw) * cw, snappedY = Math.floor(py / ch) * ch;
-      textPlacementRef.current = { x: snappedX, y: snappedY, chars: "", parentId: parentTopLevel?.id ?? null };
+      textPlacementRef.current = { x: snappedX, y: snappedY, chars: "", parentId: nestParent?.id ?? null };
       paint(); return;
     }
     const currentSelectedId = getSelectedId(stateRef.current);

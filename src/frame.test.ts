@@ -1,6 +1,6 @@
 // src/frame.test.ts
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { framesFromScan, createFrame, createRectFrame, createTextFrame, createLineFrame, moveFrame, resizeFrame, wrapAsBand, type Frame } from "./frame";
+import { framesFromScan, createFrame, createRectFrame, createTextFrame, createLineFrame, moveFrame, resizeFrame, wrapAsBand, hitTestFrames, type Frame } from "./frame";
 import { scan } from "./scanner";
 import { scanToFrames } from "./scanToFrames";
 
@@ -300,6 +300,7 @@ describe("wrapAsBand", () => {
     };
     const band = wrapAsBand([rect], 8, 18, 120);
     expect(band.content).toBeNull();
+    expect(band.isBand).toBe(true);
     expect(band.children).toHaveLength(1);
     expect(band.gridRow).toBe(5);
     expect(band.gridCol).toBe(0);
@@ -332,6 +333,31 @@ describe("wrapAsBand", () => {
     expect(band.children[0].gridCol).toBe(0);
     expect(band.children[1].gridRow).toBe(0);
     expect(band.children[1].gridCol).toBe(8);
+  });
+
+  it("clicking inside a band's bbox but outside any child returns null", () => {
+    const charW = 8, charH = 18;
+    const rect: Frame = {
+      ...createRectFrame({ gridW: 5, gridH: 3, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 0, gridCol: 0, x: 0, y: 0,
+    };
+    const band: Frame = wrapAsBand([rect], charW, charH, 120);
+    // Click well to the right of the rect (col 50 ≫ rect's 5 cols).
+    const hit = hitTestFrames([band], 50 * charW, charH);
+    expect(hit).toBeNull();
+  });
+
+  it("clicking inside a child rect inside a band returns the child", () => {
+    const charW = 8, charH = 18;
+    const rect: Frame = {
+      ...createRectFrame({ gridW: 5, gridH: 3, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 0, gridCol: 0, x: 0, y: 0,
+    };
+    const band: Frame = wrapAsBand([rect], charW, charH, 120);
+    const childInBand = band.children[0];
+    const hit = hitTestFrames([band], 2 * charW, charH);
+    expect(hit).toBeTruthy();
+    expect(hit!.id).toBe(childInBand.id);
   });
 
   it("band gridH spans union of children rows", () => {

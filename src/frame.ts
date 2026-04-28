@@ -45,6 +45,10 @@ export interface Frame {
   docOffset: number;
   /** Number of CM doc lines this frame claims. 0 = not yet placed. */
   lineCount: number;
+  /** True if this frame is a synthetic band container produced by
+   * wrapAsBand. Bands are not selectable on their own — clicking
+   * empty band space returns no hit. */
+  isBand?: boolean;
 }
 
 export interface Obstacle {
@@ -226,7 +230,12 @@ function hitTestOne(frame: Frame, px: number, py: number): Frame | null {
       }
     }
   }
-  return bestHit ?? frame;
+  if (bestHit) return bestHit;
+  // Synthetic bands (isBand=true) are not selectable on their own —
+  // empty band space returns null, not the band. Children still hit
+  // via the recursive case above.
+  if (frame.isBand) return null;
+  return frame;
 }
 
 export function hitTestFrames(frames: Frame[], px: number, py: number): Frame | null {
@@ -563,6 +572,7 @@ export function wrapAsBand(
     content: null,
     clip: true,
     dirty: true,
+    isBand: true,
     gridRow: minRow,
     gridCol: 0,
     gridW: docWidthCols,
