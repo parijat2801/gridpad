@@ -12,7 +12,7 @@ import {
 } from "@codemirror/state";
 import { history, undo, redo, undoDepth, redoDepth, invertedEffects } from "@codemirror/commands";
 import type { Frame } from "./frame";
-import { moveFrame, resizeFrame } from "./frame";
+import { moveFrame, resizeFrame, wrapAsBand } from "./frame";
 import { layoutTextChildren } from "./autoLayout";
 import { scanToFrames } from "./scanToFrames";
 import type { ProseSegment } from "./proseSegments";
@@ -92,6 +92,21 @@ const setOriginalProseSegmentsEffect = StateEffect.define<ProseSegment[]>();
 // top-level frame in the CM doc. Updates docOffset to the new claimed-line
 // start so framesField stays in sync with the doc change in the same transaction.
 const relocateFrameEffect = StateEffect.define<{ id: string; newDocOffset: number }>();
+
+/**
+ * Return the top-level band frame whose claim range covers `row`, or null.
+ * A band is identified by isBand=true (set by wrapAsBand). Used by
+ * applyAddTopLevelFrame and applyReparentFrame to detect when a
+ * mutation should join an existing band instead of inserting fresh
+ * claim lines.
+ */
+function findBandAtRow(frames: Frame[], row: number): Frame | null {
+  for (const f of frames) {
+    if (!f.isBand) continue;
+    if (row >= f.gridRow && row < f.gridRow + f.lineCount) return f;
+  }
+  return null;
+}
 
 // Mark a frame dirty by id, propagating up to ancestors.
 /** Recursively find a frame by id in a frame tree (incl. children). */
@@ -1085,15 +1100,49 @@ export function applyAddTopLevelFrame(
   gridRow: number,
   gridCol: number,
 ): EditorState {
-  // Clamp gridRow into the existing doc — drawing past doc end places the
-  // frame at the last line. Padding the doc to honor far-below positions
-  // is a UX choice we're explicitly NOT making here; harness rect tests
-  // draw within or at the doc tail, so this is sufficient.
+  // Clamp gridRow into the existing doc.
   const targetLine = Math.min(Math.max(gridRow, 0), state.doc.lines - 1);
-  const docOffset = state.doc.line(targetLine + 1).from; // 1-indexed
+  const docOffset = state.doc.line(targetLine + 1).from;
   const charWidth = frame.gridW > 0 ? frame.w / frame.gridW : 0;
   const charHeight = frame.gridH > 0 ? frame.h / frame.gridH : 0;
-  const prepared: Frame = {
+
+  // Eager bands: if a band already claims `gridRow`, append the new frame
+  // as a child of that band — no new top-level claim lines, no claim
+  // collision. If the new child extends past the band's current bottom,
+  // grow the band first via resizeFrameEffect.
+  const existingBand = findBandAtRow(getFrames(state), gridRow);
+  if (existingBand) {
+    const childGridRow = gridRow - existingBand.gridRow;
+    const childFrame: Frame = {
+      ...frame,
+      x: gridCol * charWidth,
+      y: childGridRow * charHeight,
+      gridRow: childGridRow,
+      gridCol,
+      docOffset: 0,
+      lineCount: 0,
+    };
+    const childBottom = childGridRow + frame.gridH;
+    const newBandH = Math.max(existingBand.gridH, childBottom);
+    const effects: StateEffect<unknown>[] = [];
+    if (newBandH > existingBand.gridH) {
+      effects.push(resizeFrameEffect.of({
+        id: existingBand.id,
+        gridW: existingBand.gridW,
+        gridH: newBandH,
+        charWidth,
+        charHeight,
+      }));
+    }
+    effects.push(addChildFrameEffect.of({ parentId: existingBand.id, frame: childFrame }));
+    return state.update({
+      effects,
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+  }
+
+  // No existing band — wrap the new rect in a fresh band and add as top-level.
+  const placedRect: Frame = {
     ...frame,
     x: gridCol * charWidth,
     y: gridRow * charHeight,
@@ -1102,7 +1151,25 @@ export function applyAddTopLevelFrame(
     docOffset,
     lineCount: frame.gridH,
   };
-  return applyAddFrame(state, prepared);
+  const docWidthCols = computeDocWidthCols(state, [placedRect]);
+  const band = wrapAsBand([placedRect], charWidth, charHeight, docWidthCols);
+  return applyAddFrame(state, band);
+}
+
+/** Choose a band's full-width gridW. Use the larger of: 120, longest doc
+ * line in cols, max child right edge. The band has no border, so width
+ * is purely a hit-test concern, not a serialization concern. */
+function computeDocWidthCols(state: EditorState, children: Frame[]): number {
+  let maxCol = 120;
+  for (let i = 1; i <= state.doc.lines; i++) {
+    const ln = state.doc.line(i);
+    if (ln.length > maxCol) maxCol = ln.length;
+  }
+  for (const c of children) {
+    const right = c.gridCol + c.gridW;
+    if (right > maxCol) maxCol = right;
+  }
+  return maxCol;
 }
 
 /**

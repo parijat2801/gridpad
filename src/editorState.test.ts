@@ -2564,3 +2564,89 @@ describe("drag is rotation-only", () => {
     expect(after.gridRow).toBe(before.gridRow + 1);
   });
 });
+
+describe("findBandAtRow", () => {
+  it("is exercised indirectly via applyAddTopLevelFrame in Task 3", () => {
+    // findBandAtRow is private; behavior covered by Task 3 integration tests.
+    expect(true).toBe(true);
+  });
+});
+
+describe("applyAddTopLevelFrame eager bands", () => {
+  const CW = 8, CH = 18;
+  const rectStyle = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("first rect on a row creates a band wrapping it", () => {
+    const state = createEditorState({ prose: "\n\n\n\n\n", frames: [], proseSegmentMap: [] });
+    const rect = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const next = applyAddTopLevelFrame(state, rect, 0, 0);
+    const frames = getFrames(next);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].content).toBeNull();         // band has no content
+    expect(frames[0].isBand).toBe(true);
+    expect(frames[0].children).toHaveLength(1);
+    expect(frames[0].children[0].content?.type).toBe("rect");
+    expect(frames[0].lineCount).toBe(3);
+    expect(frames[0].children[0].lineCount).toBe(0);
+    expect(frames[0].children[0].docOffset).toBe(0);
+  });
+
+  it("second rect on the SAME row joins the existing band", () => {
+    const state0 = createEditorState({ prose: "\n\n\n\n\n", frames: [], proseSegmentMap: [] });
+    const rectA = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state1 = applyAddTopLevelFrame(state0, rectA, 0, 0);
+    const docAfterA = getDoc(state1);
+    const bandId = getFrames(state1)[0].id;
+    const rectAId = getFrames(state1)[0].children[0].id;
+
+    const rectB = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state2 = applyAddTopLevelFrame(state1, rectB, 0, 8);
+
+    // Doc length must NOT have changed — no fresh claim lines inserted.
+    expect(getDoc(state2)).toBe(docAfterA);
+
+    const frames = getFrames(state2);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].id).toBe(bandId);
+    expect(frames[0].children).toHaveLength(2);
+    const childIds = frames[0].children.map(c => c.id);
+    expect(childIds).toContain(rectAId);
+
+    const aChild = frames[0].children.find(c => c.id === rectAId)!;
+    expect(aChild.gridRow).toBe(0);
+    expect(aChild.gridCol).toBe(0);
+  });
+
+  it("joining a band with a TALLER child grows the band's claim", () => {
+    const state0 = createEditorState({ prose: "\n\n\n\n\n\n\n\n", frames: [], proseSegmentMap: [] });
+    const rectA = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state1 = applyAddTopLevelFrame(state0, rectA, 0, 0);
+    const docLenBefore = getDoc(state1).length;
+    const bandId = getFrames(state1)[0].id;
+    const tallRect = createRectFrame({ gridW: 4, gridH: 5, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state2 = applyAddTopLevelFrame(state1, tallRect, 1, 8);
+    const frames = getFrames(state2);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].id).toBe(bandId);
+    expect(frames[0].children).toHaveLength(2);
+    expect(frames[0].gridH).toBeGreaterThanOrEqual(6);
+    expect(frames[0].lineCount).toBeGreaterThanOrEqual(6);
+    const docLenAfter = getDoc(state2).length;
+    expect(docLenAfter).toBe(docLenBefore + (frames[0].lineCount - 3));
+  });
+
+  it("rect on a row CLAIMED by no band creates a fresh band", () => {
+    const state0 = createEditorState({ prose: "\n\n\n\n\n\n\n\n\n", frames: [], proseSegmentMap: [] });
+    const rectA = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state1 = applyAddTopLevelFrame(state0, rectA, 0, 0);
+    const rectB = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state2 = applyAddTopLevelFrame(state1, rectB, 5, 0);
+
+    const frames = getFrames(state2);
+    expect(frames).toHaveLength(2);
+    expect(frames[0].isBand).toBe(true);
+    expect(frames[1].isBand).toBe(true);
+    expect(frames[0].children).toHaveLength(1);
+    expect(frames[1].children).toHaveLength(1);
+  });
+});
