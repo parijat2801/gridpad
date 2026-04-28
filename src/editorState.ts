@@ -720,12 +720,27 @@ export function createEditorState(init: EditorStateInit): EditorState {
         const doc = tr.startState.doc;
 
         if (e.value.newParentId === null) {
-          // Promote: insert lineCount blank lines at the absolute target row.
+          // Promote: claim `gridH` rows at the absolute target. Reuse any
+          // already-blank lines at that location (the new band's claim
+          // simply takes ownership of existing blank prose) and only
+          // insert the difference. This makes promote symmetric with
+          // band-relocation when the doc already has blank capacity, so
+          // a promote that empties one band and lands on existing blank
+          // rows preserves total doc length.
           if (frame.lineCount > 0) continue;
           const aRow = e.value.absoluteGridRow ?? 0;
           const targetLine = Math.min(Math.max(aRow, 0), doc.lines - 1);
-          const offset = doc.line(targetLine + 1).from;
-          allChanges.push({ from: offset, insert: "\n".repeat(frame.gridH) });
+          let blankAtTarget = 0;
+          for (let n = targetLine + 1; n <= doc.lines; n++) {
+            const ln = doc.line(n);
+            if (ln.length === 0) blankAtTarget++;
+            else break;
+          }
+          const needed = Math.max(0, frame.gridH - blankAtTarget);
+          if (needed > 0) {
+            const offset = doc.line(targetLine + 1).from;
+            allChanges.push({ from: offset, insert: "\n".repeat(needed) });
+          }
           continue;
         } else {
           // Demote: release the claimed lines (mirror deleteFrameEffect).
@@ -1269,9 +1284,19 @@ export function applyReparentFrame(
   // (resizeFrameEffect drives unifiedDocSync to insert blank lines).
   // unifiedDocSync (after Task 0.5) accumulates BOTH the resize and the
   // demote into one transaction.
+  //
+  // In every promote/demote case, also emit deleteFrameEffect for the
+  // source band when the source rect is its sole child. The framesField's
+  // empty-band filter prunes the band from frames, but unifiedDocSync only
+  // releases claim lines on deleteFrameEffect — without this, the orphaned
+  // claim lines leak forever and the doc grows on every promote.
+  const sourceBand = findContainingBand(getFrames(state), frameId);
+  const sourceBandWillEmpty =
+    sourceBand !== null && sourceBand.children.length === 1 && sourceBand.id !== newParentId;
+
   if (newParentId === null) {
     const existingBand = findBandAtRow(getFrames(state), absoluteGridRow);
-    if (existingBand) {
+    if (existingBand && existingBand.id !== sourceBand?.id) {
       const promoted = findFrameInList(getFrames(state), frameId);
       const effects: StateEffect<unknown>[] = [];
       if (promoted) {
@@ -1296,6 +1321,13 @@ export function applyReparentFrame(
         charWidth,
         charHeight,
       }));
+      if (sourceBandWillEmpty && sourceBand) {
+        // reparent-first, delete-second: removeAndCapture extracts the rect
+        // from the band; line-234 filter prunes the now-empty band from
+        // framesField; deleteFrameEffect (read against startState in
+        // unifiedDocSync) releases the band's claim lines.
+        effects.push(deleteFrameEffect.of({ id: sourceBand.id }));
+      }
       return state.update({
         effects,
         annotations: Transaction.addToHistory.of(true),
@@ -1305,12 +1337,26 @@ export function applyReparentFrame(
     // The framesField effect handler (EDIT 2) wraps the promoted frame in
     // a fresh band.
   }
-  return state.update({
-    effects: reparentFrameEffect.of({
+  const effects: StateEffect<unknown>[] = [
+    reparentFrameEffect.of({
       frameId, newParentId, absoluteGridRow, absoluteGridCol, charWidth, charHeight,
     }),
+  ];
+  if (sourceBandWillEmpty && sourceBand) {
+    effects.push(deleteFrameEffect.of({ id: sourceBand.id }));
+  }
+  return state.update({
+    effects,
     annotations: Transaction.addToHistory.of(true),
   }).state;
+}
+
+/** Find the band frame whose children include `frameId`, or null. */
+function findContainingBand(frames: Frame[], frameId: string): Frame | null {
+  for (const f of frames) {
+    if (f.isBand && f.children.some(c => c.id === frameId)) return f;
+  }
+  return null;
 }
 
 export function applyDeleteFrame(state: EditorState, id: string): EditorState {

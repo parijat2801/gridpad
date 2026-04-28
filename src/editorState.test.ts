@@ -2364,7 +2364,7 @@ describe("add wireframe in unified mode", () => {
 
   // Reverse reparent: a child dragged outside any frame becomes top-level
   // and must reclaim doc lines so it survives serialization.
-  it("applyReparentFrame: child → top-level inserts doc lines for the new claim", async () => {
+  it("applyReparentFrame: sole-child promote releases source claim, new band claims target capacity", async () => {
     const cw = 9.6, ch = 18;
     const text = "Prose above\n\n┌──────┐\n│ ┌─┐  │\n│ └─┘  │\n│      │\n└──────┘\n\nProse below";
     let state = createEditorStateUnified(text, cw, ch);
@@ -2375,22 +2375,20 @@ describe("add wireframe in unified mode", () => {
     const childGridH = child.gridH;
     const docLinesBefore = state.doc.lines;
 
-    // Promote child to top-level at row 0. After eager bands: the
-    // original band loses its only child and is cascade-removed; a fresh
-    // band wraps the promoted rect at row 0.
+    // Promote child to top-level at row 0. Eager-bands semantics:
+    // - source band loses its sole child → its claim lines are released
+    // - new band at row 0 needs childGridH rows; row 0 is "Prose above"
+    //   (non-blank), so the new band inserts childGridH fresh lines there
+    // Net: doc grows by 0 (-childGridH released, +childGridH inserted).
     state = applyReparentFrame(state, child.id, null, 0, 0, cw, ch);
 
     const after = getFrames(state);
-    // Original band cascade-removed (its only child was extracted); a new
-    // band at row 0 wraps the promoted rect.
     expect(after.length).toBe(1);
     expect(after[0].isBand).toBe(true);
-    // The promoted child is the band's only child.
     expect(after[0].children.length).toBe(1);
     expect(after[0].children[0].id).toBe(child.id);
-    // Band's claim grew the doc by childGridH lines (the new band's lineCount).
     expect(after[0].lineCount).toBe(childGridH);
-    expect(state.doc.lines).toBe(docLinesBefore + childGridH);
+    expect(state.doc.lines).toBe(docLinesBefore);
   });
 
   // Text tool: users place a single-line label. createTextFrame returns
@@ -2727,10 +2725,12 @@ describe("applyReparentFrame eager bands", () => {
     const rectCId = band2.children[0].id;
 
     // Reparent rectA "promote" to row 5 (where band2 lives). Eager-bands
-    // should redirect this to demote-into-band2, leaving doc unchanged
-    // and adding rectA as a sibling child of rectC inside band2.
+    // redirects this to demote-into-band2 AND releases band1's claim
+    // (rectA was its sole child). rectA joins band2 as a sibling of rectC.
+    // Doc shrinks by band1.lineCount (3 lines released).
+    const band1LineCount = band1.lineCount;
     const state3 = applyReparentFrame(state2, rectAId, null, 5, 8, CW, CH);
-    expect(getDoc(state3)).toBe(docBeforePromote);
+    expect(getDoc(state3).length).toBe(docBeforePromote.length - band1LineCount);
     const frames = getFrames(state3);
     expect(frames).toHaveLength(1);
     expect(frames[0].id).toBe(band2.id);
