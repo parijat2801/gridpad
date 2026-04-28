@@ -2847,4 +2847,45 @@ describe("eager-band data correctness regressions", () => {
     // Doc grew by exactly the band's growth (3 lines).
     expect(getDoc(state2).length).toBe(docLenAfterAdd + 3);
   });
+
+  it("dragging one band into another merges them into a single band", () => {
+    // BUG: drag rotation counts blank lines as rotation budget, but blank
+    // lines inside another band's claim are NOT free space. Rotating into
+    // them puts both bands' claim ranges over the same rows, breaking the
+    // row-partition invariant. Bands must merge instead.
+    //
+    // Setup: two bands stacked with a 3-row gap of pure prose between.
+    // Drag the bottom band up by enough that its claim collides with the
+    // top band's claim. After: ONE band whose claim spans both originals
+    // and contains both rects as children.
+    const state0 = createEditorState({
+      prose: "\n\n\n\n\n\n\n\n\n\n\n\n", frames: [], proseSegmentMap: [],
+    });
+    const rectA = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const rectB = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    let state = applyAddTopLevelFrame(state0, rectA, 0, 0);   // bandA at row 0..2
+    state = applyAddTopLevelFrame(state, rectB, 6, 0);        // bandB at row 6..8
+
+    const bandA = getFrames(state).find(f => f.gridRow === 0)!;
+    const bandB = getFrames(state).find(f => f.gridRow > 0)!;
+    expect(bandA.children).toHaveLength(1);
+    expect(bandB.children).toHaveLength(1);
+
+    // Drag bandB upward by 5 rows — would put bandB at gridRow=1 (overlapping
+    // bandA's rows 0..2). Expect merge: one band, two child rects.
+    state = state.update({
+      effects: [moveFrameEffect.of({ id: bandB.id, dCol: 0, dRow: -5, charWidth: CW, charHeight: CH })],
+    }).state;
+
+    const after = getFrames(state);
+    expect(after).toHaveLength(1);
+    expect(after[0].isBand).toBe(true);
+    expect(after[0].children).toHaveLength(2);
+    // Merged band's claim must cover both rects' absolute row ranges.
+    const merged = after[0];
+    for (const child of merged.children) {
+      const childAbsBottom = merged.gridRow + child.gridRow + child.gridH;
+      expect(childAbsBottom).toBeLessThanOrEqual(merged.gridRow + merged.gridH);
+    }
+  });
 });

@@ -708,7 +708,9 @@ export default function DemoV2() {
       // Reparent on drop: if mouseup cursor lands inside a different
       // top-level frame than where the dragged frame's current parent is,
       // demote into that frame (or promote out of one). Figma-style.
-      if (dragRef.current.hasMoved && e) {
+      // Skip for resize gestures — a resize that ends with the cursor
+      // outside the resized frame must not be interpreted as a drag-out.
+      if (dragRef.current.hasMoved && e && !dragRef.current.resizeHandle) {
         const canvasEl = canvasRef.current;
         if (canvasEl) {
           const rect = canvasEl.getBoundingClientRect();

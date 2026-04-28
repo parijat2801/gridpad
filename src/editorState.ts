@@ -174,6 +174,11 @@ const framesField = StateField.define<Frame[]>({
         };
         result = result.map(applyMove);
         result = markDirtyById(result, e.value.id).frames;
+        // Merge any top-level bands whose claim ranges now overlap. Drag
+        // rotation can push one band into another's rows; the row-partition
+        // invariant requires bands never share rows. Merge into a single
+        // band spanning [min(start), max(end)] with all rects as children.
+        result = mergeOverlappingBands(result);
       } else if (e.is(relocateFrameEffect)) {
         // Update docOffset to the new claimed-line start after drag.
         result = result.map(f =>
@@ -601,7 +606,6 @@ export function createEditorState(init: EditorStateInit): EditorState {
     // bands do, because they own doc claim and child overhang would
     // corrupt prose rows.
     const startFrames = tr.startState.field(framesField);
-    const synthesized: StateEffect<unknown>[] = [];
     for (const e of tr.effects) {
       if (!e.is(resizeFrameEffect)) continue;
       const target = findFrameInList(startFrames, e.value.id);
@@ -613,22 +617,31 @@ export function createEditorState(init: EditorStateInit): EditorState {
       const newBandH = Math.max(parent.gridH, childBottomAfter);
       const newBandW = Math.max(parent.gridW, childRightAfter);
       if (newBandH === parent.gridH && newBandW === parent.gridW) continue;
-      synthesized.push(resizeFrameEffect.of({
+      // Synthesize the band-resize effect for framesField (so the band's
+      // gridH/gridW/lineCount get updated). Compute the doc-change
+      // (insert blank claim lines) inline rather than letting the main
+      // loop re-process the synthesized effect — that would cause a
+      // double-fire because returning extraEffects from a transactionFilter
+      // re-runs the filter on the resolved transaction.
+      extraEffects.push(resizeFrameEffect.of({
         id: parent.id,
         gridW: newBandW,
         gridH: newBandH,
         charWidth: e.value.charWidth,
         charHeight: e.value.charHeight,
       }));
-    }
-    const allEffects = synthesized.length > 0
-      ? [...tr.effects, ...synthesized]
-      : tr.effects;
-    if (synthesized.length > 0) {
-      extraEffects.push(...synthesized);
+      const deltaH = newBandH - parent.lineCount;
+      if (deltaH > 0) {
+        const startLine = tr.startState.doc.lineAt(parent.docOffset);
+        const endLineNum = startLine.number + parent.lineCount - 1;
+        if (endLineNum <= tr.startState.doc.lines) {
+          const endLine = tr.startState.doc.line(endLineNum);
+          allChanges.push({ from: endLine.to, insert: "\n".repeat(deltaH) });
+        }
+      }
     }
 
-    for (const e of allEffects) {
+    for (const e of tr.effects) {
       if (e.is(moveFrameEffect) && e.value.dRow !== 0) {
         const frames = tr.startState.field(framesField);
         const frame = findFrameInList(frames, e.value.id);
@@ -1392,6 +1405,76 @@ function findContainingBand(frames: Frame[], frameId: string): Frame | null {
     if (f.isBand && f.children.some(c => c.id === frameId)) return f;
   }
   return null;
+}
+
+/**
+ * Merge any pair of top-level bands whose claim ranges overlap. The
+ * row-partition invariant requires bands never share rows; drag rotation
+ * can push one band into another's territory, so a post-move pass detects
+ * the overlap and combines the bands into one.
+ *
+ * Merge semantics: pick the band with the smaller gridRow as the survivor
+ * (its docOffset becomes the merged claim's anchor). New gridRow = min of
+ * both, new lineCount = max(rowEnd) - min(rowStart). Children of the
+ * other band are rebased to the merged band's coordinate system and
+ * appended.
+ *
+ * Idempotent — repeats until no overlap remains, in case three or more
+ * bands collapse together.
+ */
+function mergeOverlappingBands(frames: Frame[]): Frame[] {
+  let changed = true;
+  let result = frames;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < result.length; i++) {
+      const a = result[i];
+      if (!a.isBand) continue;
+      for (let j = i + 1; j < result.length; j++) {
+        const b = result[j];
+        if (!b.isBand) continue;
+        const aStart = a.gridRow, aEnd = a.gridRow + a.lineCount;
+        const bStart = b.gridRow, bEnd = b.gridRow + b.lineCount;
+        // Overlap iff intervals [aStart, aEnd) and [bStart, bEnd) share any row.
+        if (aEnd <= bStart || bEnd <= aStart) continue;
+        const survivor = aStart <= bStart ? a : b;
+        const other = survivor === a ? b : a;
+        const newStart = Math.min(aStart, bStart);
+        const newEnd = Math.max(aEnd, bEnd);
+        const rebasedOtherChildren = other.children.map(c => ({
+          ...c,
+          gridRow: c.gridRow + (other.gridRow - newStart),
+          y: (c.gridRow + (other.gridRow - newStart)) * (c.gridH > 0 ? c.h / c.gridH : 0),
+        }));
+        const survivorRebasedChildren = survivor.children.map(c => ({
+          ...c,
+          gridRow: c.gridRow + (survivor.gridRow - newStart),
+          y: (c.gridRow + (survivor.gridRow - newStart)) * (c.gridH > 0 ? c.h / c.gridH : 0),
+        }));
+        const merged: Frame = {
+          ...survivor,
+          gridRow: newStart,
+          gridH: newEnd - newStart,
+          lineCount: newEnd - newStart,
+          y: newStart * (survivor.gridH > 0 ? survivor.h / survivor.gridH : 0),
+          h: (newEnd - newStart) * (survivor.gridH > 0 ? survivor.h / survivor.gridH : 0),
+          children: [...survivorRebasedChildren, ...rebasedOtherChildren],
+          dirty: true,
+        };
+        const next: Frame[] = [];
+        for (let k = 0; k < result.length; k++) {
+          if (k === i) next.push(merged);
+          else if (k === j) continue;
+          else next.push(result[k]);
+        }
+        result = next;
+        changed = true;
+        break;
+      }
+      if (changed) break;
+    }
+  }
+  return result;
 }
 
 export function applyDeleteFrame(state: EditorState, id: string): EditorState {
