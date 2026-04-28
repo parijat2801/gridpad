@@ -1231,19 +1231,32 @@ export function applyReparentFrame(
 }
 
 export function applyDeleteFrame(state: EditorState, id: string): EditorState {
-  // Check if targetId is the deleted frame or any of its descendants
-  const frameContains = (frame: Frame, targetId: string): boolean => {
-    if (frame.id === targetId) return true;
-    return frame.children.some(c => frameContains(c, targetId));
+  // If the target is the SOLE child of a synthetic band, delete the band
+  // instead — that releases the band's claim lines via unifiedDocSync.
+  // Otherwise framesField would cascade-remove the empty band from state
+  // but its blank doc lines would remain forever.
+  let targetId = id;
+  for (const f of getFrames(state)) {
+    if (f.isBand && f.children.length === 1 && f.children[0].id === id) {
+      targetId = f.id;
+      break;
+    }
+  }
+
+  // Check if a frame contains the (possibly redirected) targetId, walking
+  // children recursively.
+  const frameContains = (frame: Frame, lookId: string): boolean => {
+    if (frame.id === lookId) return true;
+    return frame.children.some(c => frameContains(c, lookId));
   };
-  const deletedFrame = getFrames(state).find(f => frameContains(f, id));
-  const isAffected = (targetId: string): boolean => {
-    if (targetId === id) return true;
+  const deletedFrame = getFrames(state).find(f => frameContains(f, targetId));
+  const isAffected = (lookId: string): boolean => {
+    if (lookId === targetId) return true;
     if (!deletedFrame) return false;
-    return frameContains(deletedFrame, targetId);
+    return frameContains(deletedFrame, lookId);
   };
 
-  const effects: StateEffect<unknown>[] = [deleteFrameEffect.of({ id })];
+  const effects: StateEffect<unknown>[] = [deleteFrameEffect.of({ id: targetId })];
   const selectedId = getSelectedId(state);
   if (selectedId && isAffected(selectedId)) {
     effects.push(selectFrameEffect.of(null));

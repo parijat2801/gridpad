@@ -2650,3 +2650,39 @@ describe("applyAddTopLevelFrame eager bands", () => {
     expect(frames[1].children).toHaveLength(1);
   });
 });
+
+describe("applyDeleteFrame cascades band cleanup", () => {
+  const CW = 8, CH = 18;
+  const rectStyle = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("deleting the only rect inside a band releases the band's doc lines", () => {
+    const state0 = createEditorState({ prose: "\n\n\n\n\n", frames: [], proseSegmentMap: [] });
+    const docLenBefore = getDoc(state0).length;
+    const rect = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state1 = applyAddTopLevelFrame(state0, rect, 0, 0);
+    const docLenWithBand = getDoc(state1).length;
+    expect(docLenWithBand).toBeGreaterThan(docLenBefore); // band added 3 blank lines
+    const rectId = getFrames(state1)[0].children[0].id;
+
+    const state2 = applyDeleteFrame(state1, rectId);
+    expect(getFrames(state2)).toHaveLength(0);
+    expect(getDoc(state2).length).toBe(docLenBefore);
+  });
+
+  it("deleting one of TWO children in a band does NOT release the band", () => {
+    const state0 = createEditorState({ prose: "\n\n\n\n\n", frames: [], proseSegmentMap: [] });
+    const rectA = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state1 = applyAddTopLevelFrame(state0, rectA, 0, 0);
+    const rectB = createRectFrame({ gridW: 5, gridH: 3, style: rectStyle, charWidth: CW, charHeight: CH });
+    const state2 = applyAddTopLevelFrame(state1, rectB, 0, 8);
+    const docLenWithTwo = getDoc(state2).length;
+    const rectAId = getFrames(state2)[0].children[0].id;
+
+    const state3 = applyDeleteFrame(state2, rectAId);
+    const frames = getFrames(state3);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].isBand).toBe(true);
+    expect(frames[0].children).toHaveLength(1);
+    expect(getDoc(state3).length).toBe(docLenWithTwo);
+  });
+});
