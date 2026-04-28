@@ -2737,3 +2737,41 @@ describe("applyReparentFrame eager bands", () => {
     expect(band7!.children[0].id).toBe(innerId);
   });
 });
+
+describe("createEditorStateUnified eager bands", () => {
+  it("a single rect on disk loads as a band wrapping the rect", () => {
+    const md = "Top prose\n\n┌────┐\n│ A  │\n└────┘\n\nBottom prose";
+    const state = createEditorStateUnified(md, 8, 18);
+    const frames = getFrames(state);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].isBand).toBe(true);
+    expect(frames[0].children).toHaveLength(1);
+    expect(frames[0].children[0].content?.type).toBe("rect");
+    // Band claims rows 2,3,4 (the wireframe rows).
+    expect(frames[0].gridRow).toBe(2);
+    expect(frames[0].lineCount).toBe(3);
+  });
+
+  it("two stacked rects (separated by 3+ blank lines) load as TWO separate bands", () => {
+    // groupIntoContainers in src/frame.ts uses a 1-row vertical margin —
+    // rects separated by 1 blank line get merged. Use 3 blank lines to
+    // ensure they remain separate top-level frames → two bands after wrap.
+    const md = "p\n\n┌──┐\n│A │\n└──┘\n\n\n\n┌──┐\n│B │\n└──┘\n\nq";
+    const state = createEditorStateUnified(md, 8, 18);
+    const frames = getFrames(state);
+    expect(frames).toHaveLength(2);
+    expect(frames[0].isBand).toBe(true);
+    expect(frames[1].isBand).toBe(true);
+    expect(frames[0].children).toHaveLength(1);
+    expect(frames[1].children).toHaveLength(1);
+  });
+
+  it("two side-by-side rects load as ONE band with two children", () => {
+    const md = "p\n\n┌──┐  ┌──┐\n│A │  │B │\n└──┘  └──┘\n\nq";
+    const state = createEditorStateUnified(md, 8, 18);
+    const frames = getFrames(state);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].isBand).toBe(true);
+    expect(frames[0].children).toHaveLength(2);
+  });
+});

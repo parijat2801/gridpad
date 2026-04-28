@@ -860,7 +860,45 @@ export function createEditorStateUnified(
     }
   }
 
-  return createEditorState({ prose: unifiedText, frames });
+  // Eager bands: every top-level claiming frame is wrapped in a synthetic
+  // full-width band. groupIntoContainers (in framesFromScan) already
+  // wraps side-by-side rects into content=null containers — those become
+  // bands by lifting their children to absolute coords and re-wrapping
+  // with wrapAsBand. Solo claiming frames (single rect/line/text) are
+  // wrapped directly.
+  let docWidthCols = 120;
+  for (const ln of unifiedLines) {
+    if (ln.length > docWidthCols) docWidthCols = ln.length;
+  }
+  const wrapped: Frame[] = frames.map((f) => {
+    if (f.content === null) {
+      // groupIntoContainers' children are container-relative — lift back
+      // to absolute coords before re-wrapping with wrapAsBand. The
+      // container carries the docOffset (set above); children have 0.
+      const absChildren = f.children.map((c) => ({
+        ...c,
+        gridRow: c.gridRow + f.gridRow,
+        gridCol: c.gridCol + f.gridCol,
+        x: (c.gridCol + f.gridCol) * charWidth,
+        y: (c.gridRow + f.gridRow) * charHeight,
+      }));
+      const band = wrapAsBand(absChildren, charWidth, charHeight, docWidthCols);
+      // Preserve scanner-derived docOffset/lineCount on the band.
+      band.docOffset = f.docOffset;
+      band.lineCount = f.lineCount > 0 ? f.lineCount : band.gridH;
+      return band;
+    }
+    // Solo claiming frame — wrap as a band with this frame as the only
+    // child. wrapAsBand inherits docOffset from the topmost child (this
+    // frame), and lineCount = gridH = f.gridH = f.lineCount, so the band
+    // ends up with the right claim. Belt-and-suspenders preserve anyway.
+    const band = wrapAsBand([f], charWidth, charHeight, docWidthCols);
+    if (f.lineCount > 0) band.lineCount = f.lineCount;
+    if (f.docOffset > 0 && band.docOffset === 0) band.docOffset = f.docOffset;
+    return band;
+  });
+
+  return createEditorState({ prose: unifiedText, frames: wrapped });
 }
 
 // ── Accessors ──────────────────────────────────────────────────────────────
