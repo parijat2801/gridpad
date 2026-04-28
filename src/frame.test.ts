@@ -1,6 +1,6 @@
 // src/frame.test.ts
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { framesFromScan, createFrame, createRectFrame, createTextFrame, createLineFrame, moveFrame, resizeFrame, type Frame } from "./frame";
+import { framesFromScan, createFrame, createRectFrame, createTextFrame, createLineFrame, moveFrame, resizeFrame, wrapAsBand, type Frame } from "./frame";
 import { scan } from "./scanner";
 import { scanToFrames } from "./scanToFrames";
 
@@ -283,5 +283,70 @@ describe("Frame docOffset/lineCount", () => {
       expect(child.docOffset).toBe(0);
       expect(child.lineCount).toBe(0);
     }
+  });
+});
+
+describe("wrapAsBand", () => {
+  const STYLE = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("wraps a single rect into a band container with rebased coords", () => {
+    const rect: Frame = {
+      ...createRectFrame({ gridW: 6, gridH: 3, style: STYLE, charWidth: 8, charHeight: 18 }),
+      gridRow: 5,
+      gridCol: 10,
+      x: 80, y: 90,
+      docOffset: 100,
+      lineCount: 3,
+    };
+    const band = wrapAsBand([rect], 8, 18, 120);
+    expect(band.content).toBeNull();
+    expect(band.children).toHaveLength(1);
+    expect(band.gridRow).toBe(5);
+    expect(band.gridCol).toBe(0);
+    expect(band.gridW).toBe(120);
+    expect(band.gridH).toBe(3);
+    expect(band.lineCount).toBe(3);
+    expect(band.docOffset).toBe(100);
+    expect(band.children[0].gridRow).toBe(0);
+    expect(band.children[0].gridCol).toBe(10);
+    expect(band.children[0].lineCount).toBe(0);
+    expect(band.children[0].docOffset).toBe(0);
+    expect(band.children[0].content?.type).toBe("rect");
+  });
+
+  it("wraps two side-by-side rects into one band, both rebased", () => {
+    const charW = 8, charH = 18;
+    const rectA: Frame = {
+      ...createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 2, gridCol: 0, x: 0, y: 36, docOffset: 50, lineCount: 3,
+    };
+    const rectB: Frame = {
+      ...createRectFrame({ gridW: 5, gridH: 3, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 2, gridCol: 8, x: 64, y: 36, docOffset: 50, lineCount: 3,
+    };
+    const band = wrapAsBand([rectA, rectB], charW, charH, 120);
+    expect(band.children).toHaveLength(2);
+    expect(band.gridRow).toBe(2);
+    expect(band.gridH).toBe(3);
+    expect(band.children[0].gridRow).toBe(0);
+    expect(band.children[0].gridCol).toBe(0);
+    expect(band.children[1].gridRow).toBe(0);
+    expect(band.children[1].gridCol).toBe(8);
+  });
+
+  it("band gridH spans union of children rows", () => {
+    const charW = 8, charH = 18;
+    const rectA: Frame = {
+      ...createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 2, gridCol: 0, x: 0, y: 36, docOffset: 50, lineCount: 3,
+    };
+    const rectB: Frame = {
+      ...createRectFrame({ gridW: 5, gridH: 4, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 4, gridCol: 8, x: 64, y: 72, docOffset: 50, lineCount: 4,
+    };
+    const band = wrapAsBand([rectA, rectB], charW, charH, 120);
+    expect(band.gridRow).toBe(2);
+    expect(band.gridH).toBe(6);
+    expect(band.lineCount).toBe(6);
   });
 });

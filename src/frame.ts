@@ -508,3 +508,66 @@ function groupIntoContainers(
 
   return result;
 }
+
+/**
+ * Wrap N child frames into a synthetic full-width band container.
+ *
+ * The band owns the doc-line claim (lineCount, docOffset) and is the new
+ * top-level frame. Children are rebased to band-relative grid rows with
+ * lineCount=0 and docOffset=0; their gridCol stays absolute (the band
+ * spans col 0 → docWidthCols, full doc width).
+ *
+ * The band's docOffset is inherited from the child with the smallest
+ * gridRow (the topmost claim). gridH = union of children's row ranges.
+ *
+ * Children must be in ABSOLUTE grid coordinates on entry (i.e., they
+ * were top-level before this call). Mixing already-band-relative and
+ * absolute children is undefined behavior — the caller must ensure
+ * inputs are consistent.
+ */
+export function wrapAsBand(
+  children: Frame[],
+  charWidth: number,
+  charHeight: number,
+  docWidthCols: number,
+): Frame {
+  if (children.length === 0) {
+    throw new Error("wrapAsBand: cannot wrap empty children");
+  }
+  let minRow = Infinity, maxRow = 0;
+  let docOffset = 0;
+  for (const c of children) {
+    if (c.gridRow < minRow) {
+      minRow = c.gridRow;
+      docOffset = c.docOffset;
+    }
+    if (c.gridRow + c.gridH > maxRow) maxRow = c.gridRow + c.gridH;
+  }
+  const gridH = maxRow - minRow;
+  const rebasedChildren: Frame[] = children.map((c) => ({
+    ...c,
+    gridRow: c.gridRow - minRow,
+    x: c.gridCol * charWidth,
+    y: (c.gridRow - minRow) * charHeight,
+    docOffset: 0,
+    lineCount: 0,
+  }));
+  return {
+    id: nextId(),
+    x: 0,
+    y: minRow * charHeight,
+    w: docWidthCols * charWidth,
+    h: gridH * charHeight,
+    z: 0,
+    children: rebasedChildren,
+    content: null,
+    clip: true,
+    dirty: true,
+    gridRow: minRow,
+    gridCol: 0,
+    gridW: docWidthCols,
+    gridH,
+    docOffset,
+    lineCount: gridH,
+  };
+}
