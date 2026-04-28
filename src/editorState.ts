@@ -593,7 +593,42 @@ export function createEditorState(init: EditorStateInit): EditorState {
     const allChanges: Array<{ from: number; to?: number; insert?: string }> = [];
     const extraEffects: StateEffect<unknown>[] = [];
 
+    // Push physics for bands: a child rect that resizes past its parent
+    // band's bounds pushes the band wall outward. Synthesize a band-resize
+    // effect alongside the original child-resize so unifiedDocSync's
+    // existing resize handler emits the correct claim-line insert in the
+    // same transaction. Normal frame parents do NOT auto-grow — only
+    // bands do, because they own doc claim and child overhang would
+    // corrupt prose rows.
+    const startFrames = tr.startState.field(framesField);
+    const synthesized: StateEffect<unknown>[] = [];
     for (const e of tr.effects) {
+      if (!e.is(resizeFrameEffect)) continue;
+      const target = findFrameInList(startFrames, e.value.id);
+      if (!target || target.lineCount > 0) continue; // not a child
+      const parent = findContainingBand(startFrames, e.value.id);
+      if (!parent) continue;
+      const childBottomAfter = target.gridRow + Math.max(2, e.value.gridH);
+      const childRightAfter = target.gridCol + Math.max(2, e.value.gridW);
+      const newBandH = Math.max(parent.gridH, childBottomAfter);
+      const newBandW = Math.max(parent.gridW, childRightAfter);
+      if (newBandH === parent.gridH && newBandW === parent.gridW) continue;
+      synthesized.push(resizeFrameEffect.of({
+        id: parent.id,
+        gridW: newBandW,
+        gridH: newBandH,
+        charWidth: e.value.charWidth,
+        charHeight: e.value.charHeight,
+      }));
+    }
+    const allEffects = synthesized.length > 0
+      ? [...tr.effects, ...synthesized]
+      : tr.effects;
+    if (synthesized.length > 0) {
+      extraEffects.push(...synthesized);
+    }
+
+    for (const e of allEffects) {
       if (e.is(moveFrameEffect) && e.value.dRow !== 0) {
         const frames = tr.startState.field(framesField);
         const frame = findFrameInList(frames, e.value.id);
