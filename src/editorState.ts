@@ -12,7 +12,7 @@ import {
 } from "@codemirror/state";
 import { history, undo, redo, undoDepth, redoDepth, invertedEffects } from "@codemirror/commands";
 import type { Frame } from "./frame";
-import { moveFrame, resizeFrame, wrapAsBand } from "./frame";
+import { moveFrame, resizeFrame, wrapAsBand, nextId } from "./frame";
 import { layoutTextChildren } from "./autoLayout";
 import { scanToFrames } from "./scanToFrames";
 import type { ProseSegment } from "./proseSegments";
@@ -935,20 +935,45 @@ export function createEditorStateUnified(
   }
   const wrapped: Frame[] = frames.map((f) => {
     if (f.content === null) {
-      // groupIntoContainers' children are container-relative — lift back
-      // to absolute coords before re-wrapping with wrapAsBand. The
-      // container carries the docOffset (set above); children have 0.
-      const absChildren = f.children.map((c) => ({
-        ...c,
-        gridRow: c.gridRow + f.gridRow,
-        gridCol: c.gridCol + f.gridCol,
-        x: (c.gridCol + f.gridCol) * charWidth,
-        y: (c.gridRow + f.gridRow) * charHeight,
-      }));
-      const band = wrapAsBand(absChildren, charWidth, charHeight, docWidthCols);
-      // Preserve scanner-derived docOffset/lineCount on the band.
-      band.docOffset = f.docOffset;
-      band.lineCount = f.lineCount > 0 ? f.lineCount : band.gridH;
+      // Multi-shape composite: keep the scanner's content=null container
+      // as a layer-2 wireframe inside the band, so selection drill-down
+      // can target the group before any individual shape:
+      //   band → wireframe → [shape, shape, ...]
+      //
+      // CRITICAL: the wireframe's gridCol/x stay ABSOLUTE. The band spans
+      // col 0 → docWidthCols, so a child's "band-relative" col equals its
+      // absolute col (mirrors wrapAsBand's child rebase at frame.ts:559).
+      // Resetting gridCol/x to 0 would shove the multi-shape group to the
+      // left edge of the document.
+      const minRow = f.gridRow;
+      const wireframe: Frame = {
+        ...f,
+        gridRow: 0,
+        gridCol: f.gridCol,
+        x: f.gridCol * charWidth,
+        y: 0,
+        docOffset: 0,
+        lineCount: 0,
+      };
+      const band: Frame = {
+        id: nextId(),
+        x: 0,
+        y: minRow * charHeight,
+        w: docWidthCols * charWidth,
+        h: f.gridH * charHeight,
+        z: 0,
+        children: [wireframe],
+        content: null,
+        clip: true,
+        dirty: true,
+        isBand: true,
+        gridRow: minRow,
+        gridCol: 0,
+        gridW: docWidthCols,
+        gridH: f.gridH,
+        docOffset: f.docOffset,
+        lineCount: f.lineCount > 0 ? f.lineCount : f.gridH,
+      };
       return band;
     }
     // Solo claiming frame — wrap as a band with this frame as the only

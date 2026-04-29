@@ -3372,6 +3372,47 @@ describe("resolveSelectionTarget", () => {
   });
 });
 
+describe("createEditorStateUnified — 4-level tree shape", () => {
+  const cw = 9.6, ch = 18;
+
+  it("solo labeled rect: tree is band → rect → text (3 levels, no wireframe wrap)", () => {
+    const md = ["Title", "", "┌────┐", "│ Hi │", "└────┘", "", "End"].join("\n");
+    const state = createEditorStateUnified(md, cw, ch);
+    const top = getFrames(state);
+    expect(top.length).toBe(1);
+    const band = top[0];
+    expect(band.isBand).toBe(true);
+    expect(band.children.length).toBe(1);
+    const rect = band.children[0];
+    expect(rect.content?.type).toBe("rect");
+    expect(rect.children.some(c => c.content?.type === "text")).toBe(true);
+  });
+
+  it("multi-shape composite: tree is band → wireframe → [rect, rect] (4 levels)", () => {
+    // Two adjacent rects that share row range — scanner's groupIntoContainers
+    // wraps them in a content=null container (verified via probe). A rect +
+    // a stray hline does NOT group (different row coverage), so we use two
+    // rects to reliably trigger the multi-shape path.
+    const md = [
+      "Title", "",
+      "┌────┐  ┌───┐",
+      "│ Hi │  │ B │",
+      "└────┘  └───┘", "",
+      "End",
+    ].join("\n");
+    const state = createEditorStateUnified(md, cw, ch);
+    const top = getFrames(state);
+    expect(top.length).toBe(1);
+    const band = top[0];
+    expect(band.isBand).toBe(true);
+    expect(band.children.length).toBe(1);
+    const wireframe = band.children[0];
+    expect(wireframe.isBand).toBeFalsy();
+    expect(wireframe.content).toBeNull();
+    expect(wireframe.children.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe("drag clamp through wireframe layer", () => {
   const cw = 9.6, ch = 18;
 

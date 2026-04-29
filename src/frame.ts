@@ -63,7 +63,7 @@ export interface Obstacle {
 
 let _counter = 0;
 
-function nextId(): string {
+export function nextId(): string {
   return `frame-${++_counter}-${Date.now()}`;
 }
 
