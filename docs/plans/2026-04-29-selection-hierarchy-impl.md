@@ -20,7 +20,54 @@
 - `npx playwright test e2e/harness.spec.ts -g "PATTERN" --workers=1` — single harness test
 - `npm run build` — typecheck + production build
 
-**Baseline before starting:** vitest 509/0, build clean, harness 119 pass / 25 fail.
+**Baseline before starting:** vitest 518/0 (drifted up from the planned 509), build clean, harness 119 pass / 25 fail.
+
+---
+
+## Phase boundaries (for `/clear` between phases)
+
+This plan executes in **three phases** with a context clear between each. The skill (`tdd-plan-executor`) runs once per phase: Gemini reviews the plan slice → sonnet writes failing tests → review tests → sonnet implements → verify GREEN → Gemini reviews diff → fix findings → commit. **One Gemini-diff-review per phase, not per task.**
+
+### Phase A — pure helpers (Tasks 1-4)
+
+`findPath`, `findContainingBandDeep`, `getBandRelativeRow/Col`, `resolveSelectionTarget`. All exported pure functions. No callers changed yet. Strictly additive — existing tests stay green.
+
+**Exit criteria:** vitest ≥ 534 PASS / 0 FAIL. Build clean. 4 commits on `feature/add-frame-fix`.
+
+**Handoff to Phase B:** memory `phase_a_complete.md` records the 4 helper signatures and the new vitest count.
+
+### Phase B — wire selection + restore wireframe layer (Tasks 5-8)
+
+Click handler uses `resolveSelectionTarget`; drag clamp uses band-relative coords; `createEditorStateUnified` keeps multi-shape containers as inner WIREFRAME frames; fix tests broken by the layer change. **This is the structural-break phase** — Task 7 explicitly breaks tests that Task 8 then fixes.
+
+**Exit criteria:** vitest ≥ 537 PASS / 0 FAIL (Task 8 brings count back up). Build clean. Harness ≤ 22 fail (down from 25 — at minimum the 5 session-introduced failures clear). Commits per task.
+
+**Handoff to Phase C:** memory `phase_b_complete.md` records the new tree shape (`band → wireframe → [shape, ...]` for multi-shape, `band → shape` for solo) and the harness delta.
+
+### Phase C — nested-mutation paths + verification (Tasks 9-15)
+
+`recomputeWireframeBounds` post-pass; push physics uses band-relative; reparent cascades through wireframes; `applyAddChildFrame` band-grow; `getFrameRects` triple-sum; round-trip serialization test; final harness sweep.
+
+**Exit criteria:** vitest ≥ 545 PASS / 0 FAIL. Build clean. Harness ≤ 20 fail. Update `HANDOFF.md`.
+
+**Handoff to optional Phase D:** memory `phase_c_complete.md` records final harness count + which baseline failures remain. Phase D is Task 16 (cleanup) — only run after Phase C confirms the suite is stable.
+
+### Phase D — cleanup (Task 16, optional)
+
+Remove magenta debug overlay, `?fixture=` URL loader, investigative diagnostic tests, factor canvas mock to `testSetup.ts`. Each sub-step is a separate commit so reverts are surgical.
+
+**Exit criteria:** vitest count drops by ~9 (diagnostic tests removed), all green. Build clean.
+
+---
+
+## Resuming after `/clear`
+
+When a new conversation begins mid-plan:
+
+1. Read `~/.claude/projects/-Users-parijat-dev-gridpad/memory/MEMORY.md` for the latest `phase_*_complete` pointer.
+2. Open this file (`docs/plans/2026-04-29-selection-hierarchy-impl.md`) and jump to the next phase's task range.
+3. Working directory: `~/dev/gridpad/.claude/worktrees/unified-document`. Branch: `feature/add-frame-fix`.
+4. Run `npx vitest run --reporter=dot 2>&1 | tail -3` to confirm the baseline matches the previous phase's exit criteria before starting.
 
 ---
 
