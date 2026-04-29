@@ -3488,3 +3488,81 @@ describe("recomputeWireframeBounds", () => {
     expect(recomputed[0].gridW).toBeGreaterThanOrEqual(20);
   });
 });
+
+describe("nested resize grows band through wireframe", () => {
+  beforeAll(() => {
+    const orig = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+      const el = orig(tag);
+      if (tag === "canvas") {
+        (el as HTMLCanvasElement).getContext = (() => ({
+          font: "", fillStyle: "", textBaseline: "", fillText: () => {},
+          measureText: (text: string) => ({
+            width: text.length * 9.6,
+            actualBoundingBoxAscent: 12, actualBoundingBoxDescent: 4,
+          }),
+        })) as unknown as HTMLCanvasElement["getContext"];
+      }
+      return el;
+    });
+  });
+
+  const cw = 9.6, ch = 18;
+  const STYLE = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("resizing a deeply-nested rect grows the band when band-relative bottom overflows", () => {
+    // Bug: push physics used target.gridRow (parent-relative) instead of
+    // getBandRelativeRow (sum of all gridRow offsets to the band).
+    // For a 4-level chain  band → outer(gr=0) → inner(gr=4) → deep(gr=2),
+    // resizing deep to gridH=3 should grow band from 6 to 9:
+    //   band-relative bottom = 0+4+2+3 = 9 > band.gridH(6).
+    // The buggy code computed childBottomAfter = deep.gridRow(2) + 3 = 5 ≤ 6,
+    // so it skipped the grow entirely.
+    const md = [
+      "Prose above", "",
+      "┌──────────┐",
+      "│          │",
+      "│          │",
+      "│          │",
+      "│          │",
+      "└──────────┘", "",
+      "Prose below",
+    ].join("\n");
+    let state = createEditorStateUnified(md, cw, ch);
+    const band = getFrames(state).find(f => f.isBand)!;
+    expect(band.isBand).toBe(true);
+    const outer = band.children[0];
+    expect(outer.content?.type).toBe("rect");
+    const oldBandH = band.gridH; // 6
+
+    // Add inner at band-relative row 4 (applyAddChildFrame takes absolute
+    // doc row; outer.gridRow=0 within the band, so absoluteRow = 4 puts
+    // inner.gridRow=4 relative to outer).
+    const inner = createRectFrame({
+      gridW: 4, gridH: 2, style: STYLE, charWidth: cw, charHeight: ch,
+    });
+    state = applyAddChildFrame(state, inner, outer.id, 4, outer.gridCol + 1);
+    const outerAfterAdd = getFrames(state).find(f => f.isBand)!.children[0];
+    const innerAdded = outerAfterAdd.children.find(c => c.id === inner.id)!;
+    expect(innerAdded.gridRow).toBe(4); // inner is 4 rows into outer
+
+    // Add deep at row 2 inside inner. absoluteRow = inner.gridRow(4) + 2 = 6.
+    const deep = createRectFrame({
+      gridW: 3, gridH: 2, style: STYLE, charWidth: cw, charHeight: ch,
+    });
+    state = applyAddChildFrame(state, deep, inner.id, innerAdded.gridRow + 2, outer.gridCol + 2);
+    const outerFinal = getFrames(state).find(f => f.isBand)!.children[0];
+    const innerFinal = outerFinal.children.find(c => c.id === inner.id)!;
+    const deepAdded = innerFinal.children.find(c => c.id === deep.id)!;
+    expect(deepAdded.gridRow).toBe(2); // deep is 2 rows into inner
+
+    // Band-relative bottom of deep = outer.gridRow(0) + inner.gridRow(4)
+    //   + deep.gridRow(2) + newGridH(3) = 9 > band.gridH(6).
+    // The buggy code uses deep.gridRow(2) → childBottomAfter = 2+3=5 ≤ 6,
+    // no grow. The fixed code uses getBandRelativeRow = 6 → 6+3=9, grows.
+    state = applyResizeFrame(state, deep.id, deep.gridW, 3, cw, ch);
+
+    const afterBand = getFrames(state).find(f => f.isBand)!;
+    expect(afterBand.gridH).toBeGreaterThan(oldBandH);
+  });
+});

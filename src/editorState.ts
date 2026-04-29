@@ -616,8 +616,14 @@ export function createEditorState(init: EditorStateInit): EditorState {
       if (!target || target.lineCount > 0) continue; // not a child
       const parent = findContainingBandDeep(startFrames, e.value.id);
       if (!parent) continue;
-      const childBottomAfter = target.gridRow + Math.max(2, e.value.gridH);
-      const childRightAfter = target.gridCol + Math.max(2, e.value.gridW);
+      // Band-relative position via getBandRelativeRow handles the 4-level
+      // model where target.gridRow may be wireframe-relative, not band-
+      // relative. For solo-rect-in-band cases the helper returns
+      // target.gridRow unchanged.
+      const childBandRow = getBandRelativeRow(e.value.id, parent.id, startFrames);
+      const childBandCol = getBandRelativeCol(e.value.id, parent.id, startFrames);
+      const childBottomAfter = childBandRow + Math.max(2, e.value.gridH);
+      const childRightAfter = childBandCol + Math.max(2, e.value.gridW);
       const newBandH = Math.max(parent.gridH, childBottomAfter);
       const newBandW = Math.max(parent.gridW, childRightAfter);
       if (newBandH === parent.gridH && newBandW === parent.gridW) continue;
