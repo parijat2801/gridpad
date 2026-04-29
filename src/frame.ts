@@ -31,6 +31,19 @@ export interface Frame {
   w: number;
   h: number;
   z: number;
+  /** Direct child frames in tree order. NOTE: a frame with non-null
+   * `content` can still have children — e.g. a rect with a text label
+   * has the label as a child. "Has content" does NOT imply "tree-leaf".
+   *
+   * When walking the tree, distinguish:
+   * - tree-leaf:    `f.children.length === 0`
+   * - band:         `f.isBand`
+   * - wireframe:    `f.content === null && !f.isBand`
+   * - shape-leaf:   `f.content !== null` (may still have text-label children)
+   *
+   * DFS-walking "until content !== null" will descend into text labels
+   * and treat them as siblings of their parent rect. Filter by
+   * `content?.type` (e.g. only "rect") to pick true sibling shapes. */
   children: Frame[];
   content: FrameContent | null;
   clip: boolean;
