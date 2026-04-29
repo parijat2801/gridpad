@@ -4184,35 +4184,3 @@ test.describe("eager-band interactive UX regressions", () => {
     expect(Math.abs(lowerAfter!.y - lowerBefore.y), "lower must stay anchored").toBeLessThanOrEqual(1);
   });
 });
-
-test.describe("BUG: shape-fills-band drag clamped to zero", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto("/");
-    await page.waitForTimeout(2000);
-  });
-
-  // Repro: when a shape inside a band has gridW equal to (or close to) the
-  // band's gridW, the band-relative drag clamp in DemoV2 computes
-  // minDCol = -bandRelativeCol = 0 and maxDCol = band.gridW - shape.gridW
-  // - bandRelativeCol = 0. Every horizontal pixel of motion gets clamped
-  // away and the user sees the frame stuck in place.
-  //
-  // The harness already reproduces this via "drag three-in-row right, no
-  // ghosts" (THREE_IN_ROW is a wide rect with internal junctions; rect's
-  // gridW ≈ band's gridW). This focused test names the bug explicitly so
-  // a future fix has a clear regression target.
-  //
-  // Fix direction: when the dragged shape spans the full band width,
-  // either skip the horizontal clamp (let user drag past edge — band
-  // rotation handles vertical, no horizontal-rotation analog) or escalate
-  // the move to the band itself.
-
-  test("REPRO: dragging a wide shape (gridW ≈ band.gridW) horizontally is stuck", async ({ page }) => {
-    const WIDE_SHAPE = "Header\n\n┌───┬──────┬─────────┐\n│ S │  Med │  Wide   │\n│   │      │         │\n└───┴──────┴─────────┘\n\nFooter";
-    await load(page, WIDE_SHAPE);
-    await clickFrame(page, 0);
-    // dragSelected throws if the frame didn't move. The harness already
-    // asserts "didn't move" — we just call it directly to surface the bug.
-    await dragSelected(page, 60, 0);
-  });
-});
