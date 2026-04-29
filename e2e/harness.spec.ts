@@ -1337,10 +1337,14 @@ test.describe("harness", () => {
     const flat = flattenTree(tree);
     writeArtifact("struct-side-by-side", "tree.json", JSON.stringify(flat, null, 2));
 
-    // 1 container wrapping 2 rects (same row range → grouped)
+    // Under eager bands, tree[0] is the synthetic full-width band wrapper.
+    // The user-visible container holding both rects lives at tree[0].children[0].
     expect(tree).toHaveLength(1);
     expect(tree[0].contentType).toBe("container");
-    const rectChildren = tree[0].children.filter((c: any) => c.contentType === "rect");
+    expect(tree[0].childCount).toBe(1);
+    const wireframe = tree[0].children[0];
+    expect(wireframe.contentType).toBe("container");
+    const rectChildren = wireframe.children.filter((c: any) => c.contentType === "rect");
     expect(rectChildren.length).toBe(2);
   });
 
