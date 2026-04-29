@@ -1322,6 +1322,12 @@ function computeDocWidthCols(state: EditorState, children: Frame[]): number {
  * Caller-supplied gridRow/gridCol are absolute; helper rebases them
  * parent-relative so children stay visually anchored as parent moves.
  * No doc lines are inserted (children don't claim doc lines).
+ *
+ * Bug A fix: computes parent's absolute row by walking the full path via
+ * findPath so nested parents (shape-in-wireframe) convert correctly.
+ * Bug B fix: if child's bottom overflows the containing band, emit a
+ * resizeFrameEffect for the band BEFORE the addChildFrameEffect so that
+ * unifiedDocSync inserts blank claim lines in the same transaction.
  */
 export function applyAddChildFrame(
   state: EditorState,
@@ -1330,12 +1336,23 @@ export function applyAddChildFrame(
   absoluteGridRow: number,
   absoluteGridCol: number,
 ): EditorState {
-  const parent = findFrameInList(getFrames(state), parentId);
+  const frames = getFrames(state);
+  const parent = findFrameInList(frames, parentId);
   if (!parent) return state;
   const charWidth = frame.gridW > 0 ? frame.w / frame.gridW : 0;
   const charHeight = frame.gridH > 0 ? frame.h / frame.gridH : 0;
-  const childGridRow = absoluteGridRow - parent.gridRow;
-  const childGridCol = absoluteGridCol - parent.gridCol;
+
+  // Compute parent's absolute (doc-grid) row/col by walking the path. For a
+  // top-level parent the path has length 1 and the sum equals parent.gridRow.
+  // For a nested parent (e.g. shape-in-wireframe) we sum every gridRow on
+  // the path so the conversion to parent-relative coords is correct.
+  const path = findPath(frames, parentId);
+  let parentAbsRow = 0;
+  let parentAbsCol = 0;
+  for (const p of path) { parentAbsRow += p.gridRow; parentAbsCol += p.gridCol; }
+
+  const childGridRow = absoluteGridRow - parentAbsRow;
+  const childGridCol = absoluteGridCol - parentAbsCol;
   const prepared: Frame = {
     ...frame,
     x: childGridCol * charWidth,
@@ -1345,8 +1362,27 @@ export function applyAddChildFrame(
     lineCount: 0,
     docOffset: 0,
   };
+
+  // Band-grow: if the new child's bottom (in band-relative coords) exceeds
+  // the containing band's gridH, emit a resize effect FIRST so unifiedDocSync
+  // inserts blank claim lines before the child lands.
+  const containingBand = findContainingBandDeep(frames, parentId);
+  const effects: StateEffect<unknown>[] = [];
+  if (containingBand) {
+    const childAbsBottom = absoluteGridRow - containingBand.gridRow + frame.gridH;
+    if (childAbsBottom > containingBand.gridH) {
+      effects.push(resizeFrameEffect.of({
+        id: containingBand.id,
+        gridW: containingBand.gridW,
+        gridH: childAbsBottom,
+        charWidth,
+        charHeight,
+      }));
+    }
+  }
+  effects.push(addChildFrameEffect.of({ parentId, frame: prepared }));
   return state.update({
-    effects: addChildFrameEffect.of({ parentId, frame: prepared }),
+    effects,
     annotations: Transaction.addToHistory.of(true),
   }).state;
 }

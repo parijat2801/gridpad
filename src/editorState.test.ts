@@ -2320,11 +2320,12 @@ describe("add wireframe in unified mode", () => {
     expect(rectAfter.children.length).toBe(1);          // the rect gained the new child
     const addedChild = rectAfter.children[0];
     expect(addedChild.lineCount).toBe(0);
-    // gridRow on a child is relative to its immediate parent (parentRect),
-    // using the stored parentRect.gridRow (which is itself band-relative).
-    // applyAddChildFrame computes: childGridRow = absoluteGridRow - parent.gridRow
-    expect(addedChild.gridRow).toBe(3 - parentRect.gridRow);
-    expect(addedChild.gridCol).toBe(1 - parentRect.gridCol);
+    // gridRow on a child is relative to its immediate parent (parentRect).
+    // applyAddChildFrame walks the full path and sums all gridRows, so:
+    //   childGridRow = absoluteGridRow - (band.gridRow + parentRect.gridRow)
+    // band.gridRow=2, parentRect.gridRow=0 → childGridRow = 3 - 2 - 0 = 1.
+    expect(addedChild.gridRow).toBe(3 - band.gridRow - parentRect.gridRow);
+    expect(addedChild.gridCol).toBe(1 - band.gridCol - parentRect.gridCol);
     // Band's claim unchanged.
     expect(after[0].lineCount).toBe(parentLineCountBefore);
   });
@@ -3537,21 +3538,22 @@ describe("nested resize grows band through wireframe", () => {
     const oldBandH = band.gridH; // 6
 
     // Add inner at band-relative row 4 (applyAddChildFrame takes absolute
-    // doc row; outer.gridRow=0 within the band, so absoluteRow = 4 puts
-    // inner.gridRow=4 relative to outer).
+    // doc row; with path-summing, absoluteRow = band.gridRow + outer.gridRow + 4
+    // so inner.gridRow = 4 relative to outer).
     const inner = createRectFrame({
       gridW: 4, gridH: 2, style: STYLE, charWidth: cw, charHeight: ch,
     });
-    state = applyAddChildFrame(state, inner, outer.id, 4, outer.gridCol + 1);
+    state = applyAddChildFrame(state, inner, outer.id, band.gridRow + outer.gridRow + 4, outer.gridCol + 1);
     const outerAfterAdd = getFrames(state).find(f => f.isBand)!.children[0];
     const innerAdded = outerAfterAdd.children.find(c => c.id === inner.id)!;
     expect(innerAdded.gridRow).toBe(4); // inner is 4 rows into outer
 
-    // Add deep at row 2 inside inner. absoluteRow = inner.gridRow(4) + 2 = 6.
+    // Add deep at row 2 inside inner.
+    // absoluteRow = band.gridRow + outer.gridRow + inner.gridRow(4) + 2.
     const deep = createRectFrame({
       gridW: 3, gridH: 2, style: STYLE, charWidth: cw, charHeight: ch,
     });
-    state = applyAddChildFrame(state, deep, inner.id, innerAdded.gridRow + 2, outer.gridCol + 2);
+    state = applyAddChildFrame(state, deep, inner.id, band.gridRow + outer.gridRow + innerAdded.gridRow + 2, outer.gridCol + 2);
     const outerFinal = getFrames(state).find(f => f.isBand)!.children[0];
     const innerFinal = outerFinal.children.find(c => c.id === inner.id)!;
     const deepAdded = innerFinal.children.find(c => c.id === deep.id)!;
@@ -3724,5 +3726,53 @@ describe("reparent cascade-prunes empty wireframes and bands", () => {
       f => f.isBand && f.children.some(c => c.id === soloRect.id)
     );
     expect(rectIsTopLevel).toBe(true);
+  });
+});
+
+describe("applyAddChildFrame band-grow when nesting deep", () => {
+  beforeAll(() => {
+    const orig = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+      const el = orig(tag);
+      if (tag === "canvas") {
+        (el as HTMLCanvasElement).getContext = (() => ({
+          font: "", fillStyle: "", textBaseline: "", fillText: () => {},
+          measureText: (text: string) => ({
+            width: text.length * 9.6,
+            actualBoundingBoxAscent: 12, actualBoundingBoxDescent: 4,
+          }),
+        })) as unknown as HTMLCanvasElement["getContext"];
+      }
+      return el;
+    });
+  });
+
+  const cw = 9.6, ch = 18;
+  const STYLE = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("adding a child rect that overflows grows the containing band", () => {
+    const md = [
+      "Title", "",
+      "┌────┐",
+      "│ Hi │",
+      "└────┘", "",
+      "End",
+    ].join("\n");
+    let state = createEditorStateUnified(md, cw, ch);
+    const band = getFrames(state).find(f => f.isBand)!;
+    const rect = band.children[0]; // solo case — band → rect
+    const oldBandH = band.gridH;
+
+    // Add a child that would extend below the band's current bottom.
+    // Place it at absoluteRow = band.gridRow (so child is at the top of the
+    // band, child gridRow=0 inside the parent rect) but with gridH big
+    // enough to overflow.
+    const newChild = createRectFrame({
+      gridW: 2, gridH: oldBandH + 5, style: STYLE, charWidth: cw, charHeight: ch,
+    });
+    state = applyAddChildFrame(state, newChild, rect.id, band.gridRow, band.gridCol);
+
+    const after = getFrames(state).find(f => f.isBand)!;
+    expect(after.gridH).toBeGreaterThan(oldBandH);
   });
 });
