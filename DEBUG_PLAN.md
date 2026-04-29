@@ -27,6 +27,7 @@ during a drag-start. See Fix 1 for the corrected diagnosis.
 | 5 | Vertical residual escalates band rotation when child is at wall | 2 (E143, E144) | UX bug | Small — drop residual when clampedDelta = 0 |
 | 6 | Promote step doesn't produce 2 top-level frames | 2 (E136, E137) | Open | Unknown — needs separate investigation |
 | 7 | Test assertion uses pre-Phase-B tree shape | 1 (C) | Test-only | Trivial — update assertion |
+| I-A..E | Five A→D cascades that didn't clear with Fix 1 (62, 98, 99, 109, 130) | 5 | Mixed | See "Open investigations" section below |
 
 Estimated post-fix harness: **~3 tests still failing** (E136, E137 + maybe one cascade).
 
@@ -319,6 +320,33 @@ expect(rectChildren.length).toBe(2);
 ```
 
 Pure test update; no production code change.
+
+---
+
+## Open investigations (post Fix 1)
+
+These failures were originally classified as A→D cascades, expected to
+clear with Fix 1. They didn't — the click/drag separation alone wasn't
+enough. Each has a secondary root cause that needs separate
+investigation. Not yet promoted to numbered Fixes because root cause is
+unknown.
+
+| Inv # | Test | Symptom on current main | Investigation hypothesis |
+|-------|------|--------------------------|--------------------------|
+| I-A | 62 — move-then-enter: move frame down, then Enter above it | Tree state inconsistent after Enter follows a drag | Enter handler may not see the post-drag frame tree (stale ref?) |
+| I-B | 98 — undo: resize then undo, save matches original | Save after undo doesn't match original input | Resize undo may not invert all effects; check inverted-effects coverage |
+| I-C | 99 — undo: move-resize-undo-undo, back to original | Two-undo doesn't restore original tree | History stack may be coalescing or losing a step |
+| I-D | 109 — Backspace merges line above wireframe, frame shifts up | Frame doesn't shift up the way the test expects | Backspace handler's interaction with band rotation budget |
+| I-E | 130 — drag child to different parent: child nests under new parent | Cross-parent reparent on drop doesn't land where expected | Possibly related to Fix 3 (reparent guard) but also possibly a separate cross-parent path bug |
+
+**Recommended approach:** investigate I-D and I-E first — both touch
+band rotation / reparent paths that overlap with Fixes 2/3. May share
+root causes. I-A, I-B, I-C are undo/sequence-of-actions bugs and likely
+have a different shared cause (history-stack handling).
+
+For each: write a unit-level repro that exercises the model directly
+(no browser), confirm the failure mode, then promote to a numbered
+Fix in the table above.
 
 ---
 
