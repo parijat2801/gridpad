@@ -14,6 +14,7 @@ import {
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
+  resolveSelectionTarget,
   type CursorPos,
 } from "./editorState";
 import { serializeUnified } from "./serializeUnified";
@@ -166,8 +167,6 @@ interface DragState {
   frameId: string; startX: number; startY: number;
   startFrameX: number; startFrameY: number; startFrameW: number; startFrameH: number;
   hasMoved: boolean; resizeHandle?: ResizeHandle;
-  /** Deferred drill-down: if set, apply this selection on mouseUp when !hasMoved */
-  pendingDrillDownId?: string;
 }
 
 type ToolName = "select" | "rect" | "line" | "text";
@@ -520,24 +519,13 @@ export default function DemoV2() {
         }
       }
     }
-    // Drill-down UX: first click selects container, second click on child selects child
-    // But drill-down is deferred to mouseUp — on mouseDown we always drag the
-    // currently selected frame (or its container) to avoid stealing resize handles.
-    // Synthetic bands (isBand) are transparent — they have no visible border, so
-    // a click on a rect inside a band selects the rect directly. The band is
-    // never a drill-down container.
-    const hitContainer = hit
-      ? framesRef.current.find(f => !f.isBand && (f.id === hit.id || hasDescendant(f, hit.id))) ?? null
+    // Resolve selection target via the drill-down rule. Ctrl/cmd held →
+    // bypass drill-down and select the deepest hit directly. Bands are
+    // never selectable; resolveSelectionTarget returns null in that case.
+    const ctrlHeld = e.ctrlKey || e.metaKey;
+    const targetId = hit
+      ? resolveSelectionTarget(hit, currentSelectedId, framesRef.current, ctrlHeld)
       : null;
-    const wouldDrillDown = hit && hitContainer && currentSelectedId === hitContainer.id && currentSelectedId !== hit.id;
-    const targetId = hit ? (
-      // If we'd drill down, defer it — keep current selection for dragging
-      wouldDrillDown ? currentSelectedId
-      // If the hit IS what's already selected, keep it
-      : currentSelectedId === hit.id ? hit.id
-      // Otherwise select the container (or the hit itself if no non-band container)
-      : hitContainer?.id ?? hit.id
-    ) : null;
     const now = Date.now();
     const last = lastClickRef.current;
     const isDblClick = last !== null && now - last.time < 300 && Math.abs(px - last.px) < 10 && Math.abs(py - last.py) < 10;
@@ -559,7 +547,7 @@ export default function DemoV2() {
       stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(targetId) }).state;
       proseCursorRef.current = null; textEditRef.current = null;
       const found = findFrameById(framesRef.current, targetId);
-      if (found) dragRef.current = { frameId: targetId, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false, pendingDrillDownId: wouldDrillDown ? hit.id : undefined };
+      if (found) dragRef.current = { frameId: targetId, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false };
       paint();
     } else {
       stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
@@ -697,14 +685,6 @@ export default function DemoV2() {
 
   function onMouseUp(e?: React.MouseEvent) {
     if (dragRef.current) {
-      // Deferred drill-down: if user clicked without dragging, apply the
-      // drill-down selection now (selects the child instead of the container)
-      if (!dragRef.current.hasMoved && dragRef.current.pendingDrillDownId) {
-        stateRef.current = stateRef.current.update({
-          effects: selectFrameEffect.of(dragRef.current.pendingDrillDownId),
-        }).state;
-        paint();
-      }
       // Reparent on drop: if mouseup cursor lands inside a different
       // top-level frame than where the dragged frame's current parent is,
       // demote into that frame (or promote out of one). Figma-style.
@@ -781,7 +761,24 @@ export default function DemoV2() {
   useEffect(() => {
     Promise.all([measureCellSize(), ensureProseFontReady()]).then(() => {
       cwRef.current = getCharWidth(); chRef.current = getCharHeight();
-      loadDocument(DEFAULT_TEXT); setReady(true);
+      // Optional fixture loader — `?fixture=wall-stack-vert` swaps DEFAULT_TEXT
+      // for a named harness fixture so manual reproduction matches the e2e
+      // test setup. No-op when the param is absent or unrecognized.
+      const fixtureName = new URLSearchParams(window.location.search).get("fixture");
+      const FIXTURES: Record<string, string> = {
+        "wall-stack-vert": [
+          "Title", "",
+          "┌──────────┐",
+          "│  Top     │",
+          "└──────────┘", "", "", "",
+          "┌──────────┐",
+          "│  Bottom  │",
+          "└──────────┘", "",
+          "End",
+        ].join("\n"),
+      };
+      const initialText = (fixtureName && FIXTURES[fixtureName]) || DEFAULT_TEXT;
+      loadDocument(initialText); setReady(true);
       // Expose test hooks for Playwright round-trip testing
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__gridpad = {
