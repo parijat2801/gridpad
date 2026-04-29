@@ -47,6 +47,7 @@ import {
   getBandRelativeRow,
   getBandRelativeCol,
   resolveSelectionTarget,
+  recomputeWireframeBounds,
 } from "./editorState";
 import { createFrame, createTextFrame, createRectFrame, createLineFrame, type Frame } from "./frame";
 
@@ -3433,5 +3434,57 @@ describe("drag clamp through wireframe layer", () => {
     const minDRow = -getBandRelativeRow(rect.id, cband.id, getFrames(state));
     // Math.abs avoids -0 vs +0 strict equality (Object.is) quirk.
     expect(Math.abs(minDRow)).toBe(0);
+  });
+});
+
+describe("recomputeWireframeBounds", () => {
+  beforeAll(() => {
+    const orig = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+      const el = orig(tag);
+      if (tag === "canvas") {
+        (el as HTMLCanvasElement).getContext = (() => ({
+          font: "", fillStyle: "", textBaseline: "", fillText: () => {},
+          measureText: (text: string) => ({
+            width: text.length * 9.6,
+            actualBoundingBoxAscent: 12, actualBoundingBoxDescent: 4,
+          }),
+        })) as unknown as HTMLCanvasElement["getContext"];
+      }
+      return el;
+    });
+  });
+
+  const cw = 9.6, ch = 18;
+  const STYLE = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("shrinks wireframe bbox when child moves closer to origin", () => {
+    const inner = createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: cw, charHeight: ch });
+    inner.gridCol = 10;
+    inner.x = 10 * cw;
+    const wireframe: Frame = {
+      ...createRectFrame({ gridW: 14, gridH: 3, style: STYLE, charWidth: cw, charHeight: ch }),
+      content: null,
+      gridCol: 0,
+      gridW: 14,
+      children: [inner],
+    };
+    const recomputed = recomputeWireframeBounds([wireframe]);
+    expect(recomputed[0].gridCol).toBe(10);
+    expect(recomputed[0].gridW).toBe(4);
+    expect(recomputed[0].children[0].gridCol).toBe(0);
+  });
+
+  it("grows wireframe bbox when child grows past current extent", () => {
+    const inner = createRectFrame({ gridW: 20, gridH: 3, style: STYLE, charWidth: cw, charHeight: ch });
+    inner.gridCol = 0;
+    const wireframe: Frame = {
+      ...createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: cw, charHeight: ch }),
+      content: null,
+      gridW: 4,
+      children: [inner],
+    };
+    const recomputed = recomputeWireframeBounds([wireframe]);
+    expect(recomputed[0].gridW).toBeGreaterThanOrEqual(20);
   });
 });

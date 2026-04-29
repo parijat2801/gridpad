@@ -416,6 +416,10 @@ const framesField = StateField.define<Frame[]>({
       const lineCount = Math.min(f.lineCount, maxLineCount);
       return { ...f, gridRow: lineNum, lineCount };
     });
+    // Recompute wireframe bboxes whenever any effect changed the tree.
+    if (result !== frames) {
+      result = recomputeWireframeBounds(result);
+    }
     return result;
   },
 });
@@ -1523,6 +1527,59 @@ export function resolveSelectionTarget(
     }
   }
   return chain[0].id;
+}
+
+/** Walk the tree and recompute every wireframe (`content === null && !isBand`)
+ * frame's bbox to be the bounding union of its children's absolute extents.
+ * Children are rebased to keep their absolute screen positions stable (same
+ * delta-rebase logic as wrapAsBand). Required because hitTestOne's strict
+ * bounds check would otherwise make children that grew past the wireframe
+ * un-clickable. */
+export function recomputeWireframeBounds(frames: Frame[]): Frame[] {
+  const recompute = (f: Frame): Frame => {
+    const newChildren = f.children.map(recompute);
+    if (f.isBand || f.content !== null || newChildren.length === 0) {
+      return newChildren === f.children ? f : { ...f, children: newChildren };
+    }
+    let minRow = Infinity, minCol = Infinity, maxRow = 0, maxCol = 0;
+    for (const c of newChildren) {
+      if (c.gridRow < minRow) minRow = c.gridRow;
+      if (c.gridCol < minCol) minCol = c.gridCol;
+      if (c.gridRow + c.gridH > maxRow) maxRow = c.gridRow + c.gridH;
+      if (c.gridCol + c.gridW > maxCol) maxCol = c.gridCol + c.gridW;
+    }
+    if (minRow === 0 && minCol === 0
+        && maxRow === f.gridH && maxCol === f.gridW) {
+      return newChildren === f.children ? f : { ...f, children: newChildren };
+    }
+    let cw = 0, ch = 0;
+    for (const c of newChildren) {
+      if (c.gridW > 0) { cw = c.w / c.gridW; break; }
+    }
+    for (const c of newChildren) {
+      if (c.gridH > 0) { ch = c.h / c.gridH; break; }
+    }
+    const rebasedChildren = newChildren.map(c => ({
+      ...c,
+      gridRow: c.gridRow - minRow,
+      gridCol: c.gridCol - minCol,
+      x: (c.gridCol - minCol) * cw,
+      y: (c.gridRow - minRow) * ch,
+    }));
+    return {
+      ...f,
+      gridRow: f.gridRow + minRow,
+      gridCol: f.gridCol + minCol,
+      gridW: maxCol - minCol,
+      gridH: maxRow - minRow,
+      x: (f.gridCol + minCol) * cw,
+      y: (f.gridRow + minRow) * ch,
+      w: (maxCol - minCol) * cw,
+      h: (maxRow - minRow) * ch,
+      children: rebasedChildren,
+    };
+  };
+  return frames.map(recompute);
 }
 
 /**
