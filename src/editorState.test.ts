@@ -42,6 +42,11 @@ import {
   getOriginalProseSegments,
   applySetOriginalProseSegments,
   type CursorPos,
+  findPath,
+  findContainingBandDeep,
+  getBandRelativeRow,
+  getBandRelativeCol,
+  resolveSelectionTarget,
 } from "./editorState";
 import { createFrame, createTextFrame, createRectFrame, createLineFrame, type Frame } from "./frame";
 
@@ -2887,5 +2892,482 @@ describe("eager-band data correctness regressions", () => {
       const childAbsBottom = merged.gridRow + child.gridRow + child.gridH;
       expect(childAbsBottom).toBeLessThanOrEqual(merged.gridRow + merged.gridH);
     }
+  });
+});
+
+// ── Diagnostic: wall-stack-vert text-loss ──────────────────────────────────
+// Mirrors the failing harness test "stack two same-width boxes vertically".
+// The harness loads two stacked labeled rects, drags the bottom one up, saves,
+// and finds that `Bottom` text is missing from the saved markdown. This
+// describe block isolates the failure at the data-model layer by dispatching
+// the same effect the drag handler would emit, asserting frame state at each
+// boundary (post-load → post-move → post-serialize) so the first failing
+// assertion identifies which layer drops the text.
+
+describe("diagnostic: wall-stack-vert text loss", () => {
+  beforeAll(() => {
+    const origCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+      const el = origCreateElement(tag);
+      if (tag === "canvas") {
+        (el as HTMLCanvasElement).getContext = (() => ({
+          font: "", fillStyle: "", textBaseline: "", fillText: () => {},
+          measureText: (text: string) => ({
+            width: text.length * 9.6,
+            actualBoundingBoxAscent: 12,
+            actualBoundingBoxDescent: 4,
+          }),
+        })) as unknown as HTMLCanvasElement["getContext"];
+      }
+      return el;
+    });
+  });
+
+  const STACKED = [
+    "Title", "",
+    "┌──────────┐",
+    "│  Top     │",
+    "└──────────┘", "", "", "",
+    "┌──────────┐",
+    "│  Bottom  │",
+    "└──────────┘", "",
+    "End",
+  ].join("\n");
+
+  /** Walk frames recursively, return all rect frames carrying a text-child. */
+  function findRectsWithTextChild(frames: Frame[]): Frame[] {
+    const out: Frame[] = [];
+    const walk = (f: Frame) => {
+      const hasText = f.children.some(c => c.content?.type === "text");
+      if (hasText && f.content?.type === "rect") out.push(f);
+      for (const c of f.children) walk(c);
+    };
+    for (const f of frames) walk(f);
+    return out;
+  }
+
+  /** Find the first text-child string under a given rect. */
+  function textOf(rect: Frame): string {
+    const t = rect.children.find(c => c.content?.type === "text");
+    if (!t || t.content?.type !== "text") return "";
+    return t.content.text ?? "";
+  }
+
+  it("post-LOAD: both rects have text-child content (Top, Bottom)", () => {
+    const state = createEditorStateUnified(STACKED, 9.6, 18);
+    const rects = findRectsWithTextChild(getFrames(state));
+    const labels = rects.map(textOf).sort();
+    expect(labels).toEqual(["Bottom", "Top"]);
+    // Dump tree for human inspection (one-off — remove after design choice).
+    const lines: string[] = [];
+    const dump = (f: Frame, d = 0) => {
+      const tag = f.isBand ? "BAND" : f.content?.type ?? "container";
+      const text = f.content?.type === "text" ? `"${f.content.text}"` : "";
+      lines.push(`${"  ".repeat(d)}${tag} gR=${f.gridRow} gC=${f.gridCol} gW=${f.gridW} gH=${f.gridH} ch=${f.children.length} ${text}`);
+      for (const c of f.children) dump(c, d + 1);
+    };
+    for (const f of getFrames(state)) dump(f);
+    // eslint-disable-next-line no-console
+    console.log("\nFRAME-TREE\n" + lines.join("\n") + "\n");
+  });
+
+  it("post-MOVE: dragging the bottom band up by 3 rows preserves Bottom text", () => {
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(STACKED, cw, ch);
+
+    const bands = getFrames(state).filter(f => f.isBand);
+    expect(bands.length).toBe(2);
+    const bottomBand = bands.reduce((a, b) => (a.gridRow > b.gridRow ? a : b));
+
+    // Drag up by 3 rows — the residual the drag handler emits on the band
+    // when the child rect can't move further within band bounds.
+    state = applyMoveFrame(state, bottomBand.id, 0, -3, cw, ch);
+
+    const rects = findRectsWithTextChild(getFrames(state));
+    const labels = rects.map(textOf).sort();
+    expect(labels).toEqual(["Bottom", "Top"]);
+  });
+
+  it("post-SERIALIZE: saved markdown contains Bottom text after the move", async () => {
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(STACKED, cw, ch);
+    const bands = getFrames(state).filter(f => f.isBand);
+    const bottomBand = bands.reduce((a, b) => (a.gridRow > b.gridRow ? a : b));
+    state = applyMoveFrame(state, bottomBand.id, 0, -3, cw, ch);
+
+    const { serializeUnified } = await import("./serializeUnified");
+    const md = serializeUnified(getDoc(state), getFrames(state));
+    expect(md).toContain("Top");
+    expect(md).toContain("Bottom");
+  });
+
+  it("post-MOVE-then-CLICKPROSE: prose click after drag preserves Bottom text", () => {
+    // After dragging, the harness calls clickProse(page, 5, 5) which moves
+    // the cursor into the prose region. That dispatches a selection-change
+    // transaction. If anything in the framesField update path or in
+    // unifiedDocSync corrupts the frame tree on a non-frame transaction,
+    // this test will catch it.
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(STACKED, cw, ch);
+    const bands = getFrames(state).filter(f => f.isBand);
+    const bottomBand = bands.reduce((a, b) => (a.gridRow > b.gridRow ? a : b));
+    state = applyMoveFrame(state, bottomBand.id, 0, -3, cw, ch);
+
+    // Mimic clickProse — set cursor into prose. Doc start (row 0 col 0) is safe.
+    state = moveCursorTo(state, { row: 0, col: 0 });
+
+    const rects = findRectsWithTextChild(getFrames(state));
+    const labels = rects.map(textOf).sort();
+    expect(labels).toEqual(["Bottom", "Top"]);
+  });
+
+  it("multi-step drag: incremental moves totaling -3 rows preserve text", () => {
+    // The harness's dragSelected does multiple sequential page.mouse.move
+    // calls (5 steps for dy=-50), each potentially producing a separate
+    // moveFrameEffect dispatch. Each dispatch routes through framesField
+    // + unifiedDocSync independently. If any intermediate state corrupts
+    // children, this test catches it.
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(STACKED, cw, ch);
+    const bands = getFrames(state).filter(f => f.isBand);
+    const bottomBand = bands.reduce((a, b) => (a.gridRow > b.gridRow ? a : b));
+
+    // Simulate 3 separate -1 row moves rather than one -3 move.
+    state = applyMoveFrame(state, bottomBand.id, 0, -1, cw, ch);
+    state = applyMoveFrame(state, bottomBand.id, 0, -1, cw, ch);
+    state = applyMoveFrame(state, bottomBand.id, 0, -1, cw, ch);
+
+    const rects = findRectsWithTextChild(getFrames(state));
+    const labels = rects.map(textOf).sort();
+    expect(labels).toEqual(["Bottom", "Top"]);
+  });
+
+  it("drag-handler-style dispatch: targets the RECT, residual to band", () => {
+    // Click on the rect inside the bottom band. DemoV2 selects the rect's
+    // container (the rect itself, since the band is non-selectable). The
+    // drag handler then computes a per-step dRow and routes to either:
+    //   (a) the rect, clamped to band bounds, or
+    //   (b) the band, with residual.
+    // For wall-stack-vert: child gridRow=0, gridH=3, band gridH=3 →
+    // clampedDRow=0, residualDRow=dRow → entire delta goes to the band.
+    // (Same effect as testing the band directly, but verifying anyway with
+    // the rect-id call to confirm the moveFrameEffect handler walks tree.)
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(STACKED, cw, ch);
+    const bands = getFrames(state).filter(f => f.isBand);
+    const bottomBand = bands.reduce((a, b) => (a.gridRow > b.gridRow ? a : b));
+    const bottomRect = bottomBand.children[0];
+    expect(bottomRect.content?.type).toBe("rect");
+
+    // Dispatch on the rect — see if framesField walks children to find it
+    // and whether the move corrupts text-children.
+    state = applyMoveFrame(state, bottomRect.id, 0, -3, cw, ch);
+
+    const rects = findRectsWithTextChild(getFrames(state));
+    const labels = rects.map(textOf).sort();
+    expect(labels).toEqual(["Bottom", "Top"]);
+  });
+
+  it("drag-handler-style: combined rect-clamp + band-residual in one transaction", () => {
+    // Mirrors DemoV2.tsx:677-682 — when both clampedDRow and residualDRow
+    // are nonzero, BOTH effects dispatch in one .update() call. For the
+    // stack-vert scenario, clampedDRow=0 so only band moves, but verify the
+    // dual-effect path doesn't corrupt children either way.
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(STACKED, cw, ch);
+    const bands = getFrames(state).filter(f => f.isBand);
+    const bottomBand = bands.reduce((a, b) => (a.gridRow > b.gridRow ? a : b));
+    const bottomRect = bottomBand.children[0];
+
+    state = state.update({
+      effects: [
+        moveFrameEffect.of({ id: bottomRect.id, dCol: 0, dRow: 0, charWidth: cw, charHeight: ch }),
+        moveFrameEffect.of({ id: bottomBand.id, dCol: 0, dRow: -3, charWidth: cw, charHeight: ch }),
+      ],
+      annotations: [Transaction.addToHistory.of(true)],
+    }).state;
+
+    const rects = findRectsWithTextChild(getFrames(state));
+    const labels = rects.map(textOf).sort();
+    expect(labels).toEqual(["Bottom", "Top"]);
+  });
+
+  it("multi-step drag with overlap: residual moves into top band — text still preserved", () => {
+    // The harness drags by 50px. With ch≈18, that's potentially up to 3
+    // rows. As the band approaches the top band's rows, the bands may
+    // overlap and trigger mergeOverlappingBands. This test tries 4 row
+    // moves to force overlap and verify the merged shape preserves text.
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(STACKED, cw, ch);
+    const bands = getFrames(state).filter(f => f.isBand);
+    const bottomBand = bands.reduce((a, b) => (a.gridRow > b.gridRow ? a : b));
+
+    // -4 rows: bottom band starts at row 9, would land at row 5 — overlapping
+    // top band's rows 3..5. Triggers merge.
+    state = applyMoveFrame(state, bottomBand.id, 0, -4, cw, ch);
+
+    const rects = findRectsWithTextChild(getFrames(state));
+    const labels = rects.map(textOf).sort();
+    expect(labels).toEqual(["Bottom", "Top"]);
+  });
+
+  it("post-SAVE-CYCLE: full save (serialize + applyClearDirty) preserves Bottom in the saved string", async () => {
+    // Mirrors __gridpad.saveDocument: serialize → applyClearDirty → return md.
+    const cw = 9.6, ch = 18;
+    let state = createEditorStateUnified(STACKED, cw, ch);
+    const bands = getFrames(state).filter(f => f.isBand);
+    const bottomBand = bands.reduce((a, b) => (a.gridRow > b.gridRow ? a : b));
+    state = applyMoveFrame(state, bottomBand.id, 0, -3, cw, ch);
+
+    const { serializeUnified } = await import("./serializeUnified");
+    const md = serializeUnified(getDoc(state), getFrames(state));
+    state = applyClearDirty(state);
+
+    expect(md).toContain("Top");
+    expect(md).toContain("Bottom");
+
+    // Re-load the saved string and check it still has Bottom — the harness
+    // also reloads after save in some tests; this catches any asymmetry
+    // between scanner + serializer.
+    const reloaded = createEditorStateUnified(md, cw, ch);
+    const reloadedRects = findRectsWithTextChild(getFrames(reloaded));
+    const reloadedLabels = reloadedRects.map(textOf).sort();
+    expect(reloadedLabels).toEqual(["Bottom", "Top"]);
+  });
+});
+
+// ── Selection hierarchy helpers ────────────────────────────────────────
+
+describe("findPath", () => {
+  beforeAll(() => {
+    const orig = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+      const el = orig(tag);
+      if (tag === "canvas") {
+        (el as HTMLCanvasElement).getContext = (() => ({
+          font: "", fillStyle: "", textBaseline: "", fillText: () => {},
+          measureText: (text: string) => ({
+            width: text.length * 9.6,
+            actualBoundingBoxAscent: 12, actualBoundingBoxDescent: 4,
+          }),
+        })) as unknown as HTMLCanvasElement["getContext"];
+      }
+      return el;
+    });
+  });
+
+  const STYLE = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("returns root→target chain for nested frame", () => {
+    // Build a manual tree to keep test self-contained.
+    const leaf = createTextFrame({ text: "X", row: 0, col: 0, charWidth: 9.6, charHeight: 18 });
+    const rect: Frame = {
+      ...createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: 9.6, charHeight: 18 }),
+      children: [leaf],
+    };
+    const chain = findPath([rect], leaf.id);
+    expect(chain.map((f: Frame) => f.id)).toEqual([rect.id, leaf.id]);
+  });
+
+  it("returns empty array when target not present", () => {
+    const rect = createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: 9.6, charHeight: 18 });
+    expect(findPath([rect], "no-such-id")).toEqual([]);
+  });
+
+  it("returns single-element chain for top-level match", () => {
+    const rect = createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: 9.6, charHeight: 18 });
+    const chain = findPath([rect], rect.id);
+    expect(chain).toEqual([rect]);
+  });
+});
+
+describe("findContainingBandDeep", () => {
+  beforeAll(() => {
+    const orig = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+      const el = orig(tag);
+      if (tag === "canvas") {
+        (el as HTMLCanvasElement).getContext = (() => ({
+          font: "", fillStyle: "", textBaseline: "", fillText: () => {},
+          measureText: (text: string) => ({
+            width: text.length * 9.6,
+            actualBoundingBoxAscent: 12, actualBoundingBoxDescent: 4,
+          }),
+        })) as unknown as HTMLCanvasElement["getContext"];
+      }
+      return el;
+    });
+  });
+
+  it("finds band when frame is an immediate child", () => {
+    const md = ["Title", "", "┌────┐", "│ Hi │", "└────┘", "", "End"].join("\n");
+    const state = createEditorStateUnified(md, 9.6, 18);
+    const band = getFrames(state).find(f => f.isBand)!;
+    const rect = band.children[0];
+    expect(findContainingBandDeep(getFrames(state), rect.id)?.id).toBe(band.id);
+  });
+
+  it("finds band when frame is a grandchild (rect inside text-label-bearing rect)", () => {
+    const md = ["Title", "", "┌────┐", "│ Hi │", "└────┘", "", "End"].join("\n");
+    const state = createEditorStateUnified(md, 9.6, 18);
+    const band = getFrames(state).find(f => f.isBand)!;
+    const rect = band.children[0];
+    const textChild = rect.children.find(c => c.content?.type === "text")!;
+    expect(findContainingBandDeep(getFrames(state), textChild.id)?.id).toBe(band.id);
+  });
+
+  it("returns null when frame id is absent", () => {
+    const md = ["Hello"].join("\n");
+    const state = createEditorStateUnified(md, 9.6, 18);
+    expect(findContainingBandDeep(getFrames(state), "no-such-id")).toBeNull();
+  });
+
+  it("returns null when frameId itself names a top-level band (does not return self)", () => {
+    // Band-to-band reparent caller passes the band-id-being-moved here.
+    // If this returned self, the caller would conflate "frame being moved"
+    // with "frame's source location" and corrupt the empty-band detection.
+    const md = ["Title", "", "┌────┐", "│ Hi │", "└────┘", "", "End"].join("\n");
+    const state = createEditorStateUnified(md, 9.6, 18);
+    const band = getFrames(state).find(f => f.isBand)!;
+    expect(findContainingBandDeep(getFrames(state), band.id)).toBeNull();
+  });
+});
+
+describe("getBandRelativeRow / getBandRelativeCol", () => {
+  beforeAll(() => {
+    const orig = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+      const el = orig(tag);
+      if (tag === "canvas") {
+        (el as HTMLCanvasElement).getContext = (() => ({
+          font: "", fillStyle: "", textBaseline: "", fillText: () => {},
+          measureText: (text: string) => ({
+            width: text.length * 9.6,
+            actualBoundingBoxAscent: 12, actualBoundingBoxDescent: 4,
+          }),
+        })) as unknown as HTMLCanvasElement["getContext"];
+      }
+      return el;
+    });
+  });
+
+  it("immediate child of band: returns child.gridRow/gridCol", () => {
+    const md = ["Title", "", "┌────┐", "│ Hi │", "└────┘", "", "End"].join("\n");
+    const state = createEditorStateUnified(md, 9.6, 18);
+    const band = getFrames(state).find(f => f.isBand)!;
+    const rect = band.children[0];
+    expect(getBandRelativeRow(rect.id, band.id, getFrames(state))).toBe(rect.gridRow);
+    expect(getBandRelativeCol(rect.id, band.id, getFrames(state))).toBe(rect.gridCol);
+  });
+
+  it("grandchild via rect: sums rect.gridRow + textChild.gridRow", () => {
+    const md = ["Title", "", "┌────┐", "│ Hi │", "└────┘", "", "End"].join("\n");
+    const state = createEditorStateUnified(md, 9.6, 18);
+    const band = getFrames(state).find(f => f.isBand)!;
+    const rect = band.children[0];
+    const text = rect.children.find(c => c.content?.type === "text")!;
+    expect(getBandRelativeRow(text.id, band.id, getFrames(state))).toBe(rect.gridRow + text.gridRow);
+    expect(getBandRelativeCol(text.id, band.id, getFrames(state))).toBe(rect.gridCol + text.gridCol);
+  });
+
+  it("returns 0 if frameId === bandId (degenerate)", () => {
+    const md = ["Title", "", "┌────┐", "│ X  │", "└────┘", "", "End"].join("\n");
+    const state = createEditorStateUnified(md, 9.6, 18);
+    const band = getFrames(state).find(f => f.isBand)!;
+    expect(getBandRelativeRow(band.id, band.id, getFrames(state))).toBe(0);
+    expect(getBandRelativeCol(band.id, band.id, getFrames(state))).toBe(0);
+  });
+
+  it("throws when frameId is absent from the tree", () => {
+    const md = ["Title", "", "┌────┐", "│ X  │", "└────┘", "", "End"].join("\n");
+    const state = createEditorStateUnified(md, 9.6, 18);
+    const band = getFrames(state).find(f => f.isBand)!;
+    expect(() => getBandRelativeRow("nonexistent", band.id, getFrames(state))).toThrow();
+  });
+
+  it("throws when bandId is not an ancestor of frameId (silent-corruption guard)", () => {
+    // Two unrelated top-level bands. Ask for relativeRow of a shape in
+    // band-A using band-B's id. A naive startIdx=0 fallback would silently
+    // sum band-A's absolute gridRow as if it were relative — coordinate
+    // corruption. Must throw instead.
+    const md = [
+      "Title", "",
+      "┌────┐", "│ A  │", "└────┘", "",
+      "Middle", "",
+      "┌────┐", "│ B  │", "└────┘", "",
+      "End",
+    ].join("\n");
+    const state = createEditorStateUnified(md, 9.6, 18);
+    const bands = getFrames(state).filter(f => f.isBand);
+    expect(bands.length).toBeGreaterThanOrEqual(2);
+    const bandA = bands[0];
+    const bandB = bands[1];
+    const shapeInA = bandA.children[0];
+    expect(() => getBandRelativeRow(shapeInA.id, bandB.id, getFrames(state))).toThrow();
+  });
+});
+
+describe("resolveSelectionTarget", () => {
+  beforeAll(() => {
+    const orig = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+      const el = orig(tag);
+      if (tag === "canvas") {
+        (el as HTMLCanvasElement).getContext = (() => ({
+          font: "", fillStyle: "", textBaseline: "", fillText: () => {},
+          measureText: (text: string) => ({
+            width: text.length * 9.6,
+            actualBoundingBoxAscent: 12, actualBoundingBoxDescent: 4,
+          }),
+        })) as unknown as HTMLCanvasElement["getContext"];
+      }
+      return el;
+    });
+  });
+
+  const cw = 9.6, ch = 18;
+  const SOLO = ["Title", "", "┌────┐", "│ Hi │", "└────┘", "", "End"].join("\n");
+
+  it("first click on text-label child of solo rect: selects rect (drill-down outermost)", () => {
+    const state = createEditorStateUnified(SOLO, cw, ch);
+    const band = getFrames(state).find(f => f.isBand)!;
+    const rect = band.children[0];
+    const text = rect.children.find(c => c.content?.type === "text")!;
+    expect(resolveSelectionTarget(text, null, getFrames(state), false)).toBe(rect.id);
+  });
+
+  it("repeat click while rect is selected: drills to text-label", () => {
+    const state = createEditorStateUnified(SOLO, cw, ch);
+    const band = getFrames(state).find(f => f.isBand)!;
+    const rect = band.children[0];
+    const text = rect.children.find(c => c.content?.type === "text")!;
+    expect(resolveSelectionTarget(text, rect.id, getFrames(state), false)).toBe(text.id);
+  });
+
+  it("ctrl+click on text-label: selects text directly (bypass)", () => {
+    const state = createEditorStateUnified(SOLO, cw, ch);
+    const band = getFrames(state).find(f => f.isBand)!;
+    const rect = band.children[0];
+    const text = rect.children.find(c => c.content?.type === "text")!;
+    expect(resolveSelectionTarget(text, null, getFrames(state), true)).toBe(text.id);
+  });
+
+  it("hit IS the rect (not the text): selects rect with no drill (already outermost)", () => {
+    const state = createEditorStateUnified(SOLO, cw, ch);
+    const band = getFrames(state).find(f => f.isBand)!;
+    const rect = band.children[0];
+    expect(resolveSelectionTarget(rect, null, getFrames(state), false)).toBe(rect.id);
+  });
+
+  it("hit is itself a band: returns null (bands not selectable)", () => {
+    const state = createEditorStateUnified(SOLO, cw, ch);
+    const band = getFrames(state).find(f => f.isBand)!;
+    expect(resolveSelectionTarget(band, null, getFrames(state), false)).toBeNull();
+  });
+
+  it("ctrl+click on a band: still returns null (bands not selectable)", () => {
+    const state = createEditorStateUnified(SOLO, cw, ch);
+    const band = getFrames(state).find(f => f.isBand)!;
+    expect(resolveSelectionTarget(band, null, getFrames(state), true)).toBeNull();
   });
 });

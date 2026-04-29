@@ -610,7 +610,7 @@ export function createEditorState(init: EditorStateInit): EditorState {
       if (!e.is(resizeFrameEffect)) continue;
       const target = findFrameInList(startFrames, e.value.id);
       if (!target || target.lineCount > 0) continue; // not a child
-      const parent = findContainingBand(startFrames, e.value.id);
+      const parent = findContainingBandDeep(startFrames, e.value.id);
       if (!parent) continue;
       const childBottomAfter = target.gridRow + Math.max(2, e.value.gridH);
       const childRightAfter = target.gridCol + Math.max(2, e.value.gridW);
@@ -1338,7 +1338,7 @@ export function applyReparentFrame(
   // empty-band filter prunes the band from frames, but unifiedDocSync only
   // releases claim lines on deleteFrameEffect — without this, the orphaned
   // claim lines leak forever and the doc grows on every promote.
-  const sourceBand = findContainingBand(getFrames(state), frameId);
+  const sourceBand = findContainingBandDeep(getFrames(state), frameId);
   const sourceBandWillEmpty =
     sourceBand !== null && sourceBand.children.length === 1 && sourceBand.id !== newParentId;
 
@@ -1399,12 +1399,105 @@ export function applyReparentFrame(
   }).state;
 }
 
-/** Find the band frame whose children include `frameId`, or null. */
-function findContainingBand(frames: Frame[], frameId: string): Frame | null {
+/** Top-down DFS returning the ancestor chain root→target (inclusive on both
+ * ends), or `[]` if `targetId` is not in the tree. Reused by selection-target
+ * resolution and band-relative coordinate accumulation. */
+export function findPath(frames: Frame[], targetId: string): Frame[] {
   for (const f of frames) {
-    if (f.isBand && f.children.some(c => c.id === frameId)) return f;
+    if (f.id === targetId) return [f];
+    if (f.children.length > 0) {
+      const inChild = findPath(f.children, targetId);
+      if (inChild.length > 0) return [f, ...inChild];
+    }
+  }
+  return [];
+}
+
+/** Find the band ancestor of `frameId`, walking the full tree (any depth).
+ * Inspects ancestors only (path minus the target itself), so a band frame
+ * does not return itself as its own containing band. This matters for
+ * band-to-band reparent: the moved band's bookkeeping must distinguish
+ * "the frame being moved" from "where it lives". Replaces the
+ * immediate-children-only `findContainingBand`. */
+export function findContainingBandDeep(frames: Frame[], frameId: string): Frame | null {
+  const path = findPath(frames, frameId);
+  for (let i = 0; i < path.length - 1; i++) {
+    if (path[i].isBand) return path[i];
   }
   return null;
+}
+
+/** Sum gridRow offsets along the path from `bandId` (exclusive) to `frameId`
+ * (inclusive). Throws if `frameId` is not in the tree. Returns 0 when
+ * `frameId === bandId`. Used by drag clamp + push physics to compute a
+ * shape's true band-relative position through any number of intermediate
+ * wireframe layers. */
+export function getBandRelativeRow(
+  frameId: string,
+  bandId: string,
+  frames: Frame[],
+): number {
+  if (frameId === bandId) return 0;
+  const path = findPath(frames, frameId);
+  if (path.length === 0) {
+    throw new Error(`getBandRelativeRow: frame ${frameId} not found`);
+  }
+  const bandIdx = path.findIndex(f => f.id === bandId);
+  if (bandIdx < 0) {
+    throw new Error(`getBandRelativeRow: band ${bandId} is not an ancestor of frame ${frameId}`);
+  }
+  let sum = 0;
+  for (let i = bandIdx + 1; i < path.length; i++) sum += path[i].gridRow;
+  return sum;
+}
+
+export function getBandRelativeCol(
+  frameId: string,
+  bandId: string,
+  frames: Frame[],
+): number {
+  if (frameId === bandId) return 0;
+  const path = findPath(frames, frameId);
+  if (path.length === 0) {
+    throw new Error(`getBandRelativeCol: frame ${frameId} not found`);
+  }
+  const bandIdx = path.findIndex(f => f.id === bandId);
+  if (bandIdx < 0) {
+    throw new Error(`getBandRelativeCol: band ${bandId} is not an ancestor of frame ${frameId}`);
+  }
+  let sum = 0;
+  for (let i = bandIdx + 1; i < path.length; i++) sum += path[i].gridCol;
+  return sum;
+}
+
+/** Compute the selection target for a click hit, given the current
+ * selection and whether ctrl/cmd is held.
+ *
+ * Rules:
+ * - Bands are never selectable; if `hit` is a band → return null.
+ * - With ctrl/cmd held → return `hit.id` directly (bypass drill-down).
+ * - Otherwise build the non-band ancestor chain `[outermost, ..., hit]`
+ *   and: if `currentSelectedId` is one of `chain[0..n-2]`, drill one level
+ *   deeper (return `chain[indexOf+1].id`); else return `chain[0].id`.
+ */
+export function resolveSelectionTarget(
+  hit: Frame,
+  currentSelectedId: string | null,
+  frames: Frame[],
+  ctrlHeld: boolean,
+): string | null {
+  if (hit.isBand) return null;
+  if (ctrlHeld) return hit.id;
+  const path = findPath(frames, hit.id);
+  const chain = path.filter(f => !f.isBand);
+  if (chain.length === 0) return null;
+  if (currentSelectedId !== null) {
+    const idx = chain.findIndex(f => f.id === currentSelectedId);
+    if (idx >= 0 && idx < chain.length - 1) {
+      return chain[idx + 1].id;
+    }
+  }
+  return chain[0].id;
 }
 
 /**

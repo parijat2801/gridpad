@@ -114,7 +114,7 @@ describe("findPath", () => {
       children: [leaf],
     };
     const chain = findPath([rect], leaf.id);
-    expect(chain.map(f => f.id)).toEqual([rect.id, leaf.id]);
+    expect(chain.map((f: Frame) => f.id)).toEqual([rect.id, leaf.id]);
   });
 
   it("returns empty array when target not present", () => {
@@ -241,6 +241,16 @@ describe("findContainingBandDeep", () => {
     const state = createEditorStateUnified(md, 9.6, 18);
     expect(findContainingBandDeep(getFrames(state), "no-such-id")).toBeNull();
   });
+
+  it("returns null when frameId itself names a top-level band (does not return self)", () => {
+    // Band-to-band reparent caller passes the band-id-being-moved here.
+    // If this returned self, the caller would conflate "frame being moved"
+    // with "frame's source location" and corrupt the empty-band detection.
+    const md = ["Title", "", "┌────┐", "│ Hi │", "└────┘", "", "End"].join("\n");
+    const state = createEditorStateUnified(md, 9.6, 18);
+    const band = getFrames(state).find(f => f.isBand)!;
+    expect(findContainingBandDeep(getFrames(state), band.id)).toBeNull();
+  });
 });
 ```
 
@@ -260,11 +270,15 @@ In `src/editorState.ts`, REPLACE lines 1402-1408 entirely:
 
 ```typescript
 /** Find the band ancestor of `frameId`, walking the full tree (any depth).
- * Replaces the immediate-children-only `findContainingBand`. */
+ * Inspects ancestors only (path minus the target itself), so a band frame
+ * does not return itself as its own containing band. This matters for
+ * band-to-band reparent: the moved band's bookkeeping must distinguish
+ * "the frame being moved" from "where it lives". Replaces the
+ * immediate-children-only `findContainingBand`. */
 export function findContainingBandDeep(frames: Frame[], frameId: string): Frame | null {
   const path = findPath(frames, frameId);
-  for (const f of path) {
-    if (f.isBand) return f;
+  for (let i = 0; i < path.length - 1; i++) {
+    if (path[i].isBand) return path[i];
   }
   return null;
 }
