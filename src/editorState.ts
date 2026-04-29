@@ -84,7 +84,7 @@ export const setTextAlignEffect = StateEffect.define<{
 }>();
 
 // Restore effect — used by invertedEffects for undo of frame mutations.
-const restoreFramesEffect = StateEffect.define<Frame[]>();
+export const restoreFramesEffect = StateEffect.define<Frame[]>();
 const clearDirtyEffect = StateEffect.define<null>();
 const setOriginalProseSegmentsEffect = StateEffect.define<ProseSegment[]>();
 
@@ -233,9 +233,15 @@ const framesField = StateField.define<Frame[]>({
         };
         result = removeAndCapture(result);
         if (!extracted) continue;
-        // Prune any synthetic bands that became empty after the extraction.
-        // A band with 0 children contributes no visible geometry; leaving it
-        // would leave a stale top-level entry that confuses frame counts.
+        // Prune empty wireframes (any depth) first, then empty bands. A
+        // wireframe emptying may now leave the band empty too — order matters.
+        const pruneEmptyWireframes = (frames: Frame[]): Frame[] =>
+          frames
+            .map(f => f.children.length > 0
+              ? { ...f, children: pruneEmptyWireframes(f.children) }
+              : f)
+            .filter(f => !(f.content === null && !f.isBand && f.children.length === 0));
+        result = pruneEmptyWireframes(result);
         result = result.filter(f => !(f.isBand && f.children.length === 0));
         const orig: Frame = extracted;
         const cw = e.value.charWidth;
@@ -1374,8 +1380,24 @@ export function applyReparentFrame(
   // releases claim lines on deleteFrameEffect — without this, the orphaned
   // claim lines leak forever and the doc grows on every promote.
   const sourceBand = findContainingBandDeep(getFrames(state), frameId);
-  const sourceBandWillEmpty =
-    sourceBand !== null && sourceBand.children.length === 1 && sourceBand.id !== newParentId;
+  const sourceBandWillEmpty = sourceBand !== null && sourceBand.id !== newParentId
+    ? (() => {
+        // Direct child: band has only this shape.
+        if (sourceBand.children.length === 1 && sourceBand.children[0].id === frameId) {
+          return true;
+        }
+        // Wireframe-in-between: band's only direct child is a wireframe
+        // whose only direct child is the dragged shape.
+        if (sourceBand.children.length === 1
+            && sourceBand.children[0].content === null
+            && !sourceBand.children[0].isBand
+            && sourceBand.children[0].children.length === 1
+            && sourceBand.children[0].children[0].id === frameId) {
+          return true;
+        }
+        return false;
+      })()
+    : false;
 
   if (newParentId === null) {
     const existingBand = findBandAtRow(getFrames(state), absoluteGridRow);

@@ -48,6 +48,7 @@ import {
   getBandRelativeCol,
   resolveSelectionTarget,
   recomputeWireframeBounds,
+  restoreFramesEffect,
 } from "./editorState";
 import { createFrame, createTextFrame, createRectFrame, createLineFrame, type Frame } from "./frame";
 
@@ -3564,5 +3565,164 @@ describe("nested resize grows band through wireframe", () => {
 
     const afterBand = getFrames(state).find(f => f.isBand)!;
     expect(afterBand.gridH).toBeGreaterThan(oldBandH);
+  });
+});
+
+describe("reparent cascade-prunes empty wireframes and bands", () => {
+  beforeAll(() => {
+    const orig = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+      const el = orig(tag);
+      if (tag === "canvas") {
+        (el as HTMLCanvasElement).getContext = (() => ({
+          font: "", fillStyle: "", textBaseline: "", fillText: () => {},
+          measureText: (text: string) => ({
+            width: text.length * 9.6,
+            actualBoundingBoxAscent: 12, actualBoundingBoxDescent: 4,
+          }),
+        })) as unknown as HTMLCanvasElement["getContext"];
+      }
+      return el;
+    });
+  });
+
+  const cw = 9.6, ch = 18;
+  const STYLE = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("band → [wf1→[rect1], wf2→[rect2]]: dragging rect1 out prunes empty wf1 from band", () => {
+    // Scenario: a band has two wireframe children, each with one rect.
+    // Dragging rect1 out of wf1 should leave wf1 empty — the prune pass must
+    // remove it. Without the fix, the empty wireframe lingers as a child of
+    // the band (sourceBandWillEmpty is false so no deleteFrameEffect fires).
+    const md = [
+      "Title", "",
+      "┌────┐",
+      "│ Hi │",
+      "└────┘", "",
+      "End",
+    ].join("\n");
+    let state = createEditorStateUnified(md, cw, ch);
+
+    // Build a rect to use as the basis for wireframes.
+    const origBand = getFrames(state).find(f => f.isBand)!;
+    expect(origBand).toBeDefined();
+    const rect1 = origBand.children[0]; // the real scanned rect
+
+    // Create rect2 as a sibling rect.
+    const rect2 = createRectFrame({ gridW: 6, gridH: 3, style: STYLE, charWidth: cw, charHeight: ch });
+
+    // Build: band → [wf1(content=null, !isBand) → [rect1],
+    //                 wf2(content=null, !isBand) → [rect2]]
+    const wf1: Frame = {
+      ...rect1,
+      id: "test-wf1-id",
+      content: null,
+      isBand: false,
+      children: [rect1],
+    };
+    const wf2: Frame = {
+      ...rect1,
+      id: "test-wf2-id",
+      content: null,
+      isBand: false,
+      children: [rect2],
+    };
+    const bandWithTwoWireframes: Frame = {
+      ...origBand,
+      children: [wf1, wf2],
+    };
+
+    // Install the hand-built tree via restoreFramesEffect.
+    state = state.update({
+      effects: [restoreFramesEffect.of([bandWithTwoWireframes])],
+    }).state;
+
+    // Verify setup: band has 2 wireframe children.
+    const setupBand = getFrames(state).find(f => f.isBand)!;
+    expect(setupBand.children.length).toBe(2);
+    expect(setupBand.children[0].id).toBe("test-wf1-id");
+    expect(setupBand.children[1].id).toBe("test-wf2-id");
+
+    // Drag rect1 out to top-level at row 5 (within doc bounds, different row).
+    state = applyReparentFrame(state, rect1.id, null, 5, 0, cw, ch);
+
+    const finalFrames = getFrames(state);
+
+    // The source band should survive (still has wf2 → rect2).
+    const sourceBandAfter = finalFrames.find(f => f.isBand && f.gridRow === origBand.gridRow);
+    expect(sourceBandAfter).toBeDefined();
+
+    // wf1 should have been pruned — the band's children should not contain wf1.
+    const wf1Survived = sourceBandAfter!.children.some(c => c.id === "test-wf1-id");
+    expect(wf1Survived).toBe(false); // fails before fix: empty wireframe lingers
+
+    // The band's remaining child should be wf2 (still has rect2).
+    expect(sourceBandAfter!.children.length).toBe(1);
+    expect(sourceBandAfter!.children[0].id).toBe("test-wf2-id");
+
+    // rect1 should now be top-level (in a band at row 5 or thereabouts).
+    const rect1Band = finalFrames.find(
+      f => f.isBand && f.gridRow !== origBand.gridRow && f.children.some(c => c.id === rect1.id)
+    );
+    expect(rect1Band).toBeDefined();
+  });
+
+  it("band → wf(content=null) → rect: only child wf becomes empty → both wf and band pruned", () => {
+    // Scenario: a band has one wireframe child with one rect child.
+    // Dragging rect out leaves wf empty then band empty.
+    // Location A: pruneEmptyWireframes removes wf, then band filter removes band.
+    // Location B: sourceBandWillEmpty correctly detects the wireframe-in-between case.
+    const md = [
+      "Title", "",
+      "┌────┐",
+      "│ Hi │",
+      "└────┘", "",
+      "End",
+    ].join("\n");
+    let state = createEditorStateUnified(md, cw, ch);
+
+    const origBand = getFrames(state).find(f => f.isBand)!;
+    expect(origBand).toBeDefined();
+    const soloRect = origBand.children[0];
+    expect(soloRect).toBeDefined();
+
+    // Build: band → [wf(content=null, !isBand) → [soloRect]]
+    const wf: Frame = {
+      ...soloRect,
+      id: "test-wf-solo-id",
+      content: null,
+      isBand: false,
+      children: [soloRect],
+    };
+    const bandWithOneWireframe: Frame = {
+      ...origBand,
+      children: [wf],
+    };
+    state = state.update({
+      effects: [restoreFramesEffect.of([bandWithOneWireframe])],
+    }).state;
+
+    // Verify setup.
+    const setupBand = getFrames(state).find(f => f.isBand)!;
+    expect(setupBand.children.length).toBe(1);
+    expect(setupBand.children[0].id).toBe("test-wf-solo-id");
+    expect(setupBand.children[0].children[0].id).toBe(soloRect.id);
+
+    // Drag soloRect to row 5.
+    state = applyReparentFrame(state, soloRect.id, null, 5, 0, cw, ch);
+
+    const finalFrames = getFrames(state);
+
+    // Original band (and its empty wireframe child) should be completely gone.
+    const oldBandStillPresent = finalFrames.some(
+      f => f.isBand && f.gridRow === origBand.gridRow
+    );
+    expect(oldBandStillPresent).toBe(false);
+
+    // soloRect should be top-level (in some band).
+    const rectIsTopLevel = finalFrames.some(
+      f => f.isBand && f.children.some(c => c.id === soloRect.id)
+    );
+    expect(rectIsTopLevel).toBe(true);
   });
 });
