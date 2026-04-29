@@ -192,3 +192,21 @@ End`;
     expect(result).toBe("Hello world");
   });
 });
+
+describe("serializeUnified round-trip — multi-shape composite", () => {
+  it("loading and serializing a horizontally-adjacent two-rect composite is byte-stable", () => {
+    // Two boxes side-by-side on the same row range — the scanner places them
+    // both in one band (same row partition), exercising the band → [rect,
+    // rect] recursion path in renderFrameRow.
+    const original = [
+      "Title", "",
+      "┌────┐  ┌────┐",
+      "│ Hi │  │ Yo │",
+      "└────┘  └────┘", "",
+      "End",
+    ].join("\n");
+    const { unifiedDoc, frames } = buildUnifiedDoc(original);
+    const result = serializeUnified(unifiedDoc, frames);
+    expect(result).toBe(original);
+  });
+});
