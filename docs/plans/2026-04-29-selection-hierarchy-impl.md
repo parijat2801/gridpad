@@ -957,11 +957,16 @@ const wrapped: Frame[] = frames.map((f) => {
     // Multi-shape composite: build band-around-wireframe manually so the
     // wireframe stays as the layer-2 container.
     const minRow = f.gridRow;
+    // CRITICAL: keep wireframe's gridCol/x ABSOLUTE. The band spans
+    // col 0 → docWidthCols, so a child's "band-relative" col equals its
+    // absolute col (mirrors wrapAsBand's child rebase at frame.ts:559).
+    // Resetting gridCol/x to 0 would shove the multi-shape group to the
+    // left edge of the document.
     const wireframe: Frame = {
       ...f,
-      gridRow: 0,
-      gridCol: 0,
-      x: 0,
+      gridRow: 0,        // band-relative row IS 0 (band's gridRow == minRow)
+      gridCol: f.gridCol, // preserve absolute column
+      x: f.gridCol * charWidth,
       y: 0,
       docOffset: 0,
       lineCount: 0,

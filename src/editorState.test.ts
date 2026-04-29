@@ -2794,13 +2794,20 @@ describe("createEditorStateUnified eager bands", () => {
     expect(frames[1].children).toHaveLength(1);
   });
 
-  it("two side-by-side rects load as ONE band with two children", () => {
+  it("two side-by-side rects load as ONE band wrapping a wireframe with two rects", () => {
+    // With the wireframe layer restored, multi-shape composites are
+    // band → wireframe (content=null) → [rect, rect]. The band has ONE
+    // child (the wireframe); the wireframe has the two rects.
     const md = "p\n\n┌──┐  ┌──┐\n│A │  │B │\n└──┘  └──┘\n\nq";
     const state = createEditorStateUnified(md, 8, 18);
     const frames = getFrames(state);
     expect(frames).toHaveLength(1);
     expect(frames[0].isBand).toBe(true);
-    expect(frames[0].children).toHaveLength(2);
+    expect(frames[0].children).toHaveLength(1);
+    const wireframe = frames[0].children[0];
+    expect(wireframe.content).toBeNull();
+    expect(wireframe.isBand).toBeFalsy();
+    expect(wireframe.children).toHaveLength(2);
   });
 });
 
