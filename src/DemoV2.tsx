@@ -2,23 +2,23 @@
  * DemoV2 — Frame-based spatial canvas. Thin shell using frame.ts + frameRenderer.ts.
  */
 import { useEffect, useRef, useState } from "react";
-import { buildPreparedCache, invalidateLine, splitLine, mergeLines, type PreparedCache } from "./preparedCache";
+import { buildPreparedCache, type PreparedCache } from "./preparedCache";
 import type { EditorState } from "@codemirror/state";
-import { Transaction } from "@codemirror/state";
+import { Transaction, type StateEffect } from "@codemirror/state";
 import {
-  createEditorStateFromText, getDoc, getFrames,
+  createEditorStateUnified, getDoc, getFrames,
   selectFrameEffect, getSelectedId,
   moveFrameEffect, resizeFrameEffect, setZEffect,
-  applyAddFrame, applyDeleteFrame, applyClearDirty, applySetOriginalProseSegments,
+  applyAddTopLevelFrame, applyAddChildFrame, applyReparentFrame, applyDeleteFrame, applyClearDirty,
   proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
-  getProseSegmentMap, getOriginalProseSegments,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
+  resolveSelectionTarget, decideSelectionForMouseDown,
+  findContainingBandDeep, getBandRelativeRow, getBandRelativeCol,
   type CursorPos,
 } from "./editorState";
-import { gridSerialize, rebuildOriginalGrid, snapshotFrameBboxes, framesToProseGaps, type FrameBbox } from "./gridSerialize";
-import { scanToFrames } from "./scanToFrames";
+import { serializeUnified } from "./serializeUnified";
 import { type Frame, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { setTextAlignEffect } from "./editorState";
@@ -168,8 +168,10 @@ interface DragState {
   frameId: string; startX: number; startY: number;
   startFrameX: number; startFrameY: number; startFrameW: number; startFrameH: number;
   hasMoved: boolean; resizeHandle?: ResizeHandle;
-  /** Deferred drill-down: if set, apply this selection on mouseUp when !hasMoved */
-  pendingDrillDownId?: string;
+  // Strategy A (Fix 1): true when onMouseDown skipped the selection rule
+  // because the hit was the current selection or a descendant. If
+  // hasMoved stays false through mouseup, we drill via the rule THEN.
+  deferredDrillHit?: Frame;
 }
 
 type ToolName = "select" | "rect" | "line" | "text";
@@ -197,34 +199,22 @@ export default function DemoV2() {
   const blinkRef = useRef(true);
   const textEditRef = useRef<{ frameId: string; col: number } | null>(null);
   const lastClickRef = useRef<{ time: number; px: number; py: number } | null>(null);
-  const drawPreviewRef = useRef<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
-  const textPlacementRef = useRef<{ x: number; y: number; chars: string } | null>(null);
+  const drawPreviewRef = useRef<{ startX: number; startY: number; curX: number; curY: number; parentId: string | null } | null>(null);
+  const textPlacementRef = useRef<{ x: number; y: number; chars: string; parentId: string | null } | null>(null);
   const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const originalGridRef = useRef<string[][]>([]);
-  const frameBboxSnapshotRef = useRef<FrameBbox[]>([]);
 
   type WritableHandle = FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> };
   async function saveToHandle(h: FileSystemFileHandle) {
     console.log("saveToHandle called, handle:", h.name);
     try {
       const state = stateRef.current;
-      const md = gridSerialize(
-        getFrames(state), getDoc(state),
-        originalGridRef.current,
-        getOriginalProseSegments(state),
-        frameBboxSnapshotRef.current,
-      );
+      const md = serializeUnified(getDoc(state), getFrames(state));
       const w = await (h as WritableHandle).createWritable();
       await w.write(md);
       await w.close();
       stateRef.current = applyClearDirty(stateRef.current);
-      // Rebuild originalProseSegments from saved output
-      const { proseSegments: newSegs } = scanToFrames(md, cwRef.current, chRef.current);
-      stateRef.current = applySetOriginalProseSegments(stateRef.current, newSegs);
-      framesRef.current = getFrames(stateRef.current);
-      originalGridRef.current = rebuildOriginalGrid(md);
-      frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current));
+      syncRefsFromState();
     } catch (err) { console.error("saveToHandle failed:", err); }
   }
   function scheduleAutosave() {
@@ -236,36 +226,61 @@ export default function DemoV2() {
 
   function loadDocument(text: string) {
     const cw = cwRef.current, ch = chRef.current;
-    stateRef.current = createEditorStateFromText(text, cw, ch);
-    const { originalGrid } = scanToFrames(text, cw, ch);
-    originalGridRef.current = originalGrid;
-    frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current));
-    // Sync old refs for un-migrated code paths
-    const frames = getFrames(stateRef.current);
-    const proseText = getDoc(stateRef.current);
-    proseRef.current = proseText;
-    framesRef.current = frames;
-    preparedRef.current = buildPreparedCache(proseText);
+    stateRef.current = createEditorStateUnified(text, cw, ch);
+    syncRefsFromState();
     dragRef.current = null;
     proseCursorRef.current = null;
   }
 
+  /** Refresh framesRef + proseRef + preparedRef from the current EditorState.
+   * Call after any mutation that goes through unifiedDocSync (drag, resize,
+   * delete, add) so the prepared-line cache reflects the post-mutation doc. */
+  function syncRefsFromState() {
+    const proseText = getDoc(stateRef.current);
+    proseRef.current = proseText;
+    framesRef.current = getFrames(stateRef.current);
+    preparedRef.current = buildPreparedCache(proseText);
+  }
+
   function doLayout() {
-    if (preparedRef.current.length === 0) { linesRef.current = []; return; }
+    if (!stateRef.current) { linesRef.current = []; return; }
     const ch = chRef.current;
-    const sorted = [...framesRef.current].sort((a, b) => a.gridRow - b.gridRow);
-    const merged: { y: number; bottom: number }[] = [];
-    for (const f of sorted) {
-      const fy = f.gridRow * ch;
-      const fb = fy + f.gridH * ch;
-      if (merged.length > 0 && fy <= merged[merged.length - 1].bottom) {
-        merged[merged.length - 1].bottom = Math.max(merged[merged.length - 1].bottom, fb);
+    const frames = getFrames(stateRef.current);
+
+    // Build set of claimed line numbers (0-based)
+    const claimedLines = new Set<number>();
+    for (const f of frames) {
+      if (f.lineCount === 0) continue;
+      const startLine = stateRef.current.doc.lineAt(f.docOffset).number - 1;
+      for (let i = 0; i < f.lineCount; i++) claimedLines.add(startLine + i);
+    }
+
+    // Build preparedLines: null for claimed lines, prepared text for prose
+    const prepared = preparedRef.current;
+    const adjusted = prepared.map((p, i) => claimedLines.has(i) ? null : p);
+
+    // No obstacles in unified mode
+    linesRef.current = reflowLayout(adjusted, sizeRef.current.w, ch, []).lines;
+
+    // Set frame pixel Y from lineTop accumulator
+    let lineTop = 0;
+    const doc = stateRef.current.doc;
+    for (let i = 0; i < doc.lines; i++) {
+      if (claimedLines.has(i)) {
+        for (const f of frames) {
+          if (f.lineCount === 0) continue;
+          const startLine = doc.lineAt(f.docOffset).number - 1;
+          if (i === startLine) {
+            f.y = lineTop;
+            f.x = f.gridCol * cwRef.current;
+          }
+        }
+        lineTop += ch;
       } else {
-        merged.push({ y: fy, bottom: fb });
+        const visualLines = linesRef.current.filter(l => l.sourceLine === i);
+        lineTop += Math.max(visualLines.length, 1) * ch;
       }
     }
-    const obstacles = merged.map(m => ({ x: 0, y: m.y, w: sizeRef.current.w, h: m.bottom - m.y }));
-    linesRef.current = reflowLayout(preparedRef.current, sizeRef.current.w, ch, obstacles).lines;
   }
 
   function paint() {
@@ -456,18 +471,33 @@ export default function DemoV2() {
     const tool = activeToolRef.current;
     // Single hit-test for the whole click handler
     const hit = hitTestFrames(framesRef.current, px, py);
-    // Drawing tools only activate on empty space — clicking anything selects it + reverts to Select
-    if (tool !== "select" && hit) {
-      setTool("select"); // auto-revert to select on click
+    // Resolve nest parent for draw-on-frame: the SMALLEST enclosing claiming
+    // frame at the click. hitTestFrames already returns the min-area child,
+    // so when there's a hit, that's our nest target (Figma-style nesting
+    // into a rect inside a band). When there's no hit (empty band space),
+    // fall back to the band that claims the click row.
+    let nestParent: Frame | null = hit;
+    if (!nestParent) {
+      for (const f of framesRef.current) {
+        if (f.isBand
+            && py >= f.y && py < f.y + f.h
+            && px >= f.x && px < f.x + f.w) {
+          nestParent = f;
+          break;
+        }
+      }
     }
-    if (!hit && (tool === "rect" || tool === "line")) {
-      drawPreviewRef.current = { startX: px, startY: py, curX: px, curY: py };
+    if (tool === "rect" || tool === "line") {
+      // Draw activates whether or not we hit a frame. If we hit one, the new
+      // frame nests as a child of the smallest enclosing claiming frame
+      // (Figma-style: rect-in-band → nest in rect; band space → nest in band).
+      drawPreviewRef.current = { startX: px, startY: py, curX: px, curY: py, parentId: nestParent?.id ?? null };
       paint(); return;
     }
-    if (!hit && tool === "text") {
+    if (tool === "text") {
       const cw = cwRef.current, ch = chRef.current;
       const snappedX = Math.floor(px / cw) * cw, snappedY = Math.floor(py / ch) * ch;
-      textPlacementRef.current = { x: snappedX, y: snappedY, chars: "" };
+      textPlacementRef.current = { x: snappedX, y: snappedY, chars: "", parentId: nestParent?.id ?? null };
       paint(); return;
     }
     const currentSelectedId = getSelectedId(stateRef.current);
@@ -481,24 +511,23 @@ export default function DemoV2() {
         }
       }
     }
-    // Drill-down UX: first click selects container, second click on child selects child
-    // But drill-down is deferred to mouseUp — on mouseDown we always drag the
-    // currently selected frame (or its container) to avoid stealing resize handles.
-    const hitContainer = hit ? framesRef.current.find(f => f.id === hit.id || hasDescendant(f, hit.id)) : null;
-    const wouldDrillDown = hit && hitContainer && currentSelectedId === hitContainer.id && currentSelectedId !== hit.id;
-    const targetId = hit ? (
-      // If we'd drill down, defer it — keep current selection for dragging
-      wouldDrillDown ? currentSelectedId
-      // If the hit IS what's already selected, keep it
-      : currentSelectedId === hit.id ? hit.id
-      // Otherwise select the container
-      : hitContainer?.id ?? hit.id
-    ) : null;
+    // Strategy A (Fix 1 — DEBUG_PLAN.md): a mouse-down on the current
+    // selection (or one of its descendants) is the head of a drag of the
+    // existing selection. Don't run the selection rule yet — keep the
+    // target as-is and remember the hit for deferred drilling. If the
+    // gesture turns out to be a discrete click (no movement), onMouseUp
+    // runs resolveSelectionTarget THEN, drilling one level. This separates
+    // "discrete click drills" from "drag respects selection" (Figma).
+    const ctrlHeld = e.ctrlKey || e.metaKey;
+    const decision = hit
+      ? decideSelectionForMouseDown(hit, currentSelectedId, framesRef.current, ctrlHeld)
+      : null;
+    const targetId = decision?.frameId ?? null;
     const now = Date.now();
     const last = lastClickRef.current;
     const isDblClick = last !== null && now - last.time < 300 && Math.abs(px - last.px) < 10 && Math.abs(py - last.py) < 10;
     lastClickRef.current = { time: now, px, py };
-    if (hit && targetId) {
+    if (hit && targetId && decision) {
       if (isDblClick && hit.content?.type === "text") {
         const found = findFrameById(framesRef.current, hit.id);
         if (found) {
@@ -512,10 +541,24 @@ export default function DemoV2() {
           blinkRef.current = true; canvas.focus(); paint(); return;
         }
       }
-      stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(targetId) }).state;
+      // For "applyRule" (fresh click) commit the new selection now. For
+      // "preserveSelection" (drag-start of current selection), leave
+      // selection unchanged — the dragRef carries the target, and the
+      // mouseup branch may drill if no movement occurred.
+      if (decision.kind === "applyRule") {
+        stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(targetId) }).state;
+      }
       proseCursorRef.current = null; textEditRef.current = null;
       const found = findFrameById(framesRef.current, targetId);
-      if (found) dragRef.current = { frameId: targetId, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false, pendingDrillDownId: wouldDrillDown ? hit.id : undefined };
+      if (found) {
+        dragRef.current = {
+          frameId: targetId, startX: px, startY: py,
+          startFrameX: found.absX, startFrameY: found.absY,
+          startFrameW: found.frame.w, startFrameH: found.frame.h,
+          hasMoved: false,
+          deferredDrillHit: decision.kind === "preserveSelection" ? hit : undefined,
+        };
+      }
       paint();
     } else {
       stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
@@ -595,7 +638,7 @@ export default function DemoV2() {
         effects,
         annotations: [Transaction.addToHistory.of(isFirstDragStep)],
       }).state;
-      framesRef.current = getFrames(stateRef.current);
+      syncRefsFromState();
     } else {
       // Compute target position from drag start + mouse delta, snapped to grid
       const cw = cwRef.current, ch = chRef.current;
@@ -606,25 +649,118 @@ export default function DemoV2() {
       const dCol = targetCol - currentCol;
       const dRow = targetRow - currentRow;
       if (dCol !== 0 || dRow !== 0) {
-        stateRef.current = stateRef.current.update({
-          effects: moveFrameEffect.of({ id: drag.frameId, dCol, dRow, charWidth: cw, charHeight: ch }),
-          annotations: [Transaction.addToHistory.of(isFirstDragStep)],
-        }).state;
-        framesRef.current = getFrames(stateRef.current);
+        // Eager-bands drag policy:
+        // - For a top-level claiming frame (no parent), unifiedDocSync
+        //   handles drag via rotation-only (bounded by surrounding blank
+        //   lines around the claim).
+        // - For a rect inside a band (parent.isBand), clamp the rect's
+        //   parent-relative motion against band bounds first; if the user
+        //   pushed past the band edge, escalate the residual to a
+        //   moveFrameEffect on the BAND itself — that triggers the band's
+        //   own rotation-only logic. If the band has no rotation budget,
+        //   the residual is silently dropped (frame stops at band edge,
+        //   which propagates "bounded between prose" through to children).
+        const containingBand = findContainingBandDeep(framesRef.current, drag.frameId);
+        const effects: StateEffect<unknown>[] = [];
+        if (containingBand) {
+          const child = found.frame;
+          const bandRow = getBandRelativeRow(drag.frameId, containingBand.id, framesRef.current);
+          const bandCol = getBandRelativeCol(drag.frameId, containingBand.id, framesRef.current);
+          const minDRow = -bandRow;
+          const maxDRow = containingBand.gridH - child.gridH - bandRow;
+          const minDCol = -bandCol;
+          const maxDCol = containingBand.gridW - child.gridW - bandCol;
+          const clampedDRow = Math.max(minDRow, Math.min(maxDRow, dRow));
+          const clampedDCol = Math.max(minDCol, Math.min(maxDCol, dCol));
+          const residualDRow = dRow - clampedDRow;
+          // Horizontal residual has no rotation analog (no column to swap),
+          // so dCol motion past the band's horizontal edge is dropped.
+          if (clampedDRow !== 0 || clampedDCol !== 0) {
+            effects.push(moveFrameEffect.of({ id: drag.frameId, dCol: clampedDCol, dRow: clampedDRow, charWidth: cw, charHeight: ch }));
+          }
+          if (residualDRow !== 0) {
+            effects.push(moveFrameEffect.of({ id: containingBand.id, dCol: 0, dRow: residualDRow, charWidth: cw, charHeight: ch }));
+          }
+        } else {
+          effects.push(moveFrameEffect.of({ id: drag.frameId, dCol, dRow, charWidth: cw, charHeight: ch }));
+        }
+        if (effects.length > 0) {
+          stateRef.current = stateRef.current.update({
+            effects,
+            annotations: [Transaction.addToHistory.of(isFirstDragStep)],
+          }).state;
+          syncRefsFromState();
+        }
       }
     }
     doLayout(); paint();
   }
 
-  function onMouseUp() {
+  function onMouseUp(e?: React.MouseEvent) {
     if (dragRef.current) {
-      // Deferred drill-down: if user clicked without dragging, apply the
-      // drill-down selection now (selects the child instead of the container)
-      if (!dragRef.current.hasMoved && dragRef.current.pendingDrillDownId) {
-        stateRef.current = stateRef.current.update({
-          effects: selectFrameEffect.of(dragRef.current.pendingDrillDownId),
-        }).state;
-        paint();
+      // Strategy A (Fix 1): if onMouseDown deferred the drill (mouse-down
+      // landed on the current selection or a descendant) AND the gesture
+      // had no movement (discrete click), run resolveSelectionTarget now
+      // and drill one level. Drag-with-movement skips this branch (drag
+      // respects selection). Drilling on click matches Figma exactly.
+      if (
+        !dragRef.current.hasMoved &&
+        !dragRef.current.resizeHandle &&
+        dragRef.current.deferredDrillHit
+      ) {
+        const drillHit = dragRef.current.deferredDrillHit;
+        const newTarget = resolveSelectionTarget(
+          drillHit, dragRef.current.frameId, framesRef.current, false,
+        );
+        if (newTarget && newTarget !== dragRef.current.frameId) {
+          stateRef.current = stateRef.current.update({
+            effects: selectFrameEffect.of(newTarget),
+          }).state;
+          paint();
+        }
+      }
+      // Reparent on drop: if mouseup cursor lands inside a different
+      // top-level frame than where the dragged frame's current parent is,
+      // demote into that frame (or promote out of one). Figma-style.
+      // Skip for resize gestures — a resize that ends with the cursor
+      // outside the resized frame must not be interpreted as a drag-out.
+      if (dragRef.current.hasMoved && e && !dragRef.current.resizeHandle) {
+        const canvasEl = canvasRef.current;
+        if (canvasEl) {
+          const rect = canvasEl.getBoundingClientRect();
+          const upPx = e.clientX - rect.left;
+          const upPy = e.clientY - rect.top + (canvasEl.parentElement?.scrollTop ?? 0);
+          const draggedId = dragRef.current.frameId;
+          const draggedTopAncestor = framesRef.current.find(f => f.id === draggedId || hasDescendant(f, draggedId));
+          const hitTopLevel = (() => {
+            const hit = hitTestFrames(framesRef.current, upPx, upPy);
+            if (!hit) return null;
+            return framesRef.current.find(f => f.id === hit.id || hasDescendant(f, hit.id)) ?? null;
+          })();
+          // Decide reparent: cursor inside a different top-level → demote,
+          // BUT only when the target is strictly larger than the dragged
+          // frame (Figma-style: you can't nest a big thing inside a small
+          // one). Without this guard, dragging two same-size boxes past
+          // each other unintentionally nests them.
+          const draggedFrame = draggedTopAncestor ? findFrameById(framesRef.current, draggedId)?.frame ?? null : null;
+          const targetIsLarger = !!hitTopLevel && !!draggedFrame
+            && hitTopLevel.gridW > draggedFrame.gridW
+            && hitTopLevel.gridH > draggedFrame.gridH;
+          if (hitTopLevel && draggedTopAncestor && hitTopLevel.id !== draggedTopAncestor.id && hitTopLevel.id !== draggedId && targetIsLarger) {
+            const cw = cwRef.current, ch = chRef.current;
+            const aRow = Math.round(upPy / ch);
+            const aCol = Math.round(upPx / cw);
+            stateRef.current = applyReparentFrame(stateRef.current, draggedId, hitTopLevel.id, aRow, aCol, cw, ch);
+            syncRefsFromState();
+          } else if (!hitTopLevel && draggedTopAncestor && draggedTopAncestor.id !== draggedId) {
+            // Dragged a child out into empty space → promote.
+            const cw = cwRef.current, ch = chRef.current;
+            const aRow = Math.round(upPy / ch);
+            const aCol = Math.round(upPx / cw);
+            stateRef.current = applyReparentFrame(stateRef.current, draggedId, null, aRow, aCol, cw, ch);
+            syncRefsFromState();
+          }
+        }
       }
       dragRef.current = null; scheduleAutosave();
     }
@@ -638,13 +774,18 @@ export default function DemoV2() {
     if (tool === "rect" && x2 - x1 >= cw && y2 - y1 >= ch) {
       const f = createRectFrame({ gridW: Math.max(2, Math.round((x2 - x1) / cw)), gridH: Math.max(2, Math.round((y2 - y1) / ch)), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
       const gridR = Math.round(y1 / ch), gridC = Math.round(x1 / cw);
-      stateRef.current = applyAddFrame(stateRef.current, { ...f, x: gridC * cw, y: gridR * ch, gridRow: gridR, gridCol: gridC });
-      framesRef.current = getFrames(stateRef.current); scheduleAutosave();
+      stateRef.current = preview.parentId
+        ? applyAddChildFrame(stateRef.current, f, preview.parentId, gridR, gridC)
+        : applyAddTopLevelFrame(stateRef.current, f, gridR, gridC);
+      syncRefsFromState(); scheduleAutosave();
     } else if (tool === "line") {
       const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
       if (r1 !== r2 || c1 !== c2) {
-        stateRef.current = applyAddFrame(stateRef.current, createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch }));
-        framesRef.current = getFrames(stateRef.current); scheduleAutosave();
+        const f = createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch });
+        stateRef.current = preview.parentId
+          ? applyAddChildFrame(stateRef.current, f, preview.parentId, f.gridRow, f.gridCol)
+          : applyAddTopLevelFrame(stateRef.current, f, f.gridRow, f.gridCol);
+        syncRefsFromState(); scheduleAutosave();
       }
     }
     setTool("select"); // one-shot: revert to Select after drawing
@@ -654,48 +795,71 @@ export default function DemoV2() {
   useEffect(() => {
     Promise.all([measureCellSize(), ensureProseFontReady()]).then(() => {
       cwRef.current = getCharWidth(); chRef.current = getCharHeight();
-      loadDocument(DEFAULT_TEXT); setReady(true);
+      // Optional fixture loader — `?fixture=wall-stack-vert` swaps DEFAULT_TEXT
+      // for a named harness fixture so manual reproduction matches the e2e
+      // test setup. No-op when the param is absent or unrecognized.
+      const fixtureName = new URLSearchParams(window.location.search).get("fixture");
+      const FIXTURES: Record<string, string> = {
+        "wall-stack-vert": [
+          "Title", "",
+          "┌──────────┐",
+          "│  Top     │",
+          "└──────────┘", "", "", "",
+          "┌──────────┐",
+          "│  Bottom  │",
+          "└──────────┘", "",
+          "End",
+        ].join("\n"),
+      };
+      const initialText = (fixtureName && FIXTURES[fixtureName]) || DEFAULT_TEXT;
+      loadDocument(initialText); setReady(true);
       // Expose test hooks for Playwright round-trip testing
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__gridpad = {
         loadDocument: (text: string) => { loadDocument(text); doLayout(); paint(); },
         serializeDocument: () => {
           const state = stateRef.current;
-          return gridSerialize(
-            getFrames(state), getDoc(state),
-            originalGridRef.current,
-            getOriginalProseSegments(state),
-            frameBboxSnapshotRef.current,
-          );
+          return serializeUnified(getDoc(state), getFrames(state));
         },
         /** Serialize + update all refs (mirrors real saveToHandle minus file I/O) */
         saveDocument: () => {
           const state = stateRef.current;
-          const cw = cwRef.current, ch = chRef.current;
-          const md = gridSerialize(
-            getFrames(state), getDoc(state),
-            originalGridRef.current,
-            getOriginalProseSegments(state),
-            frameBboxSnapshotRef.current,
-          );
-          // Same ref updates as saveToHandle
+          const md = serializeUnified(getDoc(state), getFrames(state));
           stateRef.current = applyClearDirty(stateRef.current);
-          const { proseSegments: newSegs } = scanToFrames(md, cw, ch);
-          stateRef.current = applySetOriginalProseSegments(stateRef.current, newSegs);
-          framesRef.current = getFrames(stateRef.current);
-          originalGridRef.current = rebuildOriginalGrid(md);
-          frameBboxSnapshotRef.current = snapshotFrameBboxes(getFrames(stateRef.current));
+          syncRefsFromState();
           doLayout(); paint();
           return md;
         },
-        /** Get all top-level frame bounding boxes in CSS pixels */
+        /** Get all USER-PERCEIVED frame rects in CSS pixels.
+         * Container frames (isBand or content === null && !isBand wireframes)
+         * are recursed into — the user sees and interacts with the leaf
+         * shapes, not the invisible containers. Coordinates are absolute
+         * (offsets accumulated through every container level: band.x +
+         * wireframe.x + shape.x).
+         */
         getFrameRects: () => {
-          return framesRef.current.map(f => ({
-            id: f.id,
-            x: f.x, y: f.y, w: f.w, h: f.h,
-            hasChildren: f.children.length > 0,
-            contentType: f.content?.type ?? "container",
-          }));
+          const out: Array<{
+            id: string; x: number; y: number; w: number; h: number;
+            hasChildren: boolean; contentType: string;
+          }> = [];
+          const collect = (frame: Frame, offX: number, offY: number) => {
+            const absX = offX + frame.x;
+            const absY = offY + frame.y;
+            const isContainer = frame.isBand
+              || (frame.content === null && !frame.isBand);
+            if (isContainer) {
+              for (const c of frame.children) collect(c, absX, absY);
+              return;
+            }
+            out.push({
+              id: frame.id,
+              x: absX, y: absY, w: frame.w, h: frame.h,
+              hasChildren: frame.children.length > 0,
+              contentType: frame.content?.type ?? "container",
+            });
+          };
+          for (const f of framesRef.current) collect(f, 0, 0);
+          return out;
         },
         /** Get full frame tree with all children, positions, and content */
         getFrameTree: () => {
@@ -755,7 +919,7 @@ export default function DemoV2() {
           }).state;
           proseCursorRef.current = null;
           textEditRef.current = null;
-          framesRef.current = getFrames(stateRef.current);
+          syncRefsFromState();
           paint();
         },
       };
@@ -782,7 +946,7 @@ export default function DemoV2() {
       if (mod && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         stateRef.current = editorUndo(stateRef.current);
-        framesRef.current = getFrames(stateRef.current);
+        syncRefsFromState();
         proseRef.current = getDoc(stateRef.current);
         preparedRef.current = buildPreparedCache(proseRef.current);
         proseCursorRef.current = getCursor(stateRef.current);
@@ -792,7 +956,7 @@ export default function DemoV2() {
       if (mod && e.key === "z" && e.shiftKey) {
         e.preventDefault();
         stateRef.current = editorRedo(stateRef.current);
-        framesRef.current = getFrames(stateRef.current);
+        syncRefsFromState();
         proseRef.current = getDoc(stateRef.current);
         preparedRef.current = buildPreparedCache(proseRef.current);
         proseCursorRef.current = getCursor(stateRef.current);
@@ -837,8 +1001,11 @@ export default function DemoV2() {
           e.preventDefault();
           if (tp.chars.length > 0) {
             const cw = cwRef.current, ch = chRef.current;
-            stateRef.current = applyAddFrame(stateRef.current, createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch }));
-            framesRef.current = getFrames(stateRef.current);
+            const tf = createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch });
+            stateRef.current = tp.parentId
+              ? applyAddChildFrame(stateRef.current, tf, tp.parentId, tf.gridRow, tf.gridCol)
+              : applyAddTopLevelFrame(stateRef.current, tf, tf.gridRow, tf.gridCol);
+            syncRefsFromState();
             scheduleAutosave(); doLayout();
           }
           setTool("select"); paint(); return; // one-shot: revert to Select
@@ -864,7 +1031,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, hAlign: { anchor: "left", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
           if (e.key === "e" || e.key === "E") {
@@ -872,7 +1039,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, hAlign: { anchor: "center", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
           if (e.key === "r" || e.key === "R") {
@@ -880,7 +1047,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, hAlign: { anchor: "right", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
         }
@@ -890,7 +1057,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, vAlign: { anchor: "top", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
           if (e.key === "m" || e.key === "M") {
@@ -898,7 +1065,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, vAlign: { anchor: "center", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
           if (e.key === "b" || e.key === "B") {
@@ -906,7 +1073,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({
               effects: setTextAlignEffect.of({ id: te.frameId, vAlign: { anchor: "bottom", offset: 0 }, charWidth: cwRef.current, charHeight: chRef.current }),
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             blinkRef.current = true; paint(); return;
           }
         }
@@ -961,7 +1128,7 @@ export default function DemoV2() {
               ],
               annotations: [Transaction.addToHistory.of(true)],
             }).state;
-            framesRef.current = getFrames(stateRef.current);
+            syncRefsFromState();
             textEditRef.current = getTextEdit(stateRef.current);
             scheduleAutosave();
           }
@@ -979,7 +1146,7 @@ export default function DemoV2() {
             ],
             annotations: [Transaction.addToHistory.of(true)],
           }).state;
-          framesRef.current = getFrames(stateRef.current);
+          syncRefsFromState();
           textEditRef.current = getTextEdit(stateRef.current);
           scheduleAutosave(); blinkRef.current = true; paint(); return;
         }
@@ -1014,66 +1181,27 @@ export default function DemoV2() {
         if (e.key === "Backspace") {
           e.preventDefault();
           const beforeCursor = getCursor(stateRef.current)!;
-          const isLineMerge = beforeCursor.col === 0 && beforeCursor.row > 0;
           stateRef.current = proseDeleteBefore(stateRef.current, beforeCursor);
-          proseRef.current = getDoc(stateRef.current);
-          framesRef.current = getFrames(stateRef.current);
-          const afterCursor = getCursor(stateRef.current)!;
-          if (isLineMerge) {
-            mergeLines(preparedRef.current, beforeCursor.row, stateRef.current.doc.line(afterCursor.row + 1).text);
-            // Shift frames up when a line is deleted via merge
-            const segMap = getProseSegmentMap(stateRef.current);
-            const mergeGridRow = segMap[beforeCursor.row]?.row ?? beforeCursor.row;
-            const ch = chRef.current;
-            const cw = cwRef.current;
-            for (const f of framesRef.current) {
-              if (f.gridRow >= mergeGridRow) {
-                stateRef.current = stateRef.current.update({
-                  effects: moveFrameEffect.of({ id: f.id, dCol: 0, dRow: -1, charWidth: cw, charHeight: ch }),
-                }).state;
-              }
-            }
-            framesRef.current = getFrames(stateRef.current);
-          } else {
-            invalidateLine(preparedRef.current, afterCursor.row, stateRef.current.doc.line(afterCursor.row + 1).text);
-          }
-          proseCursorRef.current = afterCursor;
+          // Unified-doc: proseDelete mutates the CM doc; mapPos in framesField
+          // shifts every frame's docOffset automatically. No manual frame-shift
+          // loop needed. syncRefsFromState rebuilds preparedRef from scratch.
+          syncRefsFromState();
+          proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key === "Enter") {
           e.preventDefault();
-          const beforeRow = getCursor(stateRef.current)!.row;
           stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, "\n");
-          proseRef.current = getDoc(stateRef.current);
-          framesRef.current = getFrames(stateRef.current);
-          // Split: beforeRow keeps text before cursor, beforeRow+1 gets text after
-          const firstText = stateRef.current.doc.line(beforeRow + 1).text;
-          const secondText = stateRef.current.doc.line(beforeRow + 2).text;
-          splitLine(preparedRef.current, beforeRow, firstText, secondText);
-          // Shift frames down when a new line is inserted
-          const segMap = getProseSegmentMap(stateRef.current);
-          const editGridRow = segMap[beforeRow]?.row ?? beforeRow;
-          const ch = chRef.current;
-          const cw = cwRef.current;
-          for (const f of framesRef.current) {
-            if (f.gridRow >= editGridRow) {
-              stateRef.current = stateRef.current.update({
-                effects: moveFrameEffect.of({ id: f.id, dCol: 0, dRow: 1, charWidth: cw, charHeight: ch }),
-              }).state;
-            }
-          }
-          framesRef.current = getFrames(stateRef.current);
+          // Same as Backspace: unified pipeline handles both doc + frame shift.
+          syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key.length === 1 && !mod) {
           e.preventDefault();
           stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, e.key);
-          proseRef.current = getDoc(stateRef.current);
-          framesRef.current = getFrames(stateRef.current);
-          const cur = getCursor(stateRef.current)!;
-          invalidateLine(preparedRef.current, cur.row, stateRef.current.doc.line(cur.row + 1).text);
-          proseCursorRef.current = cur;
+          syncRefsFromState();
+          proseCursorRef.current = getCursor(stateRef.current);
           scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
         }
         return;
@@ -1086,7 +1214,7 @@ export default function DemoV2() {
       const deleteSelectedId = getSelectedId(stateRef.current);
       if ((e.key === "Delete" || e.key === "Backspace") && deleteSelectedId) {
         stateRef.current = applyDeleteFrame(stateRef.current, deleteSelectedId);
-        framesRef.current = getFrames(stateRef.current);
+        syncRefsFromState();
         doLayout(); paint();
       }
       // Z-order shortcuts (top-level frames only)
@@ -1097,23 +1225,23 @@ export default function DemoV2() {
           if (e.key === "]" && !mod) {
             e.preventDefault();
             stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: topFrame.z + 1 }), annotations: [Transaction.addToHistory.of(true)] }).state;
-            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+            syncRefsFromState(); doLayout(); paint(); return;
           }
           if (e.key === "[" && !mod) {
             e.preventDefault();
             stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: Math.max(0, topFrame.z - 1) }), annotations: [Transaction.addToHistory.of(true)] }).state;
-            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+            syncRefsFromState(); doLayout(); paint(); return;
           }
           if (e.key === "]" && mod) {
             e.preventDefault();
             const maxZ = Math.max(...framesRef.current.map(f => f.z));
             stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: maxZ + 1 }), annotations: [Transaction.addToHistory.of(true)] }).state;
-            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+            syncRefsFromState(); doLayout(); paint(); return;
           }
           if (e.key === "[" && mod) {
             e.preventDefault();
             stateRef.current = stateRef.current.update({ effects: setZEffect.of({ id: topFrame.id, z: 0 }), annotations: [Transaction.addToHistory.of(true)] }).state;
-            framesRef.current = getFrames(stateRef.current); doLayout(); paint(); return;
+            syncRefsFromState(); doLayout(); paint(); return;
           }
         }
       }

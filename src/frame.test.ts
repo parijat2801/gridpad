@@ -1,6 +1,6 @@
 // src/frame.test.ts
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { framesFromScan, createFrame, createRectFrame, createTextFrame, createLineFrame, moveFrame, resizeFrame, type Frame } from "./frame";
+import { framesFromScan, createFrame, createRectFrame, createTextFrame, createLineFrame, moveFrame, resizeFrame, wrapAsBand, hitTestFrames, type Frame } from "./frame";
 import { scan } from "./scanner";
 import { scanToFrames } from "./scanToFrames";
 
@@ -236,5 +236,143 @@ describe("Fix 1: wire chars should not leak into prose", () => {
     const result = scan(input);
     const mixedTexts = result.texts.filter(t => t.content.includes("│") && /[A-Z]/.test(t.content));
     expect(mixedTexts.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Frame docOffset/lineCount", () => {
+  it("createFrame includes docOffset and lineCount defaults", () => {
+    const f = createFrame({ x: 0, y: 0, w: 100, h: 50 });
+    expect(f.docOffset).toBe(0);
+    expect(f.lineCount).toBe(0);
+  });
+
+  it("createRectFrame includes docOffset and lineCount defaults", () => {
+    const f = createRectFrame({
+      gridW: 10,
+      gridH: 5,
+      style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" },
+      charWidth: CW,
+      charHeight: CH,
+    });
+    expect(f.docOffset).toBe(0);
+    expect(f.lineCount).toBe(0);
+  });
+
+  it("createTextFrame includes docOffset and lineCount defaults", () => {
+    const f = createTextFrame({ text: "hi", row: 2, col: 3, charWidth: CW, charHeight: CH });
+    expect(f.docOffset).toBe(0);
+    expect(f.lineCount).toBe(0);
+  });
+
+  it("createLineFrame includes docOffset and lineCount defaults", () => {
+    const f = createLineFrame({ r1: 0, c1: 0, r2: 0, c2: 5, charWidth: CW, charHeight: CH });
+    expect(f.docOffset).toBe(0);
+    expect(f.lineCount).toBe(0);
+  });
+
+  it("groupIntoContainers (via framesFromScan) sets docOffset/lineCount on container", () => {
+    // Two side-by-side rects in same row range — produces a container
+    const scanResult = scan("┌─┐ ┌─┐\n│ │ │ │\n└─┘ └─┘");
+    const frames = framesFromScan(scanResult, CW, CH);
+    expect(frames).toHaveLength(1);
+    const container = frames[0];
+    expect(container.docOffset).toBe(0);
+    expect(container.lineCount).toBe(0);
+    expect(container.children.length).toBeGreaterThan(0);
+    for (const child of container.children) {
+      expect(child.docOffset).toBe(0);
+      expect(child.lineCount).toBe(0);
+    }
+  });
+});
+
+describe("wrapAsBand", () => {
+  const STYLE = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
+  it("wraps a single rect into a band container with rebased coords", () => {
+    const rect: Frame = {
+      ...createRectFrame({ gridW: 6, gridH: 3, style: STYLE, charWidth: 8, charHeight: 18 }),
+      gridRow: 5,
+      gridCol: 10,
+      x: 80, y: 90,
+      docOffset: 100,
+      lineCount: 3,
+    };
+    const band = wrapAsBand([rect], 8, 18, 120);
+    expect(band.content).toBeNull();
+    expect(band.isBand).toBe(true);
+    expect(band.children).toHaveLength(1);
+    expect(band.gridRow).toBe(5);
+    expect(band.gridCol).toBe(0);
+    expect(band.gridW).toBe(120);
+    expect(band.gridH).toBe(3);
+    expect(band.lineCount).toBe(3);
+    expect(band.docOffset).toBe(100);
+    expect(band.children[0].gridRow).toBe(0);
+    expect(band.children[0].gridCol).toBe(10);
+    expect(band.children[0].lineCount).toBe(0);
+    expect(band.children[0].docOffset).toBe(0);
+    expect(band.children[0].content?.type).toBe("rect");
+  });
+
+  it("wraps two side-by-side rects into one band, both rebased", () => {
+    const charW = 8, charH = 18;
+    const rectA: Frame = {
+      ...createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 2, gridCol: 0, x: 0, y: 36, docOffset: 50, lineCount: 3,
+    };
+    const rectB: Frame = {
+      ...createRectFrame({ gridW: 5, gridH: 3, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 2, gridCol: 8, x: 64, y: 36, docOffset: 50, lineCount: 3,
+    };
+    const band = wrapAsBand([rectA, rectB], charW, charH, 120);
+    expect(band.children).toHaveLength(2);
+    expect(band.gridRow).toBe(2);
+    expect(band.gridH).toBe(3);
+    expect(band.children[0].gridRow).toBe(0);
+    expect(band.children[0].gridCol).toBe(0);
+    expect(band.children[1].gridRow).toBe(0);
+    expect(band.children[1].gridCol).toBe(8);
+  });
+
+  it("clicking inside a band's bbox but outside any child returns null", () => {
+    const charW = 8, charH = 18;
+    const rect: Frame = {
+      ...createRectFrame({ gridW: 5, gridH: 3, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 0, gridCol: 0, x: 0, y: 0,
+    };
+    const band: Frame = wrapAsBand([rect], charW, charH, 120);
+    // Click well to the right of the rect (col 50 ≫ rect's 5 cols).
+    const hit = hitTestFrames([band], 50 * charW, charH);
+    expect(hit).toBeNull();
+  });
+
+  it("clicking inside a child rect inside a band returns the child", () => {
+    const charW = 8, charH = 18;
+    const rect: Frame = {
+      ...createRectFrame({ gridW: 5, gridH: 3, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 0, gridCol: 0, x: 0, y: 0,
+    };
+    const band: Frame = wrapAsBand([rect], charW, charH, 120);
+    const childInBand = band.children[0];
+    const hit = hitTestFrames([band], 2 * charW, charH);
+    expect(hit).toBeTruthy();
+    expect(hit!.id).toBe(childInBand.id);
+  });
+
+  it("band gridH spans union of children rows", () => {
+    const charW = 8, charH = 18;
+    const rectA: Frame = {
+      ...createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 2, gridCol: 0, x: 0, y: 36, docOffset: 50, lineCount: 3,
+    };
+    const rectB: Frame = {
+      ...createRectFrame({ gridW: 5, gridH: 4, style: STYLE, charWidth: charW, charHeight: charH }),
+      gridRow: 4, gridCol: 8, x: 64, y: 72, docOffset: 50, lineCount: 4,
+    };
+    const band = wrapAsBand([rectA, rectB], charW, charH, 120);
+    expect(band.gridRow).toBe(2);
+    expect(band.gridH).toBe(6);
+    expect(band.lineCount).toBe(6);
   });
 });

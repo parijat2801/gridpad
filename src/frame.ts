@@ -31,6 +31,19 @@ export interface Frame {
   w: number;
   h: number;
   z: number;
+  /** Direct child frames in tree order. NOTE: a frame with non-null
+   * `content` can still have children — e.g. a rect with a text label
+   * has the label as a child. "Has content" does NOT imply "tree-leaf".
+   *
+   * When walking the tree, distinguish:
+   * - tree-leaf:    `f.children.length === 0`
+   * - band:         `f.isBand`
+   * - wireframe:    `f.content === null && !f.isBand`
+   * - shape-leaf:   `f.content !== null` (may still have text-label children)
+   *
+   * DFS-walking "until content !== null" will descend into text labels
+   * and treat them as siblings of their parent rect. Filter by
+   * `content?.type` (e.g. only "rect") to pick true sibling shapes. */
   children: Frame[];
   content: FrameContent | null;
   clip: boolean;
@@ -41,6 +54,14 @@ export interface Frame {
   gridCol: number;
   gridW: number;
   gridH: number;
+  /** CM doc character offset — start of first claimed line. 0 = not yet placed. */
+  docOffset: number;
+  /** Number of CM doc lines this frame claims. 0 = not yet placed. */
+  lineCount: number;
+  /** True if this frame is a synthetic band container produced by
+   * wrapAsBand. Bands are not selectable on their own — clicking
+   * empty band space returns no hit. */
+  isBand?: boolean;
 }
 
 export interface Obstacle {
@@ -55,7 +76,7 @@ export interface Obstacle {
 
 let _counter = 0;
 
-function nextId(): string {
+export function nextId(): string {
   return `frame-${++_counter}-${Date.now()}`;
 }
 
@@ -82,6 +103,8 @@ export function createFrame(params: {
     gridCol: 0,
     gridW: 0,
     gridH: 0,
+    docOffset: 0,
+    lineCount: 0,
   };
 }
 
@@ -111,6 +134,8 @@ export function createRectFrame(params: {
     gridRow: 0, gridCol: 0, // caller sets position
     gridW,
     gridH,
+    docOffset: 0,
+    lineCount: 0,
   };
 }
 
@@ -144,6 +169,8 @@ export function createTextFrame(params: {
     gridCol: col,
     gridW: codepoints.length,
     gridH: 1,
+    docOffset: 0,
+    lineCount: 0,
   };
 }
 
@@ -159,6 +186,16 @@ export function createLineFrame(params: {
 }): Frame {
   const { r1, c1, r2, c2, charWidth, charHeight } = params;
   const { bbox, cells } = buildLineCells(r1, c1, r2, c2);
+  // Rebase cells to local-to-frame coords (origin 0,0). buildLineCells keys
+  // them in absolute (input) coords; the serializer's renderFrameRow expects
+  // localRow indexing. framesFromScan does the same rebase at frame.ts ~340.
+  const localCells = new Map<string, string>();
+  for (const [k, v] of cells) {
+    const ci = k.indexOf(",");
+    const r = Number(k.slice(0, ci)) - bbox.row;
+    const c = Number(k.slice(ci + 1)) - bbox.col;
+    localCells.set(`${r},${c}`, v);
+  }
   return {
     id: nextId(),
     x: bbox.col * charWidth,
@@ -167,13 +204,15 @@ export function createLineFrame(params: {
     h: bbox.h * charHeight,
     z: 0,
     children: [],
-    content: { type: "line", cells },
+    content: { type: "line", cells: localCells },
     clip: true,
     dirty: false,
     gridRow: bbox.row,
     gridCol: bbox.col,
     gridW: bbox.w,
     gridH: bbox.h,
+    docOffset: 0,
+    lineCount: 0,
   };
 }
 
@@ -204,7 +243,12 @@ function hitTestOne(frame: Frame, px: number, py: number): Frame | null {
       }
     }
   }
-  return bestHit ?? frame;
+  if (bestHit) return bestHit;
+  // Synthetic bands (isBand=true) are not selectable on their own —
+  // empty band space returns null, not the band. Children still hit
+  // via the recursive case above.
+  if (frame.isBand) return null;
+  return frame;
 }
 
 export function hitTestFrames(frames: Frame[], px: number, py: number): Frame | null {
@@ -340,7 +384,7 @@ export function framesFromScan(
       content = { type: "rect", cells: rebasedCells, style: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" } };
     }
 
-    return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: true, dirty: false, gridRow: layer.bbox.row, gridCol: layer.bbox.col, gridW: layer.bbox.w, gridH: layer.bbox.h };
+    return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: true, dirty: false, gridRow: layer.bbox.row, gridCol: layer.bbox.col, gridW: layer.bbox.w, gridH: layer.bbox.h, docOffset: 0, lineCount: 0 };
   });
 
   reparentChildren(frames, charWidth, charHeight);
@@ -479,8 +523,74 @@ function groupIntoContainers(
       gridCol: minCol,
       gridW: maxCol - minCol,
       gridH: maxRow - minRow,
+      docOffset: 0,
+      lineCount: 0,
     });
   }
 
   return result;
+}
+
+/**
+ * Wrap N child frames into a synthetic full-width band container.
+ *
+ * The band owns the doc-line claim (lineCount, docOffset) and is the new
+ * top-level frame. Children are rebased to band-relative grid rows with
+ * lineCount=0 and docOffset=0; their gridCol stays absolute (the band
+ * spans col 0 → docWidthCols, full doc width).
+ *
+ * The band's docOffset is inherited from the child with the smallest
+ * gridRow (the topmost claim). gridH = union of children's row ranges.
+ *
+ * Children must be in ABSOLUTE grid coordinates on entry (i.e., they
+ * were top-level before this call). Mixing already-band-relative and
+ * absolute children is undefined behavior — the caller must ensure
+ * inputs are consistent.
+ */
+export function wrapAsBand(
+  children: Frame[],
+  charWidth: number,
+  charHeight: number,
+  docWidthCols: number,
+): Frame {
+  if (children.length === 0) {
+    throw new Error("wrapAsBand: cannot wrap empty children");
+  }
+  let minRow = Infinity, maxRow = 0;
+  let docOffset = 0;
+  for (const c of children) {
+    if (c.gridRow < minRow) {
+      minRow = c.gridRow;
+      docOffset = c.docOffset;
+    }
+    if (c.gridRow + c.gridH > maxRow) maxRow = c.gridRow + c.gridH;
+  }
+  const gridH = maxRow - minRow;
+  const rebasedChildren: Frame[] = children.map((c) => ({
+    ...c,
+    gridRow: c.gridRow - minRow,
+    x: c.gridCol * charWidth,
+    y: (c.gridRow - minRow) * charHeight,
+    docOffset: 0,
+    lineCount: 0,
+  }));
+  return {
+    id: nextId(),
+    x: 0,
+    y: minRow * charHeight,
+    w: docWidthCols * charWidth,
+    h: gridH * charHeight,
+    z: 0,
+    children: rebasedChildren,
+    content: null,
+    clip: true,
+    dirty: true,
+    isBand: true,
+    gridRow: minRow,
+    gridCol: 0,
+    gridW: docWidthCols,
+    gridH,
+    docOffset,
+    lineCount: gridH,
+  };
 }

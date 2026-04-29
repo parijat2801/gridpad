@@ -225,7 +225,7 @@ describe("Fix 3: recursive dirty detection", () => {
       children: [],
       clip: true,
       dirty: true, // child is dirty — it moved
-      gridRow: 0, gridCol: 0, gridW: 4, gridH: 3, // now at absolute row 0
+      gridRow: 0, gridCol: 0, gridW: 4, gridH: 3, docOffset: 0, lineCount: 0, // now at absolute row 0
       content: {
         type: "rect",
         cells: new Map([
@@ -243,7 +243,7 @@ describe("Fix 3: recursive dirty detection", () => {
       children: [childRect],
       clip: true,
       dirty: false, // container is clean — only the child moved
-      gridRow: 0, gridCol: 0, gridW: 4, gridH: 3,
+      gridRow: 0, gridCol: 0, gridW: 4, gridH: 3, docOffset: 0, lineCount: 0,
       content: null,
     };
 
@@ -305,7 +305,7 @@ describe("Fix 3: recursive dirty detection", () => {
       children: [],
       clip: true,
       dirty: true, // child dirty — triggers reflow
-      gridRow: 0, gridCol: 0, gridW: 4, gridH: 3,
+      gridRow: 0, gridCol: 0, gridW: 4, gridH: 3, docOffset: 0, lineCount: 0,
       content: {
         type: "rect",
         cells: new Map([
@@ -322,7 +322,7 @@ describe("Fix 3: recursive dirty detection", () => {
       children: [childRect],
       clip: true,
       dirty: false, // container is NOT dirty
-      gridRow: 1, gridCol: 0, gridW: 4, gridH: 3,
+      gridRow: 1, gridCol: 0, gridW: 4, gridH: 3, docOffset: 0, lineCount: 0,
       content: null,
     };
 
@@ -372,6 +372,8 @@ function fakeFrame(gridRow: number, gridH: number): Frame {
     gridCol: 0,
     gridW: 10,
     gridH,
+    docOffset: 0,
+    lineCount: 0,
   };
 }
 
@@ -470,7 +472,7 @@ describe("Fix 4: per-cell clipping in collectFrameCells", () => {
       children: [],
       clip: true,
       dirty: true,
-      gridRow: 0, gridCol: 0, gridW: 6, gridH: 3,
+      gridRow: 0, gridCol: 0, gridW: 6, gridH: 3, docOffset: 0, lineCount: 0,
       content: {
         type: "rect",
         cells: new Map([
@@ -489,7 +491,7 @@ describe("Fix 4: per-cell clipping in collectFrameCells", () => {
       children: [],
       clip: true,
       dirty: true,
-      gridRow: 1, gridCol: 3, gridW: 4, gridH: 1,
+      gridRow: 1, gridCol: 3, gridW: 4, gridH: 1, docOffset: 0, lineCount: 0,
       content: {
         type: "text",
         cells: new Map([
@@ -538,7 +540,7 @@ describe("Fix 4: per-cell clipping in collectFrameCells", () => {
       children: [],
       clip: true,
       dirty: true,
-      gridRow: 0, gridCol: 0, gridW: 4, gridH: 2,
+      gridRow: 0, gridCol: 0, gridW: 4, gridH: 2, docOffset: 0, lineCount: 0,
       content: {
         type: "rect",
         cells: new Map([
@@ -552,7 +554,7 @@ describe("Fix 4: per-cell clipping in collectFrameCells", () => {
     // row 2 (absolute) overflows (parent gridH=2 → rows 0..1 only)
     const childMultiRow: Frame = {
       id: "multirow1",
-      x: 8, y: 8, w: 8, h: 32, z: 0,
+      x: 8, y: 8, w: 8, h: 32, z: 0, docOffset: 0, lineCount: 0,
       children: [],
       clip: true,
       dirty: true,

@@ -12,7 +12,7 @@ import {
 } from "@codemirror/state";
 import { history, undo, redo, undoDepth, redoDepth, invertedEffects } from "@codemirror/commands";
 import type { Frame } from "./frame";
-import { moveFrame, resizeFrame } from "./frame";
+import { moveFrame, resizeFrame, wrapAsBand, nextId } from "./frame";
 import { layoutTextChildren } from "./autoLayout";
 import { scanToFrames } from "./scanToFrames";
 import type { ProseSegment } from "./proseSegments";
@@ -46,6 +46,25 @@ export const resizeFrameEffect = StateEffect.define<{
 
 const addFrameEffect = StateEffect.define<Frame>();
 
+// addChildFrameEffect — add frame as a child of parentId. Frame's gridRow/
+// gridCol are parent-relative. lineCount is forced to 0 (children don't claim
+// doc lines). No doc surgery happens for this effect.
+const addChildFrameEffect = StateEffect.define<{ parentId: string; frame: Frame }>();
+
+// reparentFrameEffect — change a frame's parent. newParentId === null promotes
+// to top-level (caller must supply absoluteGridRow/Col). newParentId === string
+// demotes to child of that frame (gridRow/Col become parent-relative).
+// unifiedDocSync handles doc surgery: demote releases claimed lines; promote
+// inserts blank claim lines.
+const reparentFrameEffect = StateEffect.define<{
+  frameId: string;
+  newParentId: string | null;
+  absoluteGridRow?: number;
+  absoluteGridCol?: number;
+  charWidth: number;
+  charHeight: number;
+}>();
+
 const deleteFrameEffect = StateEffect.define<{ id: string }>();
 
 export const setZEffect = StateEffect.define<{ id: string; z: number }>();
@@ -65,11 +84,41 @@ export const setTextAlignEffect = StateEffect.define<{
 }>();
 
 // Restore effect — used by invertedEffects for undo of frame mutations.
-const restoreFramesEffect = StateEffect.define<Frame[]>();
+export const restoreFramesEffect = StateEffect.define<Frame[]>();
 const clearDirtyEffect = StateEffect.define<null>();
 const setOriginalProseSegmentsEffect = StateEffect.define<ProseSegment[]>();
 
+// relocateFrameEffect — emitted by unifiedDocSync when a drag repositions a
+// top-level frame in the CM doc. Updates docOffset to the new claimed-line
+// start so framesField stays in sync with the doc change in the same transaction.
+const relocateFrameEffect = StateEffect.define<{ id: string; newDocOffset: number }>();
+
+/**
+ * Return the top-level band frame whose claim range covers `row`, or null.
+ * A band is identified by isBand=true (set by wrapAsBand). Used by
+ * applyAddTopLevelFrame and applyReparentFrame to detect when a
+ * mutation should join an existing band instead of inserting fresh
+ * claim lines.
+ */
+function findBandAtRow(frames: Frame[], row: number): Frame | null {
+  for (const f of frames) {
+    if (!f.isBand) continue;
+    if (row >= f.gridRow && row < f.gridRow + f.lineCount) return f;
+  }
+  return null;
+}
+
 // Mark a frame dirty by id, propagating up to ancestors.
+/** Recursively find a frame by id in a frame tree (incl. children). */
+function findFrameInList(frames: Frame[], id: string): Frame | null {
+  for (const f of frames) {
+    if (f.id === id) return f;
+    const found = findFrameInList(f.children, id);
+    if (found) return found;
+  }
+  return null;
+}
+
 function markDirtyById(frames: Frame[], id: string): { frames: Frame[]; found: boolean } {
   let found = false;
   const result = frames.map(f => {
@@ -88,6 +137,24 @@ const framesField = StateField.define<Frame[]>({
   create: () => [],
   update(frames, tr: Transaction) {
     let result = frames;
+    // Remap docOffset on every doc-changing transaction. Use associativity=1
+    // so frames follow preceding insertions (Enter-above-wireframe pushes
+    // frame down). Also re-runs on undo, where the inverted ChangeSet maps
+    // offsets back; restoreFramesEffect (below) overrides this for frame
+    // mutations, but pure prose edits land here exclusively.
+    //
+    // For drag transactions, mapPos sees a balanced delete+insert pair from
+    // unifiedDocSync's rotation logic — net zero shift on offsets outside
+    // the frame's claim, so other frames' docOffsets stay anchored to their
+    // content. For delete/resize, mapPos correctly shifts other frames'
+    // offsets to track their content through the doc length change.
+    if (tr.docChanged) {
+      result = result.map((f) =>
+        f.lineCount === 0
+          ? f
+          : { ...f, docOffset: tr.changes.mapPos(f.docOffset, 1) },
+      );
+    }
     for (const e of tr.effects) {
       if (e.is(restoreFramesEffect)) {
         return e.value;
@@ -107,6 +174,16 @@ const framesField = StateField.define<Frame[]>({
         };
         result = result.map(applyMove);
         result = markDirtyById(result, e.value.id).frames;
+        // Merge any top-level bands whose claim ranges now overlap. Drag
+        // rotation can push one band into another's rows; the row-partition
+        // invariant requires bands never share rows. Merge into a single
+        // band spanning [min(start), max(end)] with all rects as children.
+        result = mergeOverlappingBands(result);
+      } else if (e.is(relocateFrameEffect)) {
+        // Update docOffset to the new claimed-line start after drag.
+        result = result.map(f =>
+          f.id === e.value.id ? { ...f, docOffset: e.value.newDocOffset } : f,
+        );
       } else if (e.is(resizeFrameEffect)) {
         const applyResize = (f: Frame): Frame => {
           if (f.id === e.value.id) return resizeFrame(f, { gridW: e.value.gridW, gridH: e.value.gridH }, e.value.charWidth, e.value.charHeight);
@@ -115,8 +192,138 @@ const framesField = StateField.define<Frame[]>({
         };
         result = result.map(applyResize);
         result = markDirtyById(result, e.value.id).frames;
+        // Sync lineCount with new gridH for top-level frames that claim doc lines.
+        result = result.map(f =>
+          f.id === e.value.id && f.lineCount > 0
+            ? { ...f, lineCount: Math.max(2, e.value.gridH) }
+            : f,
+        );
       } else if (e.is(addFrameEffect)) {
         result = [...result, { ...e.value, dirty: true }];
+      } else if (e.is(addChildFrameEffect)) {
+        // Append the new frame to parentId's children. lineCount is forced
+        // to 0 — children never claim doc lines. Parent is marked dirty.
+        const child: Frame = { ...e.value.frame, lineCount: 0, docOffset: 0, dirty: true };
+        const addToParent = (frames: Frame[]): Frame[] =>
+          frames.map(f => {
+            if (f.id === e.value.parentId) {
+              return { ...f, children: [...f.children, child], dirty: true };
+            }
+            if (f.children.length > 0) {
+              const updated = addToParent(f.children);
+              if (updated !== f.children) return { ...f, children: updated };
+            }
+            return f;
+          });
+        result = addToParent(result);
+      } else if (e.is(reparentFrameEffect)) {
+        // Find and remove the frame from its current location.
+        let extracted: Frame | null = null;
+        const removeAndCapture = (frames: Frame[]): Frame[] => {
+          const out: Frame[] = [];
+          for (const f of frames) {
+            if (f.id === e.value.frameId) { extracted = f; continue; }
+            if (f.children.length > 0) {
+              out.push({ ...f, children: removeAndCapture(f.children), dirty: true });
+            } else {
+              out.push(f);
+            }
+          }
+          return out;
+        };
+        result = removeAndCapture(result);
+        if (!extracted) continue;
+        // Prune empty wireframes (any depth) first, then empty bands. A
+        // wireframe emptying may now leave the band empty too — order matters.
+        const pruneEmptyWireframes = (frames: Frame[]): Frame[] =>
+          frames
+            .map(f => f.children.length > 0
+              ? { ...f, children: pruneEmptyWireframes(f.children) }
+              : f)
+            .filter(f => !(f.content === null && !f.isBand && f.children.length === 0));
+        result = pruneEmptyWireframes(result);
+        result = result.filter(f => !(f.isBand && f.children.length === 0));
+        const orig: Frame = extracted;
+        const cw = e.value.charWidth;
+        const ch = e.value.charHeight;
+        if (e.value.newParentId === null) {
+          // Promote to top-level — wrap in a fresh full-width band container.
+          // The band owns the doc claim; the promoted rect becomes its child.
+          const aRow = e.value.absoluteGridRow ?? orig.gridRow;
+          const aCol = e.value.absoluteGridCol ?? orig.gridCol;
+          const oldLines = tr.startState.doc.lines;
+          const targetLineOld = Math.min(Math.max(aRow, 0), oldLines - 1) + 1;
+          const docOffset = tr.startState.doc.line(targetLineOld).from;
+          const lineNum = tr.newDoc.lineAt(docOffset).number - 1;
+          const placedRect: Frame = {
+            ...orig,
+            gridRow: lineNum,
+            gridCol: aCol,
+            x: aCol * cw,
+            y: lineNum * ch,
+            lineCount: orig.gridH,
+            docOffset,
+            dirty: true,
+          };
+          // Generous full-width default for hit-test bounds. Band is
+          // invisible (content=null), so width does not affect serialization.
+          let docWidthCols = 120;
+          for (let i = 1; i <= tr.newDoc.lines; i++) {
+            const ln = tr.newDoc.line(i);
+            if (ln.length > docWidthCols) docWidthCols = ln.length;
+          }
+          const band = wrapAsBand([placedRect], cw, ch, docWidthCols);
+          result = [...result, band];
+        } else {
+          // Demote to child of newParentId. Find parent in current result.
+          let parentRef: Frame | null = null;
+          const findParent = (frames: Frame[]): void => {
+            for (const f of frames) {
+              if (f.id === e.value.newParentId) { parentRef = f; return; }
+              if (f.children.length > 0) findParent(f.children);
+            }
+          };
+          findParent(result);
+          if (!parentRef) {
+            // Parent not found — abort, restore frame at top-level to avoid loss.
+            result = [...result, orig];
+            continue;
+          }
+          const p: Frame = parentRef;
+          // Use caller-supplied absolute coords if available — falling back
+          // to orig.gridRow only works when orig was already top-level. For
+          // a child being moved to a different parent, orig.gridRow is
+          // already parent-relative to the OLD parent, so subtracting the
+          // NEW parent's absolute gridRow produces garbage.
+          const aRow = e.value.absoluteGridRow ?? orig.gridRow;
+          const aCol = e.value.absoluteGridCol ?? orig.gridCol;
+          const childGridRow = aRow - p.gridRow;
+          const childGridCol = aCol - p.gridCol;
+          const child: Frame = {
+            ...orig,
+            gridRow: childGridRow,
+            gridCol: childGridCol,
+            // Rebase pixel coords to local-to-parent. The renderer composes
+            // child.x with parent.absX; child.x must be the child's offset
+            // INSIDE the parent, not its absolute screen position.
+            x: childGridCol * cw,
+            y: childGridRow * ch,
+            lineCount: 0,
+            docOffset: 0,
+            dirty: true,
+          };
+          const addToParent = (frames: Frame[]): Frame[] =>
+            frames.map(f => {
+              if (f.id === e.value.newParentId) {
+                return { ...f, children: [...f.children, child], dirty: true };
+              }
+              if (f.children.length > 0) {
+                return { ...f, children: addToParent(f.children) };
+              }
+              return f;
+            });
+          result = addToParent(result);
+        }
       } else if (e.is(deleteFrameEffect)) {
         // Mark parent container dirty before removing
         const markParentDirty = (frames: Frame[]): Frame[] =>
@@ -196,6 +403,28 @@ const framesField = StateField.define<Frame[]>({
         result = result.map(applyAlign);
         result = markDirtyById(result, e.value.id).frames;
       }
+    }
+    // gridRow sync: for top-level claiming frames (lineCount > 0), gridRow is
+    // a CACHE of "what doc line does docOffset land on". moveFrame() updates
+    // gridRow blindly by dRow; unifiedDocSync may clamp the doc-side
+    // position. The doc is the single source of truth — re-derive gridRow
+    // here so the serializer (which reads gridRow) never sees drift.
+    // Child frames (lineCount === 0) keep their parent-relative gridRow.
+    const docLen = tr.newDoc.length;
+    const docLines = tr.newDoc.lines;
+    result = result.map(f => {
+      if (f.lineCount === 0) return f;
+      if (f.docOffset < 0 || f.docOffset > docLen) return f;
+      const lineNum = tr.newDoc.lineAt(f.docOffset).number - 1; // 0-indexed
+      if (lineNum === f.gridRow) return f;
+      // Clamp lineCount so gridRow + lineCount stays within doc.
+      const maxLineCount = Math.max(1, docLines - lineNum);
+      const lineCount = Math.min(f.lineCount, maxLineCount);
+      return { ...f, gridRow: lineNum, lineCount };
+    });
+    // Recompute wireframe bboxes whenever any effect changed the tree.
+    if (result !== frames) {
+      result = recomputeWireframeBounds(result);
     }
     return result;
   },
@@ -298,11 +527,20 @@ export function createEditorState(init: EditorStateInit): EditorState {
   // snapshot the frames array before the transaction and emit a
   // restoreFramesEffect that replays it on undo.
   const frameInversion = invertedEffects.of((tr) => {
+    // Include restoreFramesEffect so that undo-of-undo (= redo) replays the
+    // correct frames: when the undo transaction carries restoreFramesEffect,
+    // we snapshot the pre-undo (= post-forward) frames and store them as the
+    // "redo effects". This is especially important for drag (Task 12) because
+    // the redo transaction has no original effects — only doc changes.
     const hasFrameEffect = tr.effects.some(
       (e) =>
         e.is(moveFrameEffect) ||
+        e.is(relocateFrameEffect) ||
+        e.is(restoreFramesEffect) ||
         e.is(resizeFrameEffect) ||
         e.is(addFrameEffect) ||
+        e.is(addChildFrameEffect) ||
+        e.is(reparentFrameEffect) ||
         e.is(deleteFrameEffect) ||
         e.is(setZEffect) ||
         e.is(editTextFrameEffect) ||
@@ -313,9 +551,293 @@ export function createEditorState(init: EditorStateInit): EditorState {
     return [restoreFramesEffect.of(tr.startState.field(framesField))];
   });
 
+  // changeFilter: reject user-initiated edits that touch any frame-claimed
+  // line range. Programmatic transactions (no userEvent) are bypassed so the
+  // mutation transactionFilter (Tasks 10-13) can splice claimed lines on
+  // move/resize/delete. Note: when a transactionFilter returns an array of
+  // specs, CM merges them via resolveTransaction(state, filtered, false) —
+  // the `false` skips re-applying changeFilter, so this is consistent.
+  const claimFilter = EditorState.changeFilter.of((tr) => {
+    if (!tr.isUserEvent("input") && !tr.isUserEvent("delete")) return true;
+    const frames = tr.startState.field(framesField);
+    if (frames.length === 0) return true;
+    const claimed: Array<{ from: number; to: number }> = [];
+    const docLen = tr.startState.doc.length;
+    for (const f of frames) {
+      if (f.lineCount === 0) continue;
+      // Defensive: a frame's docOffset is only meaningful in the unified-doc
+      // factory. Other factories (the legacy prose-only path) leave docOffset
+      // pointing into the longer source text; skip those rather than crash.
+      if (f.docOffset < 0 || f.docOffset > docLen) continue;
+      const startLine = tr.startState.doc.lineAt(f.docOffset);
+      const endLineNum = Math.min(
+        startLine.number + f.lineCount - 1,
+        tr.startState.doc.lines,
+      );
+      const endLine = tr.startState.doc.line(endLineNum);
+      claimed.push({ from: startLine.from, to: endLine.to });
+    }
+    let intersects = false;
+    tr.changes.iterChangedRanges((fromA, toA) => {
+      for (const r of claimed) {
+        // Pure insertion (fromA === toA) AT a claimed-range boundary is
+        // BEFORE the claim (associativity=1 will push the frame forward).
+        // Allow these so "Enter at end of prose line above wireframe" works.
+        if (fromA === toA && (fromA === r.from || fromA === r.to + 1)) continue;
+        if (fromA <= r.to && toA >= r.from) {
+          intersects = true;
+          break;
+        }
+      }
+    });
+    return !intersects;
+  });
+
+  // unifiedDocSync: intercept frame mutation effects and add doc changes
+  // that keep the CM doc in sync with the frame model. Empty-string lines
+  // (per Task 3 audit correction) are inserted/removed as the frame grows
+  // or shrinks. When this filter returns an array of specs, CM merges them
+  // via resolveTransaction(state, filtered, false), so changeFilter does
+  // not re-fire on the merged transaction (programmatic edits go through).
+  const unifiedDocSync = EditorState.transactionFilter.of((tr) => {
+    // Collect doc-change specs from each frame mutation effect, then
+    // return them as one merged transaction at the end. sequential:true
+    // ensures positions in later specs are interpreted in the doc state
+    // AFTER earlier specs apply. This lets multi-effect dispatches like
+    // [resize, reparent] do all their doc surgery in one atomic step.
+    const allChanges: Array<{ from: number; to?: number; insert?: string }> = [];
+    const extraEffects: StateEffect<unknown>[] = [];
+
+    // Push physics for bands: a child rect that resizes past its parent
+    // band's bounds pushes the band wall outward. Synthesize a band-resize
+    // effect alongside the original child-resize so unifiedDocSync's
+    // existing resize handler emits the correct claim-line insert in the
+    // same transaction. Normal frame parents do NOT auto-grow — only
+    // bands do, because they own doc claim and child overhang would
+    // corrupt prose rows.
+    const startFrames = tr.startState.field(framesField);
+    for (const e of tr.effects) {
+      if (!e.is(resizeFrameEffect)) continue;
+      const target = findFrameInList(startFrames, e.value.id);
+      if (!target || target.lineCount > 0) continue; // not a child
+      const parent = findContainingBandDeep(startFrames, e.value.id);
+      if (!parent) continue;
+      // Band-relative position via getBandRelativeRow handles the 4-level
+      // model where target.gridRow may be wireframe-relative, not band-
+      // relative. For solo-rect-in-band cases the helper returns
+      // target.gridRow unchanged.
+      const childBandRow = getBandRelativeRow(e.value.id, parent.id, startFrames);
+      const childBandCol = getBandRelativeCol(e.value.id, parent.id, startFrames);
+      const childBottomAfter = childBandRow + Math.max(2, e.value.gridH);
+      const childRightAfter = childBandCol + Math.max(2, e.value.gridW);
+      const newBandH = Math.max(parent.gridH, childBottomAfter);
+      const newBandW = Math.max(parent.gridW, childRightAfter);
+      if (newBandH === parent.gridH && newBandW === parent.gridW) continue;
+      // Synthesize the band-resize effect for framesField (so the band's
+      // gridH/gridW/lineCount get updated). Compute the doc-change
+      // (insert blank claim lines) inline rather than letting the main
+      // loop re-process the synthesized effect — that would cause a
+      // double-fire because returning extraEffects from a transactionFilter
+      // re-runs the filter on the resolved transaction.
+      extraEffects.push(resizeFrameEffect.of({
+        id: parent.id,
+        gridW: newBandW,
+        gridH: newBandH,
+        charWidth: e.value.charWidth,
+        charHeight: e.value.charHeight,
+      }));
+      const deltaH = newBandH - parent.lineCount;
+      if (deltaH > 0) {
+        const startLine = tr.startState.doc.lineAt(parent.docOffset);
+        const endLineNum = startLine.number + parent.lineCount - 1;
+        if (endLineNum <= tr.startState.doc.lines) {
+          const endLine = tr.startState.doc.line(endLineNum);
+          allChanges.push({ from: endLine.to, insert: "\n".repeat(deltaH) });
+        }
+      }
+    }
+
+    for (const e of tr.effects) {
+      if (e.is(moveFrameEffect) && e.value.dRow !== 0) {
+        const frames = tr.startState.field(framesField);
+        const frame = findFrameInList(frames, e.value.id);
+        if (!frame || frame.lineCount === 0) continue;
+
+        const doc = tr.startState.doc;
+        const startLine = doc.lineAt(frame.docOffset);
+        const endLineNum = startLine.number + frame.lineCount - 1;
+        if (endLineNum > doc.lines) continue; // claim is malformed; skip
+        const endLine = doc.line(endLineNum);
+
+        // Vertical drag = swap newlines at the frame's boundaries.
+        // Drag down by 1 = delete \n above frame, insert \n below.
+        // Drag up by 1 = inverse. Net char count is 0; the frame's claimed
+        // empty lines stay empty; surrounding prose is untouched.
+        const dRow = e.value.dRow;
+
+        // Drag = ROTATION ONLY. Motion is clamped to consecutive blank lines
+        // around the frame (the "rotation budget"). We do NOT grow the doc
+        // when the user drags past the budget — that would insert chars
+        // before/after sibling frames and mapPos would drag them along.
+        let maxDown = 0;
+        for (let n = endLineNum + 1; n <= doc.lines; n++) {
+          const ln = doc.line(n);
+          if (ln.length === 0) maxDown++;
+          else break;
+        }
+        let maxUp = 0;
+        for (let n = startLine.number - 1; n >= 1; n--) {
+          const ln = doc.line(n);
+          if (ln.length === 0) maxUp++;
+          else break;
+        }
+        const effectiveDRow = dRow > 0
+          ? Math.min(dRow, maxDown)
+          : Math.max(dRow, -maxUp);
+        if (effectiveDRow === 0) continue; // no room to move
+
+        if (effectiveDRow > 0) {
+          // Drag down: rotate effectiveDRow newlines from after the frame
+          // to before it. Doc length preserved → other frames' mapPos sees
+          // +N then -N at offsets surrounding A's claim, net zero shift.
+          const deleteFrom = endLine.to;
+          const deleteTo = endLine.to + effectiveDRow;
+          if (deleteTo > doc.length) continue; // defensive
+          const movedChars = doc.sliceString(deleteFrom, deleteTo);
+          allChanges.push({ from: deleteFrom, to: deleteTo });
+          allChanges.push({ from: startLine.from, insert: movedChars });
+        } else {
+          // Drag up: mirror — pull newlines from before the frame, push them
+          // after. Doc length preserved.
+          const n = -effectiveDRow;
+          const deleteFrom2 = startLine.from - n;
+          const deleteTo2 = startLine.from;
+          if (deleteFrom2 < 0) continue;
+          const movedChars = doc.sliceString(deleteFrom2, deleteTo2);
+          allChanges.push({ from: deleteFrom2, to: deleteTo2 });
+          allChanges.push({ from: endLine.to, insert: movedChars });
+        }
+
+        // Frame's new docOffset: drag-down shifts forward by effectiveDRow
+        // (chars inserted at startLine.from); drag-up shifts back by |dRow|.
+        const newDocOffset = effectiveDRow > 0
+          ? startLine.from + effectiveDRow
+          : startLine.from - (-effectiveDRow);
+        extraEffects.push(relocateFrameEffect.of({ id: frame.id, newDocOffset }));
+        continue;
+      }
+      if (e.is(resizeFrameEffect)) {
+        const frames = tr.startState.field(framesField);
+        const frame = findFrameInList(frames, e.value.id);
+        if (!frame || frame.lineCount === 0) continue;
+
+        const newGridH = Math.max(2, e.value.gridH);
+        const delta = newGridH - frame.lineCount;
+        if (delta === 0) continue;
+
+        const startLine = tr.startState.doc.lineAt(frame.docOffset);
+        const endLineNum = startLine.number + frame.lineCount - 1;
+        const endLine = tr.startState.doc.line(endLineNum);
+
+        if (delta > 0) {
+          // Insert `delta` empty lines AFTER the current claimed range.
+          allChanges.push({ from: endLine.to, insert: "\n".repeat(delta) });
+        } else {
+          // Remove `-delta` lines from the end of the claimed range.
+          const keepLastNum = endLineNum + delta; // last claimed line we keep
+          const keepLast = tr.startState.doc.line(keepLastNum);
+          allChanges.push({ from: keepLast.to, to: endLine.to });
+        }
+        continue;
+      }
+      if (e.is(deleteFrameEffect)) {
+        const frames = tr.startState.field(framesField);
+        const frame = findFrameInList(frames, e.value.id);
+        // Skip child frames (lineCount===0) — they don't claim doc lines.
+        if (!frame || frame.lineCount === 0) continue;
+
+        const startLine = tr.startState.doc.lineAt(frame.docOffset);
+        const endLineNum = startLine.number + frame.lineCount - 1;
+        const endLine = tr.startState.doc.line(endLineNum);
+        const docLength = tr.startState.doc.length;
+
+        // Delete exactly ONE newline (the boundary separator), not both.
+        const from = startLine.from > 0 ? startLine.from - 1 : 0;
+        const to = startLine.from > 0 ? endLine.to : Math.min(endLine.to + 1, docLength);
+        allChanges.push({ from, to });
+        continue;
+      }
+      if (e.is(addFrameEffect)) {
+        const newFrame = e.value;
+        // Child frames (lineCount===0) don't claim doc lines — skip.
+        if (newFrame.lineCount === 0) continue;
+
+        const doc = tr.startState.doc;
+        const offset = Math.max(0, Math.min(newFrame.docOffset, doc.length));
+        allChanges.push({ from: offset, insert: "\n".repeat(newFrame.lineCount) });
+        continue;
+      }
+      if (e.is(reparentFrameEffect)) {
+        const frames = tr.startState.field(framesField);
+        const frame = findFrameInList(frames, e.value.frameId);
+        if (!frame) continue;
+        const doc = tr.startState.doc;
+
+        if (e.value.newParentId === null) {
+          // Promote: claim `gridH` rows at the absolute target. Reuse any
+          // already-blank lines at that location (the new band's claim
+          // simply takes ownership of existing blank prose) and only
+          // insert the difference. This makes promote symmetric with
+          // band-relocation when the doc already has blank capacity, so
+          // a promote that empties one band and lands on existing blank
+          // rows preserves total doc length.
+          if (frame.lineCount > 0) continue;
+          const aRow = e.value.absoluteGridRow ?? 0;
+          const targetLine = Math.min(Math.max(aRow, 0), doc.lines - 1);
+          let blankAtTarget = 0;
+          for (let n = targetLine + 1; n <= doc.lines; n++) {
+            const ln = doc.line(n);
+            if (ln.length === 0) blankAtTarget++;
+            else break;
+          }
+          const needed = Math.max(0, frame.gridH - blankAtTarget);
+          if (needed > 0) {
+            const offset = doc.line(targetLine + 1).from;
+            allChanges.push({ from: offset, insert: "\n".repeat(needed) });
+          }
+          continue;
+        } else {
+          // Demote: release the claimed lines (mirror deleteFrameEffect).
+          if (frame.lineCount === 0) continue; // already a child
+          const startLine = doc.lineAt(frame.docOffset);
+          const endLineNum = startLine.number + frame.lineCount - 1;
+          if (endLineNum > doc.lines) continue;
+          const endLine = doc.line(endLineNum);
+          const docLength = doc.length;
+          const from = startLine.from > 0 ? startLine.from - 1 : 0;
+          const to = startLine.from > 0 ? endLine.to : Math.min(endLine.to + 1, docLength);
+          allChanges.push({ from, to });
+          continue;
+        }
+      }
+    }
+
+    if (allChanges.length === 0 && extraEffects.length === 0) return tr;
+    return [
+      tr,
+      {
+        ...(extraEffects.length > 0 ? { effects: extraEffects } : {}),
+        changes: allChanges,
+        sequential: true,
+      },
+    ];
+  });
+
   const extensions: Extension[] = [
     history(),
     frameInversion,
+    claimFilter,
+    unifiedDocSync,
     framesField.init(() => frames),
     selectedIdField,
     textEditField,
@@ -337,12 +859,17 @@ export function createEditorState(init: EditorStateInit): EditorState {
 }
 
 // Convenience factory — runs scanToFrames internally.
+// Legacy path: builds a CM doc with prose only (wireframe lines stripped).
+// Frame.docOffset values from scanToFrames refer to the FULL source text,
+// not this shrunken prose doc — clear them so the unified-doc claimFilter
+// (which sees lineCount=0) treats these frames as non-claiming.
 export function createEditorStateFromText(
   text: string,
   charWidth: number,
   charHeight: number,
 ): EditorState {
   const { frames, proseSegments } = scanToFrames(text, charWidth, charHeight);
+  for (const f of frames) { f.docOffset = 0; f.lineCount = 0; }
   const byRow = new Map<number, string>();
   for (const seg of proseSegments) {
     const existing = byRow.get(seg.row) ?? "";
@@ -364,6 +891,118 @@ export function createEditorStateFromText(
     proseSegmentMap,
     originalProseSegments: proseSegments,
   });
+}
+
+/**
+ * Unified document factory — CM doc holds the FULL .md text with claimed
+ * (wireframe) lines replaced by empty strings. Frames track which lines they
+ * own via docOffset (CM character offset of first claimed line) + lineCount.
+ *
+ * Empty strings (not " ") are used so preparedCache.ts maps them to the
+ * null fast-path and reflowLayout skips them as obstacle-bands instead of
+ * generating spurious PositionedLines.
+ */
+export function createEditorStateUnified(
+  text: string,
+  charWidth: number,
+  charHeight: number,
+): EditorState {
+  const { frames } = scanToFrames(text, charWidth, charHeight);
+
+  // Build set of source lines claimed by any top-level frame.
+  const claimedLines = new Set<number>();
+  for (const f of frames) {
+    for (let i = f.gridRow; i < f.gridRow + f.gridH; i++) {
+      claimedLines.add(i);
+    }
+  }
+
+  // Build unified doc: prose lines preserved, claimed lines → empty string.
+  const sourceLines = text.split("\n");
+  const unifiedLines = sourceLines.map((line, i) =>
+    claimedLines.has(i) ? "" : line,
+  );
+  const unifiedText = unifiedLines.join("\n");
+
+  // Recompute docOffset for each frame in the unified doc (line lengths shrank).
+  const lineOffsets: number[] = [];
+  {
+    let offset = 0;
+    for (let i = 0; i < unifiedLines.length; i++) {
+      lineOffsets.push(offset);
+      offset += unifiedLines[i].length + 1;
+    }
+  }
+  for (const f of frames) {
+    if (f.gridRow >= 0 && f.gridRow < lineOffsets.length) {
+      f.docOffset = lineOffsets[f.gridRow];
+    }
+  }
+
+  // Eager bands: every top-level claiming frame is wrapped in a synthetic
+  // full-width band. groupIntoContainers (in framesFromScan) already
+  // wraps side-by-side rects into content=null containers — those become
+  // bands by lifting their children to absolute coords and re-wrapping
+  // with wrapAsBand. Solo claiming frames (single rect/line/text) are
+  // wrapped directly.
+  let docWidthCols = 120;
+  for (const ln of unifiedLines) {
+    if (ln.length > docWidthCols) docWidthCols = ln.length;
+  }
+  const wrapped: Frame[] = frames.map((f) => {
+    if (f.content === null) {
+      // Multi-shape composite: keep the scanner's content=null container
+      // as a layer-2 wireframe inside the band, so selection drill-down
+      // can target the group before any individual shape:
+      //   band → wireframe → [shape, shape, ...]
+      //
+      // CRITICAL: the wireframe's gridCol/x stay ABSOLUTE. The band spans
+      // col 0 → docWidthCols, so a child's "band-relative" col equals its
+      // absolute col (mirrors wrapAsBand's child rebase at frame.ts:559).
+      // Resetting gridCol/x to 0 would shove the multi-shape group to the
+      // left edge of the document.
+      const minRow = f.gridRow;
+      const wireframe: Frame = {
+        ...f,
+        gridRow: 0,
+        gridCol: f.gridCol,
+        x: f.gridCol * charWidth,
+        y: 0,
+        docOffset: 0,
+        lineCount: 0,
+      };
+      const band: Frame = {
+        id: nextId(),
+        x: 0,
+        y: minRow * charHeight,
+        w: docWidthCols * charWidth,
+        h: f.gridH * charHeight,
+        z: 0,
+        children: [wireframe],
+        content: null,
+        clip: true,
+        dirty: true,
+        isBand: true,
+        gridRow: minRow,
+        gridCol: 0,
+        gridW: docWidthCols,
+        gridH: f.gridH,
+        docOffset: f.docOffset,
+        lineCount: f.lineCount > 0 ? f.lineCount : f.gridH,
+      };
+      return band;
+    }
+    // Solo claiming frame — wrap as a band with this frame as the only
+    // child. wrapAsBand inherits docOffset from the topmost child (this
+    // frame), and lineCount = gridH = f.gridH = f.lineCount, so the band
+    // ends up with the right claim. Belt-and-suspenders preserve anyway.
+    const band = wrapAsBand([f], charWidth, charHeight, docWidthCols);
+    if (f.lineCount > 0) band.lineCount = f.lineCount;
+    if (f.docOffset > 0 && band.docOffset === 0) band.docOffset = f.docOffset;
+    return band;
+  });
+
+  return createEditorState({ prose: unifiedText, frames: wrapped });
 }
 
 // ── Accessors ──────────────────────────────────────────────────────────────
@@ -506,22 +1145,54 @@ export function proseMoveRight(state: EditorState): EditorState {
   return state;
 }
 
+/** Find the claimed-line range covering `lineNum` (0-indexed), or null. */
+function getClaimedLineRange(
+  state: EditorState,
+  lineNum: number,
+): { start: number; end: number } | null {
+  const frames = state.field(framesField);
+  for (const f of frames) {
+    if (f.lineCount === 0) continue;
+    if (f.docOffset < 0 || f.docOffset > state.doc.length) continue;
+    const startLine = state.doc.lineAt(f.docOffset).number - 1; // 0-indexed
+    const endLine = startLine + f.lineCount - 1;
+    if (lineNum >= startLine && lineNum <= endLine) {
+      return { start: startLine, end: endLine };
+    }
+  }
+  return null;
+}
+
 export function proseMoveUp(state: EditorState): EditorState {
   const cursor = getCursor(state);
   if (!cursor) return state;
   if (cursor.row === 0) return state;
-  const prevLine = state.doc.line(cursor.row); // line above (1-indexed = cursor.row)
+  let targetRow = cursor.row - 1;
+  let claimed = getClaimedLineRange(state, targetRow);
+  while (claimed) {
+    targetRow = claimed.start - 1;
+    if (targetRow < 0) return state;
+    claimed = getClaimedLineRange(state, targetRow);
+  }
+  const prevLine = state.doc.line(targetRow + 1); // 1-indexed
   const prevGraphemes = [...segmenter.segment(prevLine.text)].length;
-  return moveCursorTo(state, { row: cursor.row - 1, col: Math.min(cursor.col, prevGraphemes) });
+  return moveCursorTo(state, { row: targetRow, col: Math.min(cursor.col, prevGraphemes) });
 }
 
 export function proseMoveDown(state: EditorState): EditorState {
   const cursor = getCursor(state);
   if (!cursor) return state;
   if (cursor.row >= state.doc.lines - 1) return state;
-  const nextLine = state.doc.line(cursor.row + 2); // line below (1-indexed = cursor.row + 2)
+  let targetRow = cursor.row + 1;
+  let claimed = getClaimedLineRange(state, targetRow);
+  while (claimed) {
+    targetRow = claimed.end + 1;
+    if (targetRow >= state.doc.lines) return state;
+    claimed = getClaimedLineRange(state, targetRow);
+  }
+  const nextLine = state.doc.line(targetRow + 1); // 1-indexed
   const nextGraphemes = [...segmenter.segment(nextLine.text)].length;
-  return moveCursorTo(state, { row: cursor.row + 1, col: Math.min(cursor.col, nextGraphemes) });
+  return moveCursorTo(state, { row: targetRow, col: Math.min(cursor.col, nextGraphemes) });
 }
 
 // ── Frame operations ───────────────────────────────────────────────────────
@@ -561,20 +1232,569 @@ export function applyAddFrame(state: EditorState, frame: Frame): EditorState {
   }).state;
 }
 
-export function applyDeleteFrame(state: EditorState, id: string): EditorState {
-  // Check if targetId is the deleted frame or any of its descendants
-  const frameContains = (frame: Frame, targetId: string): boolean => {
-    if (frame.id === targetId) return true;
-    return frame.children.some(c => frameContains(c, targetId));
+/**
+ * Add a top-level (claiming) frame at a UI-derived grid position.
+ * Pure helper that owns the docOffset/lineCount derivation so callers
+ * (DemoV2 draw-rect handler, tests) don't have to know the unified-doc
+ * invariants. Frames added via this path are visible to serializeUnified
+ * and trigger unifiedDocSync's empty-line insertion.
+ */
+export function applyAddTopLevelFrame(
+  state: EditorState,
+  frame: Frame,
+  gridRow: number,
+  gridCol: number,
+): EditorState {
+  // Clamp gridRow into the existing doc.
+  const targetLine = Math.min(Math.max(gridRow, 0), state.doc.lines - 1);
+  const docOffset = state.doc.line(targetLine + 1).from;
+  const charWidth = frame.gridW > 0 ? frame.w / frame.gridW : 0;
+  const charHeight = frame.gridH > 0 ? frame.h / frame.gridH : 0;
+
+  // Eager bands: if a band already claims `gridRow`, append the new frame
+  // as a child of that band — no new top-level claim lines, no claim
+  // collision. If the new child extends past the band's current bottom,
+  // grow the band first via resizeFrameEffect.
+  const existingBand = findBandAtRow(getFrames(state), gridRow);
+  if (existingBand) {
+    const childGridRow = gridRow - existingBand.gridRow;
+    const childFrame: Frame = {
+      ...frame,
+      x: gridCol * charWidth,
+      y: childGridRow * charHeight,
+      gridRow: childGridRow,
+      gridCol,
+      docOffset: 0,
+      lineCount: 0,
+    };
+    const childBottom = childGridRow + frame.gridH;
+    const newBandH = Math.max(existingBand.gridH, childBottom);
+    const effects: StateEffect<unknown>[] = [];
+    if (newBandH > existingBand.gridH) {
+      effects.push(resizeFrameEffect.of({
+        id: existingBand.id,
+        gridW: existingBand.gridW,
+        gridH: newBandH,
+        charWidth,
+        charHeight,
+      }));
+    }
+    effects.push(addChildFrameEffect.of({ parentId: existingBand.id, frame: childFrame }));
+    return state.update({
+      effects,
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+  }
+
+  // No existing band — wrap the new rect in a fresh band and add as top-level.
+  const placedRect: Frame = {
+    ...frame,
+    x: gridCol * charWidth,
+    y: gridRow * charHeight,
+    gridRow,
+    gridCol,
+    docOffset,
+    lineCount: frame.gridH,
   };
-  const deletedFrame = getFrames(state).find(f => frameContains(f, id));
-  const isAffected = (targetId: string): boolean => {
-    if (targetId === id) return true;
-    if (!deletedFrame) return false;
-    return frameContains(deletedFrame, targetId);
+  const docWidthCols = computeDocWidthCols(state, [placedRect]);
+  const band = wrapAsBand([placedRect], charWidth, charHeight, docWidthCols);
+  return applyAddFrame(state, band);
+}
+
+/** Choose a band's full-width gridW. Use the larger of: 120, longest doc
+ * line in cols, max child right edge. The band has no border, so width
+ * is purely a hit-test concern, not a serialization concern. */
+function computeDocWidthCols(state: EditorState, children: Frame[]): number {
+  let maxCol = 120;
+  for (let i = 1; i <= state.doc.lines; i++) {
+    const ln = state.doc.line(i);
+    if (ln.length > maxCol) maxCol = ln.length;
+  }
+  for (const c of children) {
+    const right = c.gridCol + c.gridW;
+    if (right > maxCol) maxCol = right;
+  }
+  return maxCol;
+}
+
+/**
+ * Add a frame as a child of an existing parent (Figma-style nest-on-draw).
+ * Caller-supplied gridRow/gridCol are absolute; helper rebases them
+ * parent-relative so children stay visually anchored as parent moves.
+ * No doc lines are inserted (children don't claim doc lines).
+ *
+ * Bug A fix: computes parent's absolute row by walking the full path via
+ * findPath so nested parents (shape-in-wireframe) convert correctly.
+ * Bug B fix: if child's bottom overflows the containing band, emit a
+ * resizeFrameEffect for the band BEFORE the addChildFrameEffect so that
+ * unifiedDocSync inserts blank claim lines in the same transaction.
+ */
+export function applyAddChildFrame(
+  state: EditorState,
+  frame: Frame,
+  parentId: string,
+  absoluteGridRow: number,
+  absoluteGridCol: number,
+): EditorState {
+  const frames = getFrames(state);
+  const parent = findFrameInList(frames, parentId);
+  if (!parent) return state;
+  const charWidth = frame.gridW > 0 ? frame.w / frame.gridW : 0;
+  const charHeight = frame.gridH > 0 ? frame.h / frame.gridH : 0;
+
+  // Compute parent's absolute (doc-grid) row/col by walking the path. For a
+  // top-level parent the path has length 1 and the sum equals parent.gridRow.
+  // For a nested parent (e.g. shape-in-wireframe) we sum every gridRow on
+  // the path so the conversion to parent-relative coords is correct.
+  const path = findPath(frames, parentId);
+  let parentAbsRow = 0;
+  let parentAbsCol = 0;
+  for (const p of path) { parentAbsRow += p.gridRow; parentAbsCol += p.gridCol; }
+
+  const childGridRow = absoluteGridRow - parentAbsRow;
+  const childGridCol = absoluteGridCol - parentAbsCol;
+  const prepared: Frame = {
+    ...frame,
+    x: childGridCol * charWidth,
+    y: childGridRow * charHeight,
+    gridRow: childGridRow,
+    gridCol: childGridCol,
+    lineCount: 0,
+    docOffset: 0,
   };
 
-  const effects: StateEffect<unknown>[] = [deleteFrameEffect.of({ id })];
+  // Band-grow: if the new child's bottom (in band-relative coords) exceeds
+  // the containing band's gridH, emit a resize effect FIRST so unifiedDocSync
+  // inserts blank claim lines before the child lands.
+  const containingBand = findContainingBandDeep(frames, parentId);
+  const effects: StateEffect<unknown>[] = [];
+  if (containingBand) {
+    const childAbsBottom = absoluteGridRow - containingBand.gridRow + frame.gridH;
+    if (childAbsBottom > containingBand.gridH) {
+      effects.push(resizeFrameEffect.of({
+        id: containingBand.id,
+        gridW: containingBand.gridW,
+        gridH: childAbsBottom,
+        charWidth,
+        charHeight,
+      }));
+    }
+  }
+  effects.push(addChildFrameEffect.of({ parentId, frame: prepared }));
+  return state.update({
+    effects,
+    annotations: Transaction.addToHistory.of(true),
+  }).state;
+}
+
+/**
+ * Move a frame to a new parent (Figma drag-into / drag-out semantics).
+ * newParentId === null → promote to top-level. absoluteGridRow/Col set
+ * the placement and unifiedDocSync inserts blank claim lines.
+ * newParentId === string → demote to child. unifiedDocSync releases the
+ * frame's currently-claimed doc lines.
+ */
+export function applyReparentFrame(
+  state: EditorState,
+  frameId: string,
+  newParentId: string | null,
+  absoluteGridRow: number,
+  absoluteGridCol: number,
+  charWidth: number,
+  charHeight: number,
+): EditorState {
+  // Eager-band promote: if newParentId === null AND a band already claims
+  // absoluteGridRow, redirect to demote-into-that-band. If the promoted
+  // frame extends past the band's current bottom, expand the band first
+  // (resizeFrameEffect drives unifiedDocSync to insert blank lines).
+  // unifiedDocSync (after Task 0.5) accumulates BOTH the resize and the
+  // demote into one transaction.
+  //
+  // In every promote/demote case, also emit deleteFrameEffect for the
+  // source band when the source rect is its sole child. The framesField's
+  // empty-band filter prunes the band from frames, but unifiedDocSync only
+  // releases claim lines on deleteFrameEffect — without this, the orphaned
+  // claim lines leak forever and the doc grows on every promote.
+  const sourceBand = findContainingBandDeep(getFrames(state), frameId);
+  const sourceBandWillEmpty = sourceBand !== null && sourceBand.id !== newParentId
+    ? (() => {
+        // Direct child: band has only this shape.
+        if (sourceBand.children.length === 1 && sourceBand.children[0].id === frameId) {
+          return true;
+        }
+        // Wireframe-in-between: band's only direct child is a wireframe
+        // whose only direct child is the dragged shape.
+        if (sourceBand.children.length === 1
+            && sourceBand.children[0].content === null
+            && !sourceBand.children[0].isBand
+            && sourceBand.children[0].children.length === 1
+            && sourceBand.children[0].children[0].id === frameId) {
+          return true;
+        }
+        return false;
+      })()
+    : false;
+
+  if (newParentId === null) {
+    const existingBand = findBandAtRow(getFrames(state), absoluteGridRow);
+    if (existingBand && existingBand.id !== sourceBand?.id) {
+      const promoted = findFrameInList(getFrames(state), frameId);
+      const effects: StateEffect<unknown>[] = [];
+      if (promoted) {
+        const childRowInBand = absoluteGridRow - existingBand.gridRow;
+        const childBottom = childRowInBand + promoted.gridH;
+        const newBandH = Math.max(existingBand.gridH, childBottom);
+        if (newBandH > existingBand.gridH) {
+          effects.push(resizeFrameEffect.of({
+            id: existingBand.id,
+            gridW: existingBand.gridW,
+            gridH: newBandH,
+            charWidth,
+            charHeight,
+          }));
+        }
+      }
+      effects.push(reparentFrameEffect.of({
+        frameId,
+        newParentId: existingBand.id,
+        absoluteGridRow,
+        absoluteGridCol,
+        charWidth,
+        charHeight,
+      }));
+      if (sourceBandWillEmpty && sourceBand) {
+        // reparent-first, delete-second: removeAndCapture extracts the rect
+        // from the band; line-234 filter prunes the now-empty band from
+        // framesField; deleteFrameEffect (read against startState in
+        // unifiedDocSync) releases the band's claim lines.
+        effects.push(deleteFrameEffect.of({ id: sourceBand.id }));
+      }
+      return state.update({
+        effects,
+        annotations: Transaction.addToHistory.of(true),
+      }).state;
+    }
+    // No existing band — fall through to the standard promote dispatch.
+    // The framesField effect handler (EDIT 2) wraps the promoted frame in
+    // a fresh band.
+  }
+  const effects: StateEffect<unknown>[] = [
+    reparentFrameEffect.of({
+      frameId, newParentId, absoluteGridRow, absoluteGridCol, charWidth, charHeight,
+    }),
+  ];
+  if (sourceBandWillEmpty && sourceBand) {
+    effects.push(deleteFrameEffect.of({ id: sourceBand.id }));
+  }
+  return state.update({
+    effects,
+    annotations: Transaction.addToHistory.of(true),
+  }).state;
+}
+
+/** Top-down DFS returning the ancestor chain root→target (inclusive on both
+ * ends), or `[]` if `targetId` is not in the tree. Reused by selection-target
+ * resolution and band-relative coordinate accumulation. */
+export function findPath(frames: Frame[], targetId: string): Frame[] {
+  for (const f of frames) {
+    if (f.id === targetId) return [f];
+    if (f.children.length > 0) {
+      const inChild = findPath(f.children, targetId);
+      if (inChild.length > 0) return [f, ...inChild];
+    }
+  }
+  return [];
+}
+
+/** Find the band ancestor of `frameId`, walking the full tree (any depth).
+ * Inspects ancestors only (path minus the target itself), so a band frame
+ * does not return itself as its own containing band. This matters for
+ * band-to-band reparent: the moved band's bookkeeping must distinguish
+ * "the frame being moved" from "where it lives". Replaces the
+ * immediate-children-only `findContainingBand`. */
+export function findContainingBandDeep(frames: Frame[], frameId: string): Frame | null {
+  const path = findPath(frames, frameId);
+  for (let i = 0; i < path.length - 1; i++) {
+    if (path[i].isBand) return path[i];
+  }
+  return null;
+}
+
+/** Sum gridRow offsets along the path from `bandId` (exclusive) to `frameId`
+ * (inclusive). Throws if `frameId` is not in the tree. Returns 0 when
+ * `frameId === bandId`. Used by drag clamp + push physics to compute a
+ * shape's true band-relative position through any number of intermediate
+ * wireframe layers. */
+export function getBandRelativeRow(
+  frameId: string,
+  bandId: string,
+  frames: Frame[],
+): number {
+  if (frameId === bandId) return 0;
+  const path = findPath(frames, frameId);
+  if (path.length === 0) {
+    throw new Error(`getBandRelativeRow: frame ${frameId} not found`);
+  }
+  const bandIdx = path.findIndex(f => f.id === bandId);
+  if (bandIdx < 0) {
+    throw new Error(`getBandRelativeRow: band ${bandId} is not an ancestor of frame ${frameId}`);
+  }
+  let sum = 0;
+  for (let i = bandIdx + 1; i < path.length; i++) sum += path[i].gridRow;
+  return sum;
+}
+
+export function getBandRelativeCol(
+  frameId: string,
+  bandId: string,
+  frames: Frame[],
+): number {
+  if (frameId === bandId) return 0;
+  const path = findPath(frames, frameId);
+  if (path.length === 0) {
+    throw new Error(`getBandRelativeCol: frame ${frameId} not found`);
+  }
+  const bandIdx = path.findIndex(f => f.id === bandId);
+  if (bandIdx < 0) {
+    throw new Error(`getBandRelativeCol: band ${bandId} is not an ancestor of frame ${frameId}`);
+  }
+  let sum = 0;
+  for (let i = bandIdx + 1; i < path.length; i++) sum += path[i].gridCol;
+  return sum;
+}
+
+/** Compute the selection target for a click hit, given the current
+ * selection and whether ctrl/cmd is held.
+ *
+ * Rules:
+ * - Bands are never selectable; if `hit` is a band → return null.
+ * - With ctrl/cmd held → return `hit.id` directly (bypass drill-down).
+ * - Otherwise build the non-band ancestor chain `[outermost, ..., hit]`
+ *   and: if `currentSelectedId` is one of `chain[0..n-2]`, drill one level
+ *   deeper (return `chain[indexOf+1].id`); else return `chain[0].id`.
+ */
+export function resolveSelectionTarget(
+  hit: Frame,
+  currentSelectedId: string | null,
+  frames: Frame[],
+  ctrlHeld: boolean,
+): string | null {
+  if (hit.isBand) return null;
+  if (ctrlHeld) return hit.id;
+  const path = findPath(frames, hit.id);
+  const chain = path.filter(f => !f.isBand);
+  if (chain.length === 0) return null;
+  if (currentSelectedId !== null) {
+    const idx = chain.findIndex(f => f.id === currentSelectedId);
+    if (idx >= 0 && idx < chain.length - 1) {
+      return chain[idx + 1].id;
+    }
+  }
+  return chain[0].id;
+}
+
+/** Strict-ancestor predicate: walks `findPath(descendantId)` and returns
+ * true iff `ancestorId` appears earlier in the chain than `descendantId`.
+ * Used to detect drag-start on the current selection — a mouse-down whose
+ * hit is the current selection or one of its descendants must NOT
+ * re-resolve selection (Strategy A in DEBUG_PLAN.md). Returns false when
+ * either id is missing from the tree, or when ancestorId === descendantId. */
+export function isAncestorInTree(
+  frames: Frame[],
+  ancestorId: string,
+  descendantId: string,
+): boolean {
+  if (ancestorId === descendantId) return false;
+  const path = findPath(frames, descendantId);
+  if (path.length === 0) return false;
+  for (let i = 0; i < path.length - 1; i++) {
+    if (path[i].id === ancestorId) return true;
+  }
+  return false;
+}
+
+export type MouseDownSelectionDecision =
+  | { kind: "preserveSelection"; frameId: string }
+  | { kind: "applyRule"; frameId: string | null };
+
+/** Decide what selection should happen on mouse-down, distinguishing a
+ * drag-start of the current selection from a fresh click on something
+ * else (Strategy A — Fix 1).
+ *
+ * - With ctrl/cmd held → always run the rule (deepest hit, no preserve).
+ * - If `hit.id === currentSelectedId` or `currentSelectedId` is a strict
+ *   ancestor of `hit.id` → return `preserveSelection`. This is a
+ *   drag-start of the existing selection; keep the target as-is and let
+ *   `onMouseUp` decide whether (no movement) to drill via the rule.
+ * - Otherwise → return `applyRule` with `resolveSelectionTarget(...)`. */
+export function decideSelectionForMouseDown(
+  hit: Frame,
+  currentSelectedId: string | null,
+  frames: Frame[],
+  ctrlHeld: boolean,
+): MouseDownSelectionDecision {
+  if (ctrlHeld) {
+    return { kind: "applyRule", frameId: resolveSelectionTarget(hit, currentSelectedId, frames, true) };
+  }
+  if (
+    currentSelectedId !== null &&
+    (currentSelectedId === hit.id || isAncestorInTree(frames, currentSelectedId, hit.id))
+  ) {
+    return { kind: "preserveSelection", frameId: currentSelectedId };
+  }
+  return { kind: "applyRule", frameId: resolveSelectionTarget(hit, currentSelectedId, frames, false) };
+}
+
+/** Walk the tree and recompute every wireframe (`content === null && !isBand`)
+ * frame's bbox to be the bounding union of its children's absolute extents.
+ * Children are rebased to keep their absolute screen positions stable (same
+ * delta-rebase logic as wrapAsBand). Required because hitTestOne's strict
+ * bounds check would otherwise make children that grew past the wireframe
+ * un-clickable. */
+export function recomputeWireframeBounds(frames: Frame[]): Frame[] {
+  const recompute = (f: Frame): Frame => {
+    const newChildren = f.children.map(recompute);
+    if (f.isBand || f.content !== null || newChildren.length === 0) {
+      return newChildren === f.children ? f : { ...f, children: newChildren };
+    }
+    let minRow = Infinity, minCol = Infinity, maxRow = 0, maxCol = 0;
+    for (const c of newChildren) {
+      if (c.gridRow < minRow) minRow = c.gridRow;
+      if (c.gridCol < minCol) minCol = c.gridCol;
+      if (c.gridRow + c.gridH > maxRow) maxRow = c.gridRow + c.gridH;
+      if (c.gridCol + c.gridW > maxCol) maxCol = c.gridCol + c.gridW;
+    }
+    if (minRow === 0 && minCol === 0
+        && maxRow === f.gridH && maxCol === f.gridW) {
+      return newChildren === f.children ? f : { ...f, children: newChildren };
+    }
+    let cw = 0, ch = 0;
+    for (const c of newChildren) {
+      if (c.gridW > 0) { cw = c.w / c.gridW; break; }
+    }
+    for (const c of newChildren) {
+      if (c.gridH > 0) { ch = c.h / c.gridH; break; }
+    }
+    const rebasedChildren = newChildren.map(c => ({
+      ...c,
+      gridRow: c.gridRow - minRow,
+      gridCol: c.gridCol - minCol,
+      x: (c.gridCol - minCol) * cw,
+      y: (c.gridRow - minRow) * ch,
+    }));
+    return {
+      ...f,
+      gridRow: f.gridRow + minRow,
+      gridCol: f.gridCol + minCol,
+      gridW: maxCol - minCol,
+      gridH: maxRow - minRow,
+      x: (f.gridCol + minCol) * cw,
+      y: (f.gridRow + minRow) * ch,
+      w: (maxCol - minCol) * cw,
+      h: (maxRow - minRow) * ch,
+      children: rebasedChildren,
+    };
+  };
+  return frames.map(recompute);
+}
+
+/**
+ * Merge any pair of top-level bands whose claim ranges overlap. The
+ * row-partition invariant requires bands never share rows; drag rotation
+ * can push one band into another's territory, so a post-move pass detects
+ * the overlap and combines the bands into one.
+ *
+ * Merge semantics: pick the band with the smaller gridRow as the survivor
+ * (its docOffset becomes the merged claim's anchor). New gridRow = min of
+ * both, new lineCount = max(rowEnd) - min(rowStart). Children of the
+ * other band are rebased to the merged band's coordinate system and
+ * appended.
+ *
+ * Idempotent — repeats until no overlap remains, in case three or more
+ * bands collapse together.
+ */
+function mergeOverlappingBands(frames: Frame[]): Frame[] {
+  let changed = true;
+  let result = frames;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < result.length; i++) {
+      const a = result[i];
+      if (!a.isBand) continue;
+      for (let j = i + 1; j < result.length; j++) {
+        const b = result[j];
+        if (!b.isBand) continue;
+        const aStart = a.gridRow, aEnd = a.gridRow + a.lineCount;
+        const bStart = b.gridRow, bEnd = b.gridRow + b.lineCount;
+        // Overlap iff intervals [aStart, aEnd) and [bStart, bEnd) share any row.
+        if (aEnd <= bStart || bEnd <= aStart) continue;
+        const survivor = aStart <= bStart ? a : b;
+        const other = survivor === a ? b : a;
+        const newStart = Math.min(aStart, bStart);
+        const newEnd = Math.max(aEnd, bEnd);
+        const rebasedOtherChildren = other.children.map(c => ({
+          ...c,
+          gridRow: c.gridRow + (other.gridRow - newStart),
+          y: (c.gridRow + (other.gridRow - newStart)) * (c.gridH > 0 ? c.h / c.gridH : 0),
+        }));
+        const survivorRebasedChildren = survivor.children.map(c => ({
+          ...c,
+          gridRow: c.gridRow + (survivor.gridRow - newStart),
+          y: (c.gridRow + (survivor.gridRow - newStart)) * (c.gridH > 0 ? c.h / c.gridH : 0),
+        }));
+        const merged: Frame = {
+          ...survivor,
+          gridRow: newStart,
+          gridH: newEnd - newStart,
+          lineCount: newEnd - newStart,
+          y: newStart * (survivor.gridH > 0 ? survivor.h / survivor.gridH : 0),
+          h: (newEnd - newStart) * (survivor.gridH > 0 ? survivor.h / survivor.gridH : 0),
+          children: [...survivorRebasedChildren, ...rebasedOtherChildren],
+          dirty: true,
+        };
+        const next: Frame[] = [];
+        for (let k = 0; k < result.length; k++) {
+          if (k === i) next.push(merged);
+          else if (k === j) continue;
+          else next.push(result[k]);
+        }
+        result = next;
+        changed = true;
+        break;
+      }
+      if (changed) break;
+    }
+  }
+  return result;
+}
+
+export function applyDeleteFrame(state: EditorState, id: string): EditorState {
+  // If the target is the SOLE child of a synthetic band, delete the band
+  // instead — that releases the band's claim lines via unifiedDocSync.
+  // Otherwise framesField would cascade-remove the empty band from state
+  // but its blank doc lines would remain forever.
+  let targetId = id;
+  for (const f of getFrames(state)) {
+    if (f.isBand && f.children.length === 1 && f.children[0].id === id) {
+      targetId = f.id;
+      break;
+    }
+  }
+
+  // Check if a frame contains the (possibly redirected) targetId, walking
+  // children recursively.
+  const frameContains = (frame: Frame, lookId: string): boolean => {
+    if (frame.id === lookId) return true;
+    return frame.children.some(c => frameContains(c, lookId));
+  };
+  const deletedFrame = getFrames(state).find(f => frameContains(f, targetId));
+  const isAffected = (lookId: string): boolean => {
+    if (lookId === targetId) return true;
+    if (!deletedFrame) return false;
+    return frameContains(deletedFrame, lookId);
+  };
+
+  const effects: StateEffect<unknown>[] = [deleteFrameEffect.of({ id: targetId })];
   const selectedId = getSelectedId(state);
   if (selectedId && isAffected(selectedId)) {
     effects.push(selectFrameEffect.of(null));

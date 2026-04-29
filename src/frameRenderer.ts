@@ -21,6 +21,18 @@ export function renderFrame(
   const x = parentX + frame.x;
   const y = parentY + frame.y;
 
+  // DEBUG: tint synthetic bands so they're visible while we debug
+  // eager-bands UX. Remove this block when done.
+  if (frame.isBand) {
+    ctx.save();
+    ctx.fillStyle = "rgba(255, 0, 200, 0.18)";
+    ctx.fillRect(x, y, frame.w, frame.h);
+    ctx.strokeStyle = "rgba(255, 0, 200, 0.6)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, frame.w - 1, frame.h - 1);
+    ctx.restore();
+  }
+
   if (frame.clip) {
     ctx.save();
     ctx.beginPath();
