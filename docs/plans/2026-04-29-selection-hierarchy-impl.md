@@ -1185,8 +1185,10 @@ export function recomputeWireframeBounds(frames: Frame[]): Frame[] {
       if (c.gridRow + c.gridH > maxRow) maxRow = c.gridRow + c.gridH;
       if (c.gridCol + c.gridW > maxCol) maxCol = c.gridCol + c.gridW;
     }
-    if (minRow === f.gridRow && minCol === f.gridCol
-        && maxRow - minRow === f.gridH && maxCol - minCol === f.gridW) {
+    // Tight-bounds check: children's gridRow/gridCol are wireframe-relative,
+    // so a tight wireframe has minRow === 0 && minCol === 0 (NOT === f.gridRow).
+    if (minRow === 0 && minCol === 0
+        && maxRow === f.gridH && maxCol === f.gridW) {
       return newChildren === f.children ? f : { ...f, children: newChildren };
     }
     // Derive cell sizes from any rect child (children retain w/gridW).
@@ -1541,38 +1543,78 @@ npx vitest run src/editorState.test.ts -t "applyAddChildFrame band-grow" --repor
 
 Expected: FAIL — band's `gridH` unchanged because `applyAddChildFrame` doesn't auto-grow.
 
-**Step 3: Update `applyAddChildFrame` in `src/editorState.ts:1285+`**
+**Step 3: Update `applyAddChildFrame` in `src/editorState.ts:1310+`**
 
-Find the function. Wrap the `addChildFrameEffect.of(...)` dispatch with a band-grow check:
+The existing `applyAddChildFrame` (line 1310) computes
+`childGridRow = absoluteGridRow - parent.gridRow`. That is **only correct
+when `parent` is top-level**. For a nested parent (e.g. a shape inside a
+wireframe), `parent.gridRow` is parent-relative, not absolute, so the
+arithmetic silently breaks. Fix that first, then add the band-grow.
+
+Replace the body of `applyAddChildFrame` with:
 
 ```typescript
-// (inside applyAddChildFrame, before dispatching addChildFrameEffect)
-const containingBand = findContainingBandDeep(getFrames(state), parentId);
-const effects: StateEffect<unknown>[] = [];
-if (containingBand) {
-  // Compute the new child's absolute bottom in band-relative coords.
-  const parentBandRow = getBandRelativeRow(parentId, containingBand.id, getFrames(state));
-  const childAbsBottom = parentBandRow + (absoluteGridRow - findFrameInList(getFrames(state), parentId)!.gridRow) + frame.gridH;
-  // (absoluteGridRow is band-absolute already if caller passes absolute coords;
-  //  see the existing usage in applyAddTopLevelFrame for parity.)
-  if (childAbsBottom > containingBand.gridH) {
-    effects.push(resizeFrameEffect.of({
-      id: containingBand.id,
-      gridW: containingBand.gridW,
-      gridH: childAbsBottom,
-      charWidth,
-      charHeight,
-    }));
+export function applyAddChildFrame(
+  state: EditorState,
+  frame: Frame,
+  parentId: string,
+  absoluteGridRow: number,
+  absoluteGridCol: number,
+): EditorState {
+  const frames = getFrames(state);
+  const parent = findFrameInList(frames, parentId);
+  if (!parent) return state;
+  const charWidth = frame.gridW > 0 ? frame.w / frame.gridW : 0;
+  const charHeight = frame.gridH > 0 ? frame.h / frame.gridH : 0;
+
+  // Compute parent's absolute (doc-grid) row/col by walking the path. For a
+  // top-level parent the path has length 1 and the sum equals parent.gridRow.
+  // For a nested parent (e.g. shape-in-wireframe) we sum every gridRow on
+  // the path so the conversion to parent-relative coords is correct.
+  const path = findPath(frames, parentId);
+  let parentAbsRow = 0;
+  let parentAbsCol = 0;
+  for (const p of path) { parentAbsRow += p.gridRow; parentAbsCol += p.gridCol; }
+
+  const childGridRow = absoluteGridRow - parentAbsRow;
+  const childGridCol = absoluteGridCol - parentAbsCol;
+  const prepared: Frame = {
+    ...frame,
+    x: childGridCol * charWidth,
+    y: childGridRow * charHeight,
+    gridRow: childGridRow,
+    gridCol: childGridCol,
+    lineCount: 0,
+    docOffset: 0,
+  };
+
+  // Band-grow: if the new child's bottom (in band-relative coords) exceeds
+  // the containing band's gridH, emit a resize effect FIRST so unifiedDocSync
+  // inserts blank claim lines before the child lands.
+  const containingBand = findContainingBandDeep(frames, parentId);
+  const effects: StateEffect<unknown>[] = [];
+  if (containingBand) {
+    const childAbsBottom = absoluteGridRow - containingBand.gridRow + frame.gridH;
+    if (childAbsBottom > containingBand.gridH) {
+      effects.push(resizeFrameEffect.of({
+        id: containingBand.id,
+        gridW: containingBand.gridW,
+        gridH: childAbsBottom,
+        charWidth,
+        charHeight,
+      }));
+    }
   }
+  effects.push(addChildFrameEffect.of({ parentId, frame: prepared }));
+  return state.update({
+    effects,
+    annotations: Transaction.addToHistory.of(true),
+  }).state;
 }
-effects.push(addChildFrameEffect.of({ parentId, frame: childFrame }));
-return state.update({
-  effects,
-  annotations: Transaction.addToHistory.of(true),
-}).state;
 ```
 
-(Refine signature to match — read the existing function carefully and adapt.)
+Note: this change requires `findContainingBandDeep`, `resizeFrameEffect`,
+`StateEffect`, and `findPath` to be in scope — they already are.
 
 **Step 4: Run the test to verify it passes**
 
