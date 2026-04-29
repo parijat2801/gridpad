@@ -786,36 +786,35 @@ export default function DemoV2() {
           doLayout(); paint();
           return md;
         },
-        /** Get all top-level USER-PERCEIVED frame rects in CSS pixels.
-         * Synthetic bands (isBand) are unwrapped into their children — the
-         * user sees and interacts with the children, not the invisible band.
-         * Coordinates are absolute (band's x/y added to child's x/y).
-         * Non-band top-level frames are returned as-is.
+        /** Get all USER-PERCEIVED frame rects in CSS pixels.
+         * Container frames (isBand or content === null && !isBand wireframes)
+         * are recursed into — the user sees and interacts with the leaf
+         * shapes, not the invisible containers. Coordinates are absolute
+         * (offsets accumulated through every container level: band.x +
+         * wireframe.x + shape.x).
          */
         getFrameRects: () => {
           const out: Array<{
             id: string; x: number; y: number; w: number; h: number;
             hasChildren: boolean; contentType: string;
           }> = [];
-          for (const f of framesRef.current) {
-            if (f.isBand) {
-              for (const c of f.children) {
-                out.push({
-                  id: c.id,
-                  x: f.x + c.x, y: f.y + c.y, w: c.w, h: c.h,
-                  hasChildren: c.children.length > 0,
-                  contentType: c.content?.type ?? "container",
-                });
-              }
-              continue;
+          const collect = (frame: Frame, offX: number, offY: number) => {
+            const absX = offX + frame.x;
+            const absY = offY + frame.y;
+            const isContainer = frame.isBand
+              || (frame.content === null && !frame.isBand);
+            if (isContainer) {
+              for (const c of frame.children) collect(c, absX, absY);
+              return;
             }
             out.push({
-              id: f.id,
-              x: f.x, y: f.y, w: f.w, h: f.h,
-              hasChildren: f.children.length > 0,
-              contentType: f.content?.type ?? "container",
+              id: frame.id,
+              x: absX, y: absY, w: frame.w, h: frame.h,
+              hasChildren: frame.children.length > 0,
+              contentType: frame.content?.type ?? "container",
             });
-          }
+          };
+          for (const f of framesRef.current) collect(f, 0, 0);
           return out;
         },
         /** Get full frame tree with all children, positions, and content */
