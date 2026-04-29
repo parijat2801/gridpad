@@ -1593,6 +1593,58 @@ export function resolveSelectionTarget(
   return chain[0].id;
 }
 
+/** Strict-ancestor predicate: walks `findPath(descendantId)` and returns
+ * true iff `ancestorId` appears earlier in the chain than `descendantId`.
+ * Used to detect drag-start on the current selection — a mouse-down whose
+ * hit is the current selection or one of its descendants must NOT
+ * re-resolve selection (Strategy A in DEBUG_PLAN.md). Returns false when
+ * either id is missing from the tree, or when ancestorId === descendantId. */
+export function isAncestorInTree(
+  frames: Frame[],
+  ancestorId: string,
+  descendantId: string,
+): boolean {
+  if (ancestorId === descendantId) return false;
+  const path = findPath(frames, descendantId);
+  if (path.length === 0) return false;
+  for (let i = 0; i < path.length - 1; i++) {
+    if (path[i].id === ancestorId) return true;
+  }
+  return false;
+}
+
+export type MouseDownSelectionDecision =
+  | { kind: "preserveSelection"; frameId: string }
+  | { kind: "applyRule"; frameId: string | null };
+
+/** Decide what selection should happen on mouse-down, distinguishing a
+ * drag-start of the current selection from a fresh click on something
+ * else (Strategy A — Fix 1).
+ *
+ * - With ctrl/cmd held → always run the rule (deepest hit, no preserve).
+ * - If `hit.id === currentSelectedId` or `currentSelectedId` is a strict
+ *   ancestor of `hit.id` → return `preserveSelection`. This is a
+ *   drag-start of the existing selection; keep the target as-is and let
+ *   `onMouseUp` decide whether (no movement) to drill via the rule.
+ * - Otherwise → return `applyRule` with `resolveSelectionTarget(...)`. */
+export function decideSelectionForMouseDown(
+  hit: Frame,
+  currentSelectedId: string | null,
+  frames: Frame[],
+  ctrlHeld: boolean,
+): MouseDownSelectionDecision {
+  if (ctrlHeld) {
+    return { kind: "applyRule", frameId: resolveSelectionTarget(hit, currentSelectedId, frames, true) };
+  }
+  if (
+    currentSelectedId !== null &&
+    (currentSelectedId === hit.id || isAncestorInTree(frames, currentSelectedId, hit.id))
+  ) {
+    return { kind: "preserveSelection", frameId: currentSelectedId };
+  }
+  return { kind: "applyRule", frameId: resolveSelectionTarget(hit, currentSelectedId, frames, false) };
+}
+
 /** Walk the tree and recompute every wireframe (`content === null && !isBand`)
  * frame's bbox to be the bounding union of its children's absolute extents.
  * Children are rebased to keep their absolute screen positions stable (same

@@ -14,7 +14,7 @@ import {
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
-  resolveSelectionTarget,
+  resolveSelectionTarget, decideSelectionForMouseDown,
   findContainingBandDeep, getBandRelativeRow, getBandRelativeCol,
   type CursorPos,
 } from "./editorState";
@@ -168,6 +168,10 @@ interface DragState {
   frameId: string; startX: number; startY: number;
   startFrameX: number; startFrameY: number; startFrameW: number; startFrameH: number;
   hasMoved: boolean; resizeHandle?: ResizeHandle;
+  // Strategy A (Fix 1): true when onMouseDown skipped the selection rule
+  // because the hit was the current selection or a descendant. If
+  // hasMoved stays false through mouseup, we drill via the rule THEN.
+  deferredDrillHit?: Frame;
 }
 
 type ToolName = "select" | "rect" | "line" | "text";
@@ -507,18 +511,23 @@ export default function DemoV2() {
         }
       }
     }
-    // Resolve selection target via the drill-down rule. Ctrl/cmd held →
-    // bypass drill-down and select the deepest hit directly. Bands are
-    // never selectable; resolveSelectionTarget returns null in that case.
+    // Strategy A (Fix 1 — DEBUG_PLAN.md): a mouse-down on the current
+    // selection (or one of its descendants) is the head of a drag of the
+    // existing selection. Don't run the selection rule yet — keep the
+    // target as-is and remember the hit for deferred drilling. If the
+    // gesture turns out to be a discrete click (no movement), onMouseUp
+    // runs resolveSelectionTarget THEN, drilling one level. This separates
+    // "discrete click drills" from "drag respects selection" (Figma).
     const ctrlHeld = e.ctrlKey || e.metaKey;
-    const targetId = hit
-      ? resolveSelectionTarget(hit, currentSelectedId, framesRef.current, ctrlHeld)
+    const decision = hit
+      ? decideSelectionForMouseDown(hit, currentSelectedId, framesRef.current, ctrlHeld)
       : null;
+    const targetId = decision?.frameId ?? null;
     const now = Date.now();
     const last = lastClickRef.current;
     const isDblClick = last !== null && now - last.time < 300 && Math.abs(px - last.px) < 10 && Math.abs(py - last.py) < 10;
     lastClickRef.current = { time: now, px, py };
-    if (hit && targetId) {
+    if (hit && targetId && decision) {
       if (isDblClick && hit.content?.type === "text") {
         const found = findFrameById(framesRef.current, hit.id);
         if (found) {
@@ -532,10 +541,24 @@ export default function DemoV2() {
           blinkRef.current = true; canvas.focus(); paint(); return;
         }
       }
-      stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(targetId) }).state;
+      // For "applyRule" (fresh click) commit the new selection now. For
+      // "preserveSelection" (drag-start of current selection), leave
+      // selection unchanged — the dragRef carries the target, and the
+      // mouseup branch may drill if no movement occurred.
+      if (decision.kind === "applyRule") {
+        stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(targetId) }).state;
+      }
       proseCursorRef.current = null; textEditRef.current = null;
       const found = findFrameById(framesRef.current, targetId);
-      if (found) dragRef.current = { frameId: targetId, startX: px, startY: py, startFrameX: found.absX, startFrameY: found.absY, startFrameW: found.frame.w, startFrameH: found.frame.h, hasMoved: false };
+      if (found) {
+        dragRef.current = {
+          frameId: targetId, startX: px, startY: py,
+          startFrameX: found.absX, startFrameY: found.absY,
+          startFrameW: found.frame.w, startFrameH: found.frame.h,
+          hasMoved: false,
+          deferredDrillHit: decision.kind === "preserveSelection" ? hit : undefined,
+        };
+      }
       paint();
     } else {
       stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
@@ -675,6 +698,27 @@ export default function DemoV2() {
 
   function onMouseUp(e?: React.MouseEvent) {
     if (dragRef.current) {
+      // Strategy A (Fix 1): if onMouseDown deferred the drill (mouse-down
+      // landed on the current selection or a descendant) AND the gesture
+      // had no movement (discrete click), run resolveSelectionTarget now
+      // and drill one level. Drag-with-movement skips this branch (drag
+      // respects selection). Drilling on click matches Figma exactly.
+      if (
+        !dragRef.current.hasMoved &&
+        !dragRef.current.resizeHandle &&
+        dragRef.current.deferredDrillHit
+      ) {
+        const drillHit = dragRef.current.deferredDrillHit;
+        const newTarget = resolveSelectionTarget(
+          drillHit, dragRef.current.frameId, framesRef.current, false,
+        );
+        if (newTarget && newTarget !== dragRef.current.frameId) {
+          stateRef.current = stateRef.current.update({
+            effects: selectFrameEffect.of(newTarget),
+          }).state;
+          paint();
+        }
+      }
       // Reparent on drop: if mouseup cursor lands inside a different
       // top-level frame than where the dragged frame's current parent is,
       // demote into that frame (or promote out of one). Figma-style.

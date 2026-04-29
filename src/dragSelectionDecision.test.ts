@@ -52,17 +52,34 @@ function firstLeafShape(frames: Frame[]): Frame | null {
   return null;
 }
 
-// All non-band shape frames in tree order.
-function allLeaves(frames: Frame[]): Frame[] {
+// All rect-typed (non-band, non-wireframe) frames in tree order — but
+// only those WITHOUT a content text label. Used to pick true siblings
+// (text-content children of a rect would otherwise pollute the list).
+function allRectShapes(frames: Frame[]): Frame[] {
   const out: Frame[] = [];
   const walk = (fs: Frame[]) => {
     for (const f of fs) {
-      if (!f.isBand && f.content !== null) out.push(f);
+      if (!f.isBand && f.content?.type === "rect") out.push(f);
       walk(f.children);
     }
   };
   walk(frames);
   return out;
+}
+
+// Direct children of a wireframe — these are guaranteed siblings.
+function siblingsUnderWireframe(frames: Frame[]): Frame[] {
+  const find = (fs: Frame[]): Frame[] | null => {
+    for (const f of fs) {
+      if (!f.isBand && f.content === null && f.children.length >= 2) {
+        return f.children;
+      }
+      const inChild = find(f.children);
+      if (inChild) return inChild;
+    }
+    return null;
+  };
+  return find(frames) ?? [];
 }
 
 describe("isAncestorInTree", () => {
@@ -83,10 +100,11 @@ describe("isAncestorInTree", () => {
 
   it("returns false for siblings (no ancestor relation)", () => {
     const frames = getFrames(createEditorStateUnified(JUNCTION, cw, ch));
-    const leaves = allLeaves(frames);
-    expect(leaves.length).toBeGreaterThanOrEqual(2);
-    const a = leaves[0], b = leaves[1];
+    const sibs = siblingsUnderWireframe(frames);
+    expect(sibs.length).toBeGreaterThanOrEqual(2);
+    const a = sibs[0], b = sibs[1];
     expect(isAncestorInTree(frames, a.id, b.id)).toBe(false);
+    expect(isAncestorInTree(frames, b.id, a.id)).toBe(false);
   });
 });
 
@@ -114,19 +132,17 @@ describe("decideSelectionForMouseDown — Strategy A", () => {
   });
 
   it("click on a sibling frame replaces selection by running the rule (no preserve)", () => {
-    // Pre-select rect A (TWO_SEPARATE has two siblings, each its own band/wireframe).
-    // Click rect B → not a descendant of A → rule runs.
+    // TWO_SEPARATE collapses (eager bands) into band → wireframe → [rectA, rectB].
+    // Rects share wireframe parent — they are siblings. Pre-select rectA, click
+    // rectB. Decision must be applyRule (not preserve), because rectA is not
+    // ancestor of rectB.
     const frames = getFrames(createEditorStateUnified(TWO_SEPARATE, cw, ch));
-    const leaves = allLeaves(frames);
-    expect(leaves.length).toBeGreaterThanOrEqual(2);
-    const a = leaves[0], b = leaves[1];
+    const rects = allRectShapes(frames);
+    expect(rects.length).toBeGreaterThanOrEqual(2);
+    const a = rects[0], b = rects[1];
     const decision = decideSelectionForMouseDown(b, a.id, frames, false);
     expect(decision.kind).toBe("applyRule");
-    // applyRule must call resolveSelectionTarget, which on a fresh click
-    // (currentSelectedId not in chain of B) returns chain[0] (parent-first).
-    // The decision's frameId is a non-null id rooted at B's chain.
     expect(decision.frameId).not.toBeNull();
-    // Specifically, it must NOT preserve a (sibling, unrelated).
     expect(decision.frameId).not.toBe(a.id);
   });
 

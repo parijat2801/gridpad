@@ -324,17 +324,46 @@ Pure test update; no production code change.
 
 ## Verification matrix (after each fix)
 
-| Fix | Vitest re-run | Harness re-run | Expected delta |
-|-----|---------------|----------------|----------------|
-| 1 (drag-vs-click in onMouseDown) | new tests pass | -22 failures (Bucket A + D) | 112 → ~134 |
-| 2 (rotation clip) | new rotation-clamp test passes | -2 failures (Bucket B) | ~134 → ~136 |
-| 3 (reparent guard) | n/a | -2 failures (E131, E132) | ~136 → ~138 |
-| 4 (handle steal) | n/a | -1 failure (F) | ~138 → ~139 |
-| 5 (residual escalation) | new rect-clamp test passes | -2 failures (E143, E144) | ~139 → ~141 |
-| 6 (promote) | TBD | -2 failures (E136, E137) | ~141 → 144 |
-| 7 (test update) | n/a | -1 failure (C) | ~141 → ~142 |
+| Fix | Vitest re-run | Harness re-run | Expected delta | Actual delta |
+|-----|---------------|----------------|----------------|---------------|
+| 1 (drag-vs-click in onMouseDown) | 559/0 ✓ (was 546/0; +8 unit + +5 elsewhere) | 112→127 / 32→17 | -22 (Bucket A + D) | **-15** (15 of 22 cleared) |
+| 2 (rotation clip) | new rotation-clamp test passes | -2 failures (Bucket B) | ~134 → ~136 | — |
+| 3 (reparent guard) | n/a | -2 failures (E131, E132) | ~136 → ~138 | — |
+| 4 (handle steal) | n/a | -1 failure (F) | ~138 → ~139 | — |
+| 5 (residual escalation) | new rect-clamp test passes | -2 failures (E143, E144) | ~139 → ~141 | — |
+| 6 (promote) | TBD | -2 failures (E136, E137) | ~141 → 144 | — |
+| 7 (test update) | n/a | -1 failure (C) | ~141 → ~142 | — |
 
 **Final target:** harness 144/0.
+
+### Fix 1 — actual delta vs expected (post-implementation note)
+
+Cleared 15 of 22 estimated (68%). Remaining failures after Fix 1:
+
+| # | Test | Bucket | Why still fails (next fix) |
+|---|------|--------|----------------------------|
+| 14 | drag: move box down, no ghosts | B | Fix 2 (rotation clip) |
+| 29 | text-label: double-click | F | Fix 4 (handle steal) |
+| 32 | structure: side-by-side | C | Fix 7 (test update) |
+| 62 | move-then-enter | A→D cascade not cleared | Investigate |
+| 84 | shared-horizontal drag down ghosts | B-family | Fix 2 |
+| 87 | shared-horizontal resize ghosts | possibly B/F-related | Investigate |
+| 92 | resize box to overlap | possibly resize-related | Investigate |
+| 98 | undo: resize then undo | A→D cascade not cleared | Investigate |
+| 99 | undo: move-resize-undo-undo | A→D cascade not cleared | Investigate |
+| 101 | prose order preserved (drag wireframe down) | B | Fix 2 |
+| 109 | Backspace merges above | A→D cascade not cleared | Investigate |
+| 130 | drag child to different parent | A→D cascade not cleared | Investigate |
+| 131 | equal-size frames don't nest | E | Fix 3 (reparent guard) |
+| 132 | undo reparent | E | Fix 3 |
+| 135 | drag A past B | E | Fix 5 / band rotation side effect |
+| 137 | promote then drag promoted | E | Fix 6 (promote investigation) |
+| 143 | rect up inside band clamps | E | Fix 5 (residual escalation) |
+
+The 15-cleared figure is the direct A bucket + a portion of A→D cascade.
+Several A→D cascades (62, 98, 99, 109, 130) still fail — they have
+secondary root causes that the click/drag-separation fix alone doesn't
+address. Surfacing them is itself useful: each is now a focused next-step.
 
 ---
 
