@@ -104,12 +104,13 @@ describe("findPath", () => {
     });
   });
 
+  const STYLE = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+
   it("returns root→target chain for nested frame", () => {
-    const text = "T", "", "┌──┐", "│ X│", "└──┘", "", "End"].join("\n").replace(/^/, "Title");
     // Build a manual tree to keep test self-contained.
     const leaf = createTextFrame({ text: "X", row: 0, col: 0, charWidth: 9.6, charHeight: 18 });
     const rect: Frame = {
-      ...createRectFrame({ gridW: 4, gridH: 3, style: "single", charWidth: 9.6, charHeight: 18 }),
+      ...createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: 9.6, charHeight: 18 }),
       children: [leaf],
     };
     const chain = findPath([rect], leaf.id);
@@ -117,12 +118,12 @@ describe("findPath", () => {
   });
 
   it("returns empty array when target not present", () => {
-    const rect = createRectFrame({ gridW: 4, gridH: 3, style: "single", charWidth: 9.6, charHeight: 18 });
+    const rect = createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: 9.6, charHeight: 18 });
     expect(findPath([rect], "no-such-id")).toEqual([]);
   });
 
   it("returns single-element chain for top-level match", () => {
-    const rect = createRectFrame({ gridW: 4, gridH: 3, style: "single", charWidth: 9.6, charHeight: 18 });
+    const rect = createRectFrame({ gridW: 4, gridH: 3, style: STYLE, charWidth: 9.6, charHeight: 18 });
     const chain = findPath([rect], rect.id);
     expect(chain).toEqual([rect]);
   });
@@ -354,11 +355,32 @@ describe("getBandRelativeRow / getBandRelativeCol", () => {
     expect(getBandRelativeCol(band.id, band.id, getFrames(state))).toBe(0);
   });
 
-  it("throws when bandId is not an ancestor of frameId", () => {
+  it("throws when frameId is absent from the tree", () => {
     const md = ["Title", "", "┌────┐", "│ X  │", "└────┘", "", "End"].join("\n");
     const state = createEditorStateUnified(md, 9.6, 18);
     const band = getFrames(state).find(f => f.isBand)!;
     expect(() => getBandRelativeRow("nonexistent", band.id, getFrames(state))).toThrow();
+  });
+
+  it("throws when bandId is not an ancestor of frameId (silent-corruption guard)", () => {
+    // Two unrelated top-level bands. Ask for relativeRow of a shape in
+    // band-A using band-B's id. A naive startIdx=0 fallback would silently
+    // sum band-A's absolute gridRow as if it were relative — coordinate
+    // corruption. Must throw instead.
+    const md = [
+      "Title", "",
+      "┌────┐", "│ A  │", "└────┘", "",
+      "Middle", "",
+      "┌────┐", "│ B  │", "└────┘", "",
+      "End",
+    ].join("\n");
+    const state = createEditorStateUnified(md, 9.6, 18);
+    const bands = getFrames(state).filter(f => f.isBand);
+    expect(bands.length).toBeGreaterThanOrEqual(2);
+    const bandA = bands[0];
+    const bandB = bands[1];
+    const shapeInA = bandA.children[0];
+    expect(() => getBandRelativeRow(shapeInA.id, bandB.id, getFrames(state))).toThrow();
   });
 });
 ```
@@ -394,11 +416,14 @@ export function getBandRelativeRow(
     throw new Error(`getBandRelativeRow: frame ${frameId} not found`);
   }
   const bandIdx = path.findIndex(f => f.id === bandId);
-  // If band not on path, sum from root (treat as if shape lives directly
-  // under the band — caller's responsibility to ensure the band is an ancestor).
-  const startIdx = bandIdx >= 0 ? bandIdx + 1 : 0;
+  // Throw if the band is not on the path. A naive startIdx=0 fallback
+  // would silently sum the root's *absolute* gridRow as if it were
+  // relative — coordinate corruption. Make the caller's bug loud.
+  if (bandIdx < 0) {
+    throw new Error(`getBandRelativeRow: band ${bandId} is not an ancestor of frame ${frameId}`);
+  }
   let sum = 0;
-  for (let i = startIdx; i < path.length; i++) sum += path[i].gridRow;
+  for (let i = bandIdx + 1; i < path.length; i++) sum += path[i].gridRow;
   return sum;
 }
 
@@ -413,9 +438,11 @@ export function getBandRelativeCol(
     throw new Error(`getBandRelativeCol: frame ${frameId} not found`);
   }
   const bandIdx = path.findIndex(f => f.id === bandId);
-  const startIdx = bandIdx >= 0 ? bandIdx + 1 : 0;
+  if (bandIdx < 0) {
+    throw new Error(`getBandRelativeCol: band ${bandId} is not an ancestor of frame ${frameId}`);
+  }
   let sum = 0;
-  for (let i = startIdx; i < path.length; i++) sum += path[i].gridCol;
+  for (let i = bandIdx + 1; i < path.length; i++) sum += path[i].gridCol;
   return sum;
 }
 ```
@@ -1070,11 +1097,11 @@ describe("recomputeWireframeBounds", () => {
 
   it("shrinks wireframe bbox when child moves closer to origin", () => {
     // Build a band → wireframe → [rect at gridCol=10] manually.
-    const inner = createRectFrame({ gridW: 4, gridH: 3, style: "single", charWidth: cw, charHeight: ch });
+    const inner = createRectFrame({ gridW: 4, gridH: 3, style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
     inner.gridCol = 10;
     inner.x = 10 * cw;
     const wireframe: Frame = {
-      ...createRectFrame({ gridW: 14, gridH: 3, style: "single", charWidth: cw, charHeight: ch }),
+      ...createRectFrame({ gridW: 14, gridH: 3, style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch }),
       content: null,
       gridCol: 0,
       gridW: 14,
@@ -1089,10 +1116,10 @@ describe("recomputeWireframeBounds", () => {
   });
 
   it("grows wireframe bbox when child grows past current extent", () => {
-    const inner = createRectFrame({ gridW: 20, gridH: 3, style: "single", charWidth: cw, charHeight: ch });
+    const inner = createRectFrame({ gridW: 20, gridH: 3, style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
     inner.gridCol = 0;
     const wireframe: Frame = {
-      ...createRectFrame({ gridW: 4, gridH: 3, style: "single", charWidth: cw, charHeight: ch }),
+      ...createRectFrame({ gridW: 4, gridH: 3, style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch }),
       content: null,
       gridW: 4,
       children: [inner],
@@ -1478,7 +1505,7 @@ describe("applyAddChildFrame band-grow when nesting deep", () => {
     const oldBandH = band.gridH;
 
     // Add a tall child INSIDE the rect that would overflow the band.
-    const newChild = createRectFrame({ gridW: 2, gridH: oldBandH + 5, style: "single", charWidth: cw, charHeight: ch });
+    const newChild = createRectFrame({ gridW: 2, gridH: oldBandH + 5, style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
     state = applyAddChildFrame(state, newChild, rect.id, /*absRow*/2, /*absCol*/0);
 
     const after = getFrames(state).find(f => f.isBand)!;
