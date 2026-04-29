@@ -3371,3 +3371,19 @@ describe("resolveSelectionTarget", () => {
     expect(resolveSelectionTarget(band, null, getFrames(state), true)).toBeNull();
   });
 });
+
+describe("drag clamp through wireframe layer", () => {
+  const cw = 9.6, ch = 18;
+
+  it("dragging a deeply-nested rect against the band wall clamps at the band", () => {
+    const md = ["Title", "", "┌────┐", "│  X │", "│    │", "└────┘", "", "End"].join("\n");
+    const state = createEditorStateUnified(md, cw, ch);
+    const band = getFrames(state).find(f => f.isBand)!;
+    const rect = band.children[0];
+    expect(rect.gridRow).toBe(0);
+    const cband = findContainingBandDeep(getFrames(state), rect.id)!;
+    const minDRow = -getBandRelativeRow(rect.id, cband.id, getFrames(state));
+    // Math.abs avoids -0 vs +0 strict equality (Object.is) quirk.
+    expect(Math.abs(minDRow)).toBe(0);
+  });
+});

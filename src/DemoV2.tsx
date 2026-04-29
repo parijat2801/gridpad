@@ -15,6 +15,7 @@ import {
   editorUndo, editorRedo,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
   resolveSelectionTarget,
+  findContainingBandDeep, getBandRelativeRow, getBandRelativeCol,
   type CursorPos,
 } from "./editorState";
 import { serializeUnified } from "./serializeUnified";
@@ -387,19 +388,6 @@ export default function DemoV2() {
     return null;
   }
 
-  /** Find the immediate parent frame of `id` in `frames` (null if id is top-level
-   * or not found). Used during drag to clamp child motion against parent bounds. */
-  function findParentFrame(frames: Frame[], id: string): Frame | null {
-    for (const f of frames) {
-      for (const c of f.children) {
-        if (c.id === id) return f;
-      }
-      const inner = findParentFrame(f.children, id);
-      if (inner) return inner;
-    }
-    return null;
-  }
-
 
   function proseCursorFromClick(px: number, py: number): CursorPos | null {
     if (linesRef.current.length === 0) return null;
@@ -649,14 +637,16 @@ export default function DemoV2() {
         //   own rotation-only logic. If the band has no rotation budget,
         //   the residual is silently dropped (frame stops at band edge,
         //   which propagates "bounded between prose" through to children).
-        const parent = findParentFrame(framesRef.current, drag.frameId);
+        const containingBand = findContainingBandDeep(framesRef.current, drag.frameId);
         const effects: StateEffect<unknown>[] = [];
-        if (parent && parent.isBand) {
+        if (containingBand) {
           const child = found.frame;
-          const minDRow = -child.gridRow;
-          const maxDRow = parent.gridH - child.gridH - child.gridRow;
-          const minDCol = -child.gridCol;
-          const maxDCol = parent.gridW - child.gridW - child.gridCol;
+          const bandRow = getBandRelativeRow(drag.frameId, containingBand.id, framesRef.current);
+          const bandCol = getBandRelativeCol(drag.frameId, containingBand.id, framesRef.current);
+          const minDRow = -bandRow;
+          const maxDRow = containingBand.gridH - child.gridH - bandRow;
+          const minDCol = -bandCol;
+          const maxDCol = containingBand.gridW - child.gridW - bandCol;
           const clampedDRow = Math.max(minDRow, Math.min(maxDRow, dRow));
           const clampedDCol = Math.max(minDCol, Math.min(maxDCol, dCol));
           const residualDRow = dRow - clampedDRow;
@@ -666,7 +656,7 @@ export default function DemoV2() {
             effects.push(moveFrameEffect.of({ id: drag.frameId, dCol: clampedDCol, dRow: clampedDRow, charWidth: cw, charHeight: ch }));
           }
           if (residualDRow !== 0) {
-            effects.push(moveFrameEffect.of({ id: parent.id, dCol: 0, dRow: residualDRow, charWidth: cw, charHeight: ch }));
+            effects.push(moveFrameEffect.of({ id: containingBand.id, dCol: 0, dRow: residualDRow, charWidth: cw, charHeight: ch }));
           }
         } else {
           effects.push(moveFrameEffect.of({ id: drag.frameId, dCol, dRow, charWidth: cw, charHeight: ch }));
