@@ -323,75 +323,367 @@ Pure test update; no production code change.
 
 ---
 
-## Open investigations (post Fix 1)
+## Status — post-Fix-1, Fix-7, Fix-4, Fix-8 (branch `harness_fixes`)
 
-These failures were originally classified as A→D cascades, expected to
-clear with Fix 1. They didn't — the click/drag separation alone wasn't
-enough. Each has a secondary root cause that needs separate
-investigation. Not yet promoted to numbered Fixes because root cause is
-unknown.
+| Date | Vitest | Harness | Notes |
+|------|--------|---------|-------|
+| Pre-Fix-1 | 546/0 | 112/32 | Original regression baseline |
+| Post-Fix-1 (cc70f5c on main) | 559/0 | 127/17 | Strategy A drag-vs-click separation |
+| Post-Fix-7 (e6e9251) | 559/0 | 128/16 | Test asserted pre-Phase-B tree shape |
+| Post-Fix-4 (6ba9c7c) | 559/0 | 129/15 | Text frames excluded from resize handles |
+| Post-Fix-8 (f3df3cc) | 559/0 | 131/13 | Tests drill from shrink-wrap before resize |
 
-| Inv # | Test | Symptom on current main | Investigation hypothesis |
-|-------|------|--------------------------|--------------------------|
-| I-A | 62 — move-then-enter: move frame down, then Enter above it | Tree state inconsistent after Enter follows a drag | Enter handler may not see the post-drag frame tree (stale ref?) |
-| I-B | 98 — undo: resize then undo, save matches original | Save after undo doesn't match original input | Resize undo may not invert all effects; check inverted-effects coverage |
-| I-C | 99 — undo: move-resize-undo-undo, back to original | Two-undo doesn't restore original tree | History stack may be coalescing or losing a step |
-| I-D | 109 — Backspace merges line above wireframe, frame shifts up | Frame doesn't shift up the way the test expects | Backspace handler's interaction with band rotation budget |
-| I-E | 130 — drag child to different parent: child nests under new parent | Cross-parent reparent on drop doesn't land where expected | Possibly related to Fix 3 (reparent guard) but also possibly a separate cross-parent path bug |
-
-**Recommended approach:** investigate I-D and I-E first — both touch
-band rotation / reparent paths that overlap with Fixes 2/3. May share
-root causes. I-A, I-B, I-C are undo/sequence-of-actions bugs and likely
-have a different shared cause (history-stack handling).
-
-For each: write a unit-level repro that exercises the model directly
-(no browser), confirm the failure mode, then promote to a numbered
-Fix in the table above.
+**Branch:** `harness_fixes` (forked from `main` @ cc70f5c).
+**Pending:** 13 harness failures across 7 distinct root causes (below).
 
 ---
 
-## Verification matrix (after each fix)
+## Post-Fix-1 verification matrix (actuals)
 
-| Fix | Vitest re-run | Harness re-run | Expected delta | Actual delta |
-|-----|---------------|----------------|----------------|---------------|
-| 1 (drag-vs-click in onMouseDown) | 559/0 ✓ (was 546/0; +8 unit + +5 elsewhere) | 112→127 / 32→17 | -22 (Bucket A + D) | **-15** (15 of 22 cleared) |
-| 2 (rotation clip) | new rotation-clamp test passes | -2 failures (Bucket B) | ~134 → ~136 | — |
-| 3 (reparent guard) | n/a | -2 failures (E131, E132) | ~136 → ~138 | — |
-| 4 (handle steal) | n/a | -1 failure (F) | ~138 → ~139 | — |
-| 5 (residual escalation) | new rect-clamp test passes | -2 failures (E143, E144) | ~139 → ~141 | — |
-| 6 (promote) | TBD | -2 failures (E136, E137) | ~141 → 144 | — |
-| 7 (test update) | n/a | -1 failure (C) | ~141 → ~142 | — |
+| Fix | Status | Vitest | Harness delta | Actual delta |
+|-----|--------|--------|--------------|--------------|
+| 1 (drag-vs-click) | DONE on main | 559/0 | 112→127 / 32→17 | **-15** (15 of 22 cleared; 7 cascades remain) |
+| 7 (test update side-by-side) | DONE | 559/0 | -1 (test 32) | -1 ✓ |
+| 4 (text frames no handles) | DONE | 559/0 | -1 (test 29) | -1 ✓ |
+| 8 (drill before resize) | DONE | 559/0 | -2 (tests 87, 92) | -2 ✓ |
+| 3 (reparent guard) | TODO | n/a | -2 (3594, 3631) | — |
+| 5 (residual escalation) | TODO | n/a | -2 (3749, 4140) | — |
+| 2 (rotation clip past EOF) | TODO | new unit test | -3 to -4 (959, 2216, 2759, possibly 1889) | — |
+| 9 (resize undo doesn't shrink doc) | TODO | new unit test | -2 (2705, 2723) | — |
+| 10 (Backspace at line-2 home) | TODO | n/a | -1 (2891) | — |
+| 11 (cross-parent drag merges bands) | TODO | n/a | -1 (3507) | — |
+| 12 (drag-independence between adjacent bands) | TODO | new unit test | -1 (3827) | — |
 
-**Final target:** harness 144/0.
+**Final target:** harness 144/0 (zero failures).
 
-### Fix 1 — actual delta vs expected (post-implementation note)
+---
 
-Cleared 15 of 22 estimated (68%). Remaining failures after Fix 1:
+## Remaining 13 failures — confirmed root causes (post-investigation)
 
-| # | Test | Bucket | Why still fails (next fix) |
-|---|------|--------|----------------------------|
-| 14 | drag: move box down, no ghosts | B | Fix 2 (rotation clip) |
-| 29 | text-label: double-click | F | Fix 4 (handle steal) |
-| 32 | structure: side-by-side | C | Fix 7 (test update) |
-| 62 | move-then-enter | A→D cascade not cleared | Investigate |
-| 84 | shared-horizontal drag down ghosts | B-family | Fix 2 |
-| 87 | shared-horizontal resize ghosts | possibly B/F-related | Investigate |
-| 92 | resize box to overlap | possibly resize-related | Investigate |
-| 98 | undo: resize then undo | A→D cascade not cleared | Investigate |
-| 99 | undo: move-resize-undo-undo | A→D cascade not cleared | Investigate |
-| 101 | prose order preserved (drag wireframe down) | B | Fix 2 |
-| 109 | Backspace merges above | A→D cascade not cleared | Investigate |
-| 130 | drag child to different parent | A→D cascade not cleared | Investigate |
-| 131 | equal-size frames don't nest | E | Fix 3 (reparent guard) |
-| 132 | undo reparent | E | Fix 3 |
-| 135 | drag A past B | E | Fix 5 / band rotation side effect |
-| 137 | promote then drag promoted | E | Fix 6 (promote investigation) |
-| 143 | rect up inside band clamps | E | Fix 5 (residual escalation) |
+Each entry below is backed by browser-level probe evidence captured on
+2026-04-30 via `e2e/probe-investigations.spec.ts` (now deleted). Probe
+JSONs were inspected and the diagnoses below are FACTS observed, not
+hypotheses.
 
-The 15-cleared figure is the direct A bucket + a portion of A→D cascade.
-Several A→D cascades (62, 98, 99, 109, 130) still fail — they have
-secondary root causes that the click/drag-separation fix alone doesn't
-address. Surfacing them is itself useful: each is now a focused next-step.
+### Fix 3 — reparent size guard bypassed by eager bands (2 tests)
+
+**Tests:** 3594 (`equal-size frames passed through each other do not nest`),
+3631 (`undo a drag-into-frame reparent restores original tree`).
+
+**Diagnosis (already in original plan, still correct):** `DemoV2.tsx:709-711`
+compares the dragged rect to the destination band's full-width bbox:
+```js
+const targetIsLarger = !!hitTopLevel && !!draggedFrame
+  && hitTopLevel.gridW > draggedFrame.gridW   // band.gridW=120 > rect.gridW=8 → always true
+  && hitTopLevel.gridH > draggedFrame.gridH;
+```
+Pre-eager-bands `hitTopLevel` was the destination rect; post-eager-bands
+it's the band. Guard always passes; equal-size frames nest unintentionally.
+
+**Fix:** find the destination LEAF at the drop point via
+`hitTestFrames(framesRef.current, upPx, upPy)` (smallest-area rule),
+compare leaf-to-leaf. Use the leaf's containing top-level for the
+reparent destination.
+
+**Risk:** low. Both tests are existing red regressions.
+
+---
+
+### Fix 5 — vertical residual escalates band rotation when child at wall (2 tests)
+
+**Tests:** 3749 (`drag frame A past frame B: B does not move`),
+4140 (`dragging a rect up inside its band clamps at band top edge`).
+
+**Diagnosis (already in original plan, still correct):** `DemoV2.tsx:640-663`
+escalates vertical residual to band rotation even when `clampedDRow === 0`.
+At a band edge: rect can't move, residual = full drag delta, escalates
+fully → band rotates → adjacent band's docOffset shifts via mapPos.
+
+**Fix:** only escalate residual when *some meaningful clamped motion* has
+happened in the gesture. Track gesture-level state on `dragRef`: was
+clampedDRow nonzero at any point? If no, drop the residual silently
+(rect at wall → motion stops there).
+
+**Risk:** medium. Need to verify the gesture-level flag doesn't break
+"drag past edge to keep moving" UX in the cases where it currently
+works.
+
+---
+
+### Fix 2 — band rotation past doc-end clips wireframe rows (3-4 tests)
+
+**Tests:** 959 (`drag: move box down, no ghosts`),
+2216 (`drag shared-horizontal box down, no ghosts`),
+2759 (`prose order preserved when dragging wireframe down`),
+likely 1889 (`move-then-enter`) as cascade.
+
+**Probe evidence (INV1):** Drag SIMPLE_BOX 100px down. Doc length
+unchanged (29 chars before/after). Frame's `gridRow` moved from 2 to **7**.
+Doc has 8 lines (indices 0-7). Band claims `gridRow=7, lineCount=4` →
+rows 7, 8, 9, 10 — but only row 7 exists. Serializer writes wireframe
+top edge at L7; rows 8-10 silently dropped (`└` and the two `│` rows
+disappear).
+
+**Confirmed mechanism:** `unifiedDocSync` band-rotation handler
+(`editorState.ts:660-728`) emits a balanced delete+insert pair that
+ROTATES newlines around the band's claim. The handler does NOT clamp
+the band's NEW gridRow against `doc.lines - lineCount`. So when the
+user drags a 4-line band on an 8-line doc downward, the band can land
+at gridRow=7 even though the last valid claim start is gridRow=4
+(8 - 4).
+
+**The plan's original "rotation budget = blank lines" framing was
+incomplete.** The rotation budget is correctly computed as the number
+of blank lines around the claim. The budget is correctly clamped per
+tick — but the `moveFrameEffect` reducer (`framesField.update` at
+line 169-176) calls `moveFrame` which adds `dRow` to `gridRow`
+unconditionally. Even if `unifiedDocSync` clamps the doc-change
+correctly, the framesField may still update `gridRow` past the doc's
+last valid row.
+
+**Fix shape:** in `framesField.update`'s moveFrameEffect handler,
+clamp `newGridRow` so that `newGridRow + lineCount ≤ doc.lines` when
+the moved frame has `lineCount > 0` (a band that claims doc rows). OR,
+in `unifiedDocSync`, reject (skip) any moveFrameEffect whose dRow
+would push the band's claim past the doc end.
+
+**TDD path:** write a unit test that drives `applyMove` directly with
+SIMPLE_BOX-shaped frames + an 8-line doc; assert that
+`framesField` post-move has `gridRow + lineCount ≤ 8`.
+
+**Risk:** medium. Touches the rotation handler (load-bearing for many
+passing tests). Needs careful TDD.
+
+---
+
+### Fix 9 — resize undo doesn't shrink doc back (2 tests) [NEW]
+
+**Tests:** 2705 (`undo: resize then undo, save matches original`),
+2723 (`undo: move-resize-undo-undo, back to original`).
+
+**Probe evidence (INV2):** Load SIMPLE_BOX (8 lines, 29 chars). Resize
+the wireframe by +30px height. Doc grows to 10 lines, 31 chars (correct
+— resize handler inserts 2 blank lines via `unifiedDocSync` line 744).
+Press Cmd+Z. Frame state correctly inverts (wireframe renders at
+original size). **But doc is still 10 lines.** Save output:
+```
+Prose above
+                 ← blank
+┌──────────────┐
+│              │
+│              │
+└──────────────┘
+                 ← blank
+                 ← blank (extra)
+                 ← blank (extra)
+Prose below
+```
+Two extra blank lines persist between wireframe and "Prose below".
+
+**Confirmed mechanism:** `unifiedDocSync` is a `transactionFilter` that
+appends doc-changes to the user-dispatched transaction (line 749:
+`allChanges.push({ from: keepLast.to, to: endLine.to });` for shrink,
+line 744 for grow). When the transaction is filtered, the appended
+changes ARE part of the merged transaction's changeset, so CodeMirror
+history stores them. On undo, the inverted changeset SHOULD delete the
+extra lines.
+
+**Why it doesn't work:** the resize-grow transaction's changeset is
+`{from: endLine.to, insert: "\n\n"}`. CM history inverts that to
+`{from: endLine.to, to: endLine.to + 2}` — a deletion. **But the
+undo transaction also fires a `restoreFramesEffect` that overrides
+the framesField wholesale.** The framesField after restore has the
+original 4-row band; but the doc still has 10 lines, so the band's
+docOffset/lineCount don't match doc reality. Save serializes the
+4-row band against a 10-line doc → 2 trailing blanks.
+
+Need to verify: does `editorUndo` actually emit the inverted changeset
+to the doc, or does it only restore frames? Check
+`editorState.ts` undo wiring.
+
+**Fix shape:** ensure undo restores BOTH frames AND doc state. If
+`editorUndo` currently uses CM's stock `undo` plus
+`restoreFramesEffect`, the doc DOES revert (CM handles it) — but
+something is preventing the doc revert from going through. Possible
+causes: (a) the resize doc-change is not annotated `addToHistory`, so
+CM doesn't track it; (b) the restoreFramesEffect transaction is
+dispatched in a way that skips CM's standard undo of the doc.
+
+**TDD path:** write a unit test that dispatches resize, calls
+`editorUndo`, and asserts both `getFrames(state).length === 1`,
+`frames[0].gridH === original`, AND `getDoc(state).split("\n").length
+=== originalLineCount`.
+
+**Risk:** medium-high. Undo wiring is foundational; a regression here
+breaks far more than 2 tests.
+
+---
+
+### Fix 10 — Backspace at start of line-2 doesn't merge into blank line above (1 test) [NEW]
+
+**Test:** 2891 (`Backspace merges line above wireframe, frame shifts up`).
+
+**Probe evidence (INV3):** Fixture: `Line one\n\nLine two\n\n┌────┐\n...`.
+Click "Line two", press Home, press Backspace. Expected: line 2 ("Line two")
+merges with the blank line above; doc loses one line; wireframe's
+docOffset shifts up by 1 row → frame.y decreases.
+
+**Actual:** `yBefore = yAfter = 53.47` — frame didn't move. Saved doc:
+```
+Line one
+                 ← blank (preserved)
+ine two          ← lost the "L" instead of merging
+                 ← blank
+┌────┐
+...
+```
+
+**Confirmed mechanism:** Home + Backspace did NOT merge with line above.
+Instead, Backspace deleted a character within "Line two" — meaning the
+prose cursor was NOT actually at column 0 when Backspace fired. Either:
+(a) `Home` keypress didn't move the prose cursor (handler ignores Home),
+or (b) the cursor was at column 0 but the prose-Backspace handler
+treats column-0 backspace as a no-op (and the harness's keystroke
+deleted the "L" from a different cursor position).
+
+**Likely culprit:** `proseDeleteBefore` in `editorState.ts` may not
+implement the standard "merge with line above" behavior at column 0.
+CM's stock backspace at the start of a line deletes the preceding
+newline (merging lines). If gridpad's prose handler intercepts and
+does its own backspace, it may skip this case.
+
+**Fix shape:** at column 0, prose-Backspace should delete the preceding
+newline (merging with the previous line), which is what CM does
+natively. If `proseDeleteBefore` is the wrong abstraction, just let CM
+handle Backspace via `keymap.of(defaultKeymap)`.
+
+**Open question:** the symptom suggests the cursor was NOT at column 0.
+Need to instrument `getCursor()` after Home keypress to confirm.
+
+**Risk:** low if it's a column-0 Backspace special case. Medium if it
+means refactoring how prose keys are handled.
+
+---
+
+### Fix 11 — cross-parent drag merges target bands (1 test) [NEW]
+
+**Test:** 3507 (`drag child to a different parent: child nests under new parent`).
+
+**Probe evidence (INV4):** Two separate top-level wireframes (Outer A
+with Inner inside, Outer B empty). Started with `treeBefore.length === 2`.
+Drag Inner from A toward B's top-left.
+
+**Actual:** `treeAfter.length === 1`. Output doc shows the two formerly-
+separate wireframes merged into ONE wireframe with a `├──┤` junction
+between them:
+```
+┌────────────────────────┐
+│  Outer A               │
+│                        │
+│                        │
+│                        │
+├────────────────────────┤
+│  Outer B               │
+│                        │
+├──────────────────┐     │
+│  Inner           │     │
+└──────────────────┴─────┘
+```
+
+**Confirmed mechanism:** During the drag, the residual-escalation rule
+emits `moveFrameEffect`s on Outer A's band (since Inner is at the band
+edge and residual escalates). When Outer A's band rotates close enough
+to Outer B's band that their gridRow ranges overlap or become adjacent,
+**`mergeOverlappingBands` fires** (`framesField.update` at line 181 in
+moveFrameEffect handler). Bands are merged into one. Once merged,
+Inner reparents under the merged band. Save serializes a single
+multi-cell wireframe.
+
+**The merge is irreversible** — `mergeOverlappingBands` consumes both
+bands and returns a single new one. There is no inverse operation.
+
+**Fix shape:** two options.
+- **A.** Make `mergeOverlappingBands` only fire on EXPLICIT user gestures
+  (e.g., drag-and-drop reparent), not on every intermediate drag-tick.
+  Drag-tick rotations should be allowed to overlap *temporarily* —
+  bands only merge on mouseup if they still overlap.
+- **B.** Move `mergeOverlappingBands` from `framesField.update` to
+  `onMouseUp` so per-tick drag rotations don't trigger it.
+
+**Risk:** medium-high. `mergeOverlappingBands` exists for a reason
+(invariant: "row-partition; bands never share rows"). Moving it to
+mouseup may violate the invariant during drag, causing render glitches.
+Need to study why it's there.
+
+---
+
+### Fix 12 — drag-independence between two adjacent top-level bands (1 test) [NEW]
+
+**Test:** 3827 (`promote then drag the promoted frame: old parent stays put`).
+
+**Probe evidence (INV5):** Promote Inner from Outer to top-level.
+Result: `topLevelCount === 2` ✓ (Plan's Fix 6 hypothesis "promote
+doesn't produce 2" is WRONG — promote works fine). Then drag the
+*promoted* frame down by 18px.
+
+**Actual:**
+- `outerYDelta = 40.106` — outer moved DOWN 40px (one full claim row).
+- `promotedYDelta ≈ 0` — promoted didn't move.
+
+**Confirmed mechanism:** When the user clicks the promoted frame and
+drags down, `onMouseDown`'s parent-first selection lands on the band
+wrapping the promoted frame. The drag then dispatches `moveFrameEffect`
+on the band, which triggers band rotation. The band rotation inserts a
+newline above the band's claim and deletes one below. Both edits are
+in the doc — and the OUTER band's docOffset is mapped through
+`tr.changes.mapPos` (line 152-156 in framesField update), which sees
+the upstream insert and shifts Outer's docOffset forward → Outer's
+visible row shifts DOWN by 1 row (40px).
+
+**Why "promoted didn't move":** the band rotation's net char-change is
+zero (insert one + delete one), so on the macroscopic level the
+promoted frame's claim stays at the same gridRow. But the OUTER band,
+which lives at a docOffset BEFORE the promoted band's claim, sees only
+the insert (the delete is past its position) — net +1 char shift →
+docOffset += 1 → frame moves down.
+
+**This is the same root cause hypothesis DEBUG_SCRATCH.md flagged
+for E135** (`drag frame A past frame B: B does not move`). It also
+likely affects test 3749 (Fix 5) at the boundary case.
+
+**Fix shape:** band rotation must be DOC-NEUTRAL for other bands. The
+balanced delete+insert pair must net to zero shift on docOffsets that
+sit OUTSIDE the rotating band's claim. Options:
+- Use `mapPos` with `assoc=-1` on the lower band's docOffset (so the
+  upstream insert doesn't shift it).
+- Or: `unifiedDocSync` could, alongside the rotation, emit a
+  `relocateFrameEffect` for adjacent bands to anchor their docOffsets.
+- Or: rethink — store band identity by *line index* rather than
+  *char offset*, so insertions on other lines don't matter.
+
+**Risk:** high. This is the architectural issue at the heart of
+"drag independence" — likely the same root as several E-bucket
+failures and possibly hides under multiple symptoms.
+
+---
+
+## Recommended fix order (next session)
+
+1. **Fix 3** (reparent guard, leaf-vs-leaf) — small, clears 2. Low risk.
+2. **Fix 5** (residual escalation guard) — small, clears 2. Medium risk.
+3. **Fix 10** (Backspace at column 0) — small, clears 1. Low risk.
+4. **Fix 2** (band gridRow clamp past doc end) — TDD-first. Clears 3-4. Medium risk.
+5. **Fix 9** (resize undo doc-state restore) — TDD-first. Clears 2. Medium-high risk.
+6. **Fix 12** (drag-independence between adjacent bands) — last,
+   biggest design change. Clears 1 directly, may also affect Fix 5
+   correctness. High risk.
+7. **Fix 11** (cross-parent drag merges bands) — depends on Fix 12;
+   merge logic should be re-examined once drag-independence is fixed.
+   Clears 1. High risk.
+
+Final target: 144/0 (no failures).
+
+After each commit: run `npx vitest run` and `npx playwright test e2e/harness.spec.ts`.
 
 ---
 
@@ -401,20 +693,6 @@ address. Surfacing them is itself useful: each is now a focused next-step.
 - `src/debugBucketF.test.ts` — vitest case showing model can complete dblclick → text-edit → save when given effects directly.
 - `e2e/debug-bucket-f.spec.ts` — instrumented playwright spec showing the missed mousedown for click 3.
 - `e2e/artifacts/drag-down/output.md` — captured evidence of Bucket B clipping.
+- `e2e/probe-investigations.spec.ts` — five INV probes for Fixes 2/9/10/11/12 (delete after fixes commit).
 
 These can be deleted before merge, or kept as regression-watch tests.
-
----
-
-## Recommended commit order
-
-1. Fix 7 (test update) — no risk, pure test correction.
-2. Fix 1 (drag-vs-click separation) — biggest payoff. Strategy A: delay drilling until mouseup-without-movement.
-3. Verify A and D buckets clear; rerun harness.
-4. Fix 5 (residual escalation) — small change, clears E143/E144.
-5. Fix 4 (handle steal) — small change, clears F.
-6. Fix 3 (reparent guard) — small change, clears E131/E132.
-7. Fix 2 (rotation clip) — needs investigation first; possibly biggest behavioral change.
-8. Investigate Fix 6 — separate session.
-
-After each commit: run `npx vitest run` and `npx playwright test e2e/harness.spec.ts` to verify net delta matches the expected matrix.
