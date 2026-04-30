@@ -503,7 +503,11 @@ export default function DemoV2() {
     const currentSelectedId = getSelectedId(stateRef.current);
     if (currentSelectedId) {
       const sel = findFrameById(framesRef.current, currentSelectedId);
-      if (sel) {
+      // Text-content frames are content-derived in size — they have no
+      // user-resizable dimensions. Skip the handle hit-test so a click on
+      // a small text label can reach the dblclick-to-edit path without
+      // being captured by 24×24 handle hit boxes that cover the label.
+      if (sel && sel.frame.content?.type !== "text") {
         const handleHit = hitTestHandle(computeHandleRects(sel.absX, sel.absY, sel.frame.w, sel.frame.h), px, py);
         if (handleHit) {
           dragRef.current = { frameId: sel.frame.id, startX: px, startY: py, startFrameX: sel.absX, startFrameY: sel.absY, startFrameW: sel.frame.w, startFrameH: sel.frame.h, hasMoved: false, resizeHandle: handleHit };
@@ -584,13 +588,16 @@ export default function DemoV2() {
       const selectedId = getSelectedId(stateRef.current);
       if (selectedId) {
         const sel = findFrameById(framesRef.current, selectedId);
-        if (sel) {
+        if (sel && sel.frame.content?.type !== "text") {
           const handle = hitTestHandle(computeHandleRects(sel.absX, sel.absY, sel.frame.w, sel.frame.h), px, py);
           if (handle) {
             setCanvasCursor(RESIZE_CURSOR_MAP[handle]);
           } else {
             setCanvasCursor(hitTestFrames(framesRef.current, px, py) ? "grab" : "text");
           }
+        } else if (sel) {
+          // Text-content frame selected: no handle cursor.
+          setCanvasCursor(hitTestFrames(framesRef.current, px, py) ? "grab" : "text");
         } else { setCanvasCursor("text"); }
       } else {
         setCanvasCursor(hitTestFrames(framesRef.current, px, py) ? "grab" : "text");
