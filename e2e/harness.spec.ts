@@ -2273,7 +2273,18 @@ test.describe("shared walls", () => {
 
   test("resize shared-horizontal box, no ghosts", async ({ page }) => {
     await load(page, SHARED_HORIZONTAL);
+    // SHARED_HORIZONTAL has two cells (Top + Bottom rooms separated by ├─┤),
+    // so groupIntoContainers wraps them in a non-resizable shrink-wrap.
+    // First click selects the shrink-wrap; a second click >300ms later
+    // (NOT a dblclick) drills one level to a resizable rect leaf via
+    // Strategy A's deferred-drill-on-no-movement rule.
     await clickFrame(page, 0);
+    await page.waitForTimeout(400);
+    const frames = await getFrames(page);
+    const f0 = frames[0];
+    const cbox = await page.locator("canvas").boundingBox();
+    await page.mouse.click(cbox!.x + f0.x + f0.w / 2, cbox!.y + f0.y + f0.h / 2);
+    await page.waitForTimeout(300);
     await resizeSelected(page, 40, 20);
     await clickProse(page, 5, 5);
     const saved = await save(page);
@@ -2559,8 +2570,18 @@ Prose below`;
     await load(page, SIDE_BY_SIDE);
     writeArtifact("wall-resize-overlap", "input.md", SIDE_BY_SIDE);
 
-    // Select A, resize right to overlap with B
+    // Select A, resize right to overlap with B. SIDE_BY_SIDE has two rooms
+    // sharing a row band, so groupIntoContainers wraps them in a non-resizable
+    // shrink-wrap. First click selects the shrink-wrap; a second click
+    // >300ms later (NOT a dblclick — those would enter text-edit on label A)
+    // drills one level via Strategy A's deferred-drill rule.
     await clickFrame(page, 0);
+    await page.waitForTimeout(400);
+    const frames = await getFrames(page);
+    const f0 = frames[0];
+    const cbox = await page.locator("canvas").boundingBox();
+    await page.mouse.click(cbox!.x + f0.x + f0.w / 2, cbox!.y + f0.y + f0.h / 2);
+    await page.waitForTimeout(300);
     await resizeSelected(page, 80, 0);
     await clickProse(page, 5, 5);
 
