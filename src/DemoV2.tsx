@@ -12,6 +12,7 @@ import {
   applyAddTopLevelFrame, applyAddChildFrame, applyReparentFrame, applyDeleteFrame, applyClearDirty,
   proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
+  proseMoveToLineStart, proseMoveToLineEnd,
   editorUndo, editorRedo,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
   resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, shouldEscalateResidual, findImmediateParent,
@@ -1180,6 +1181,18 @@ export default function DemoV2() {
         if (e.key === "ArrowDown") {
           e.preventDefault();
           stateRef.current = proseMoveDown(stateRef.current);
+          proseCursorRef.current = getCursor(stateRef.current);
+          blinkRef.current = true; paint(); return;
+        }
+        if (e.key === "Home") {
+          e.preventDefault();
+          stateRef.current = proseMoveToLineStart(stateRef.current);
+          proseCursorRef.current = getCursor(stateRef.current);
+          blinkRef.current = true; paint(); return;
+        }
+        if (e.key === "End") {
+          e.preventDefault();
+          stateRef.current = proseMoveToLineEnd(stateRef.current);
           proseCursorRef.current = getCursor(stateRef.current);
           blinkRef.current = true; paint(); return;
         }

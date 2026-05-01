@@ -1145,6 +1145,24 @@ export function proseMoveRight(state: EditorState): EditorState {
   return state;
 }
 
+/** Move the prose cursor to col=0 of its current row (Home key). */
+export function proseMoveToLineStart(state: EditorState): EditorState {
+  const cursor = getCursor(state);
+  if (!cursor) return state;
+  if (cursor.col === 0) return state;
+  return moveCursorTo(state, { row: cursor.row, col: 0 });
+}
+
+/** Move the prose cursor to the last col of its current row (End key). */
+export function proseMoveToLineEnd(state: EditorState): EditorState {
+  const cursor = getCursor(state);
+  if (!cursor) return state;
+  const line = state.doc.line(cursor.row + 1);
+  const graphemeCount = [...segmenter.segment(line.text)].length;
+  if (cursor.col === graphemeCount) return state;
+  return moveCursorTo(state, { row: cursor.row, col: graphemeCount });
+}
+
 /** Find the claimed-line range covering `lineNum` (0-indexed), or null. */
 function getClaimedLineRange(
   state: EditorState,
