@@ -696,3 +696,157 @@ After each commit: run `npx vitest run` and `npx playwright test e2e/harness.spe
 - `e2e/probe-investigations.spec.ts` — five INV probes for Fixes 2/9/10/11/12 (delete after fixes commit).
 
 These can be deleted before merge, or kept as regression-watch tests.
+
+---
+
+## Revision — 2026-04-30: spike outcome + revised architecture
+
+### Spike outcome (read-only investigation, verified)
+
+A spike was attempted to replace band rotation with derived bands +
+doc projection. The investigation surfaced ONE fatal flaw and TWO
+secondary obstacles before any code shipped:
+
+**Fatal — top-level wireframe immobility under the naive rewrite.**
+`wrapAsBand` (frame.ts:550-596) sets `band.gridH = maxRow - minRow`,
+i.e., the band is exactly as tall as the union of its children. For
+a single-child band wrapping a top-level wireframe, `band.gridH ===
+child.gridH`, so the child's clamp range inside the band
+(DemoV2.tsx:676-682) is `[0, 0]` — zero slack in either direction.
+Today, `clampedDRow === 0` and `residualDRow === dRow`; line
+688-690 escalates the full delta to the band's id, and
+`unifiedDocSync` rotates newlines around the band's claim, making
+the wireframe appear to move. **If you delete the residual
+escalation (the spike's "drop residual silently" instruction), every
+top-level wireframe freezes in place — they have no other path to
+motion.** Manually verified by reading frame.ts:540-596 and
+DemoV2.tsx:640-704.
+
+**Secondary obstacles** (would have surfaced during implementation):
+- `unifiedDocSync` emits `relocateFrameEffect` keyed by band id; if
+  recompute regenerates band ids, the relocate effect targets a
+  ghost.
+- `framesField.update` runs on every transaction, including pure
+  prose edits; `recomputeBands` would need an early-out to avoid
+  thrashing band identity unnecessarily.
+
+**Conclusion:** the full doc-projection rewrite is too risky in a
+3-hour spike. A SMALLER, surgical version of the same idea is
+viable.
+
+### Revised architecture — recomputeBands replaces mergeOverlappingBands
+
+Keep band rotation in `unifiedDocSync` and the residual escalation in
+`DemoV2.tsx`. They're load-bearing for top-level wireframe motion.
+
+**The change:** replace `mergeOverlappingBands` (called from
+`framesField.update`, editorState.ts:~181) with a `recomputeBands(
+frames, charWidth, charHeight, docWidthCols)` pass that:
+
+1. Walks top-level frames.
+2. Ungroups every band's children back to absolute grid coords.
+3. Re-groups via the existing `groupIntoContainers` logic (rows that
+   overlap → same band).
+4. Re-wraps each group via `wrapAsBand`.
+5. Returns a fresh frames[] array.
+
+**Early-out:** only run when the transaction had at least one frame
+effect (move, resize, reparent, etc.). Pure prose edits skip the
+recompute.
+
+**Why this clears Fix 11 (cross-parent drag merges bands):** today
+`mergeOverlappingBands` greedily fuses any bands whose row ranges
+touch, even mid-drag. With `recomputeBands`, mid-drag rotations that
+TEMPORARILY put bands adjacent don't merge — the recompute sees that
+each band's children belong to distinct logical groupings and keeps
+them separate. The merge only happens when children's rows actually
+overlap.
+
+**Why this clears Fix 12 (drag-independence between adjacent bands):**
+recomputed bands get fresh `docOffset` values derived from their
+children's claims (`wrapAsBand` line 564). Today's `mapPos` cascade
+shifts an adjacent band's docOffset when an upstream insert lands;
+with recompute, the docOffset is REDERIVED from the post-edit child
+positions, breaking the cascade.
+
+**Risk:** medium. Touches the band-identity invariant — band ids no
+longer persist across transactions. If anything in the codebase
+relies on stable band ids (selection state across edits, undo
+references, animation keys), it will break. Need to grep before
+shipping.
+
+### Mini-spike (proof-of-concept, before full plan execution)
+
+**Where:** `.claude/worktrees/spike-derived-bands` (already exists).
+**Time budget:** 90 minutes.
+**Scope:**
+1. Add `recomputeBands` to `src/frame.ts`.
+2. Replace `mergeOverlappingBands` call in `framesField.update` with
+   `recomputeBands` + early-out.
+3. Don't touch band rotation, doc projection, escalation, or
+   anything else.
+
+**Pass/fail signals:**
+- ✅ vitest stays at 559/0 (or drops by ≤2 with a clear explanation).
+- ✅ harness 131/13 → some delta. Watch test 3507 (Fix 11) and 3827
+  (Fix 12).
+- ✅ Fix 11 (3507) flips GREEN → strong signal architectural claim
+  holds.
+- ✅ Fix 12 (3827) flips GREEN → recompute also fixes mapPos cascade.
+- ❌ Vitest drops >5 OR harness <125 → abandon, go fully surgical.
+- ⚠️ 11/12 stay red, no regression → recompute alone insufficient,
+  surgical fixes for 11/12 still needed.
+
+### Two new issues from user (2026-04-30)
+
+**Issue 1 — Fix 13: band separation on continued drag.** Two
+wireframes sharing a band can't be moved independently today. User
+spec: a wireframe knows its own lineCount; if dragged past the band's
+edge, the band SPLITS — the dragged wireframe lands on its own claim
+below (or above), and the original band shrinks to wrap the
+remaining children. The other children must NOT move (visually or in
+gridRow).
+
+This falls out for free from `recomputeBands` — once the dragged
+child's gridRow no longer overlaps siblings', the recompute splits
+the band naturally. So Fix 13 is mostly a consequence of the
+mini-spike's success.
+
+**Issue 2 — Fix 14: no wireframe across prose.** A wireframe's
+vertical motion is bounded by the nearest non-blank, non-wireframe
+prose line above and below its current claim. Reparent-into-target
+ignores this rule (drops are tree topology, not vertical motion).
+
+This requires a new clamp added to the move handler. Not a
+consequence of recompute — separate concern.
+
+**Trigger threshold:** immediate (Figma-style). No deliberate
+threshold for separation.
+
+**Conflict resolution:** when Rule 13 (separation) and Rule 14
+(prose-clamp) conflict — e.g., dragging a child past the band edge
+into prose immediately below — Rule 14 wins (drag clamps at the
+prose row).
+
+### Revised fix order
+
+1. **Fix 3** (reparent guard, leaf-vs-leaf) — small, clears 2. Low
+   risk. **Independent of architecture work.**
+2. **Fix 5** (residual escalation guard at wall) — small, clears 2.
+   Medium risk.
+3. **Fix 10** (Backspace at column 0) — small, clears 1. Low risk.
+4. **Mini-spike: recomputeBands replacement** — proves the
+   architectural claim. Time-boxed 90 min.
+5. **If spike succeeds:** ship recomputeBands. Re-evaluate Fix 11,
+   Fix 12, Fix 13 — likely cleared or significantly reduced.
+6. **Fix 14** (no-cross-prose clamp) — independent of recompute.
+   Add to move handler.
+7. **Fix 2** (band gridRow clamp past doc end) — TDD-first. Clears
+   3-4. Medium risk.
+8. **Fix 9** (resize undo doc-state restore) — TDD-first. Clears 2.
+   Medium-high risk.
+9. **Fix 11/12 surgical fallback** (only if mini-spike doesn't clear
+   them) — `mapPos` assoc adjustment + move `mergeOverlappingBands`
+   to mouseup. High risk.
+
+Final target: 144/0 (no failures).
