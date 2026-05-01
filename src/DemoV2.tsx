@@ -14,7 +14,7 @@ import {
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
-  resolveSelectionTarget, decideSelectionForMouseDown,
+  resolveSelectionTarget, decideSelectionForMouseDown, decideReparent,
   findContainingBandDeep, getBandRelativeRow, getBandRelativeCol,
   type CursorPos,
 } from "./editorState";
@@ -54,13 +54,6 @@ function hitTestHandle(rects: HandleRect[], px: number, py: number): ResizeHandl
     if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) return r.handle;
   }
   return null;
-}
-
-function hasDescendant(frame: Frame, id: string): boolean {
-  for (const c of frame.children) {
-    if (c.id === id || hasDescendant(c, id)) return true;
-  }
-  return false;
 }
 
 const DEFAULT_TEXT = `# Gridpad
@@ -738,29 +731,16 @@ export default function DemoV2() {
           const upPx = e.clientX - rect.left;
           const upPy = e.clientY - rect.top + (canvasEl.parentElement?.scrollTop ?? 0);
           const draggedId = dragRef.current.frameId;
-          const draggedTopAncestor = framesRef.current.find(f => f.id === draggedId || hasDescendant(f, draggedId));
-          const hitTopLevel = (() => {
-            const hit = hitTestFrames(framesRef.current, upPx, upPy);
-            if (!hit) return null;
-            return framesRef.current.find(f => f.id === hit.id || hasDescendant(f, hit.id)) ?? null;
-          })();
-          // Decide reparent: cursor inside a different top-level → demote,
-          // BUT only when the target is strictly larger than the dragged
-          // frame (Figma-style: you can't nest a big thing inside a small
-          // one). Without this guard, dragging two same-size boxes past
-          // each other unintentionally nests them.
-          const draggedFrame = draggedTopAncestor ? findFrameById(framesRef.current, draggedId)?.frame ?? null : null;
-          const targetIsLarger = !!hitTopLevel && !!draggedFrame
-            && hitTopLevel.gridW > draggedFrame.gridW
-            && hitTopLevel.gridH > draggedFrame.gridH;
-          if (hitTopLevel && draggedTopAncestor && hitTopLevel.id !== draggedTopAncestor.id && hitTopLevel.id !== draggedId && targetIsLarger) {
+          // Reparent decision: leaf-vs-leaf size guard (Fix 3). Pure helper
+          // in editorState.ts; see reparentDecision.test.ts for cases.
+          const decision = decideReparent(framesRef.current, draggedId, upPx, upPy);
+          if (decision.kind === "demote") {
             const cw = cwRef.current, ch = chRef.current;
             const aRow = Math.round(upPy / ch);
             const aCol = Math.round(upPx / cw);
-            stateRef.current = applyReparentFrame(stateRef.current, draggedId, hitTopLevel.id, aRow, aCol, cw, ch);
+            stateRef.current = applyReparentFrame(stateRef.current, draggedId, decision.targetTopLevelId, aRow, aCol, cw, ch);
             syncRefsFromState();
-          } else if (!hitTopLevel && draggedTopAncestor && draggedTopAncestor.id !== draggedId) {
-            // Dragged a child out into empty space → promote.
+          } else if (decision.kind === "promote") {
             const cw = cwRef.current, ch = chRef.current;
             const aRow = Math.round(upPy / ch);
             const aCol = Math.round(upPx / cw);

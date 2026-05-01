@@ -12,7 +12,7 @@ import {
 } from "@codemirror/state";
 import { history, undo, redo, undoDepth, redoDepth, invertedEffects } from "@codemirror/commands";
 import type { Frame } from "./frame";
-import { moveFrame, resizeFrame, wrapAsBand, nextId } from "./frame";
+import { moveFrame, resizeFrame, wrapAsBand, nextId, hitTestFrames } from "./frame";
 import { layoutTextChildren } from "./autoLayout";
 import { scanToFrames } from "./scanToFrames";
 import type { ProseSegment } from "./proseSegments";
@@ -1643,6 +1643,75 @@ export function decideSelectionForMouseDown(
     return { kind: "preserveSelection", frameId: currentSelectedId };
   }
   return { kind: "applyRule", frameId: resolveSelectionTarget(hit, currentSelectedId, frames, false) };
+}
+
+export type ReparentDecision =
+  | { kind: "demote"; targetTopLevelId: string }
+  | { kind: "promote" }
+  | { kind: "none" };
+
+function frameContains(frame: Frame, id: string): boolean {
+  if (frame.id === id) return true;
+  for (const c of frame.children) {
+    if (frameContains(c, id)) return true;
+  }
+  return false;
+}
+
+/** Decide whether a drag-end at (dropPx, dropPy) should reparent the
+ * dragged frame, and if so, into which top-level (Fix 3 — leaf-vs-leaf
+ * size guard).
+ *
+ * The bug this fixes: pre-extraction, the inline logic in onMouseUp
+ * compared the dragged frame's gridW/gridH to the destination's TOP-
+ * LEVEL bbox. Post eager-bands, top-levels are full-width bands, so the
+ * size guard `targetIsLarger` always passed and equal-size frames
+ * unintentionally nested.
+ *
+ * The fix: compare against the LEAF returned by `hitTestFrames` (the
+ * smallest-area frame at the drop point). The reparent destination
+ * remains the leaf's containing top-level — children are added under
+ * `applyReparentFrame(state, draggedId, targetTopLevelId, ...)`.
+ *
+ * Returns:
+ *   - `demote` with target top-level id when the cursor lands inside a
+ *     different top-level AND the leaf at the drop point is strictly
+ *     larger than the dragged frame.
+ *   - `promote` when the cursor lands on empty space (no leaf) AND the
+ *     dragged frame is currently a child (has a non-self top-ancestor).
+ *   - `none` in all other cases (no movement target, same-size siblings,
+ *     same top-level, etc.). */
+export function decideReparent(
+  frames: Frame[],
+  draggedId: string,
+  dropPx: number,
+  dropPy: number,
+): ReparentDecision {
+  const draggedTopAncestor = frames.find(f => frameContains(f, draggedId));
+  if (!draggedTopAncestor) return { kind: "none" };
+
+  const targetLeaf = hitTestFrames(frames, dropPx, dropPy);
+  if (!targetLeaf) {
+    if (draggedTopAncestor.id !== draggedId) return { kind: "promote" };
+    return { kind: "none" };
+  }
+
+  const hitTopLevel = frames.find(f => frameContains(f, targetLeaf.id)) ?? null;
+  if (!hitTopLevel) return { kind: "none" };
+  if (hitTopLevel.id === draggedTopAncestor.id) return { kind: "none" };
+  if (hitTopLevel.id === draggedId) return { kind: "none" };
+
+  // Find the dragged frame's actual gridW/gridH (not the top-ancestor's).
+  const draggedPath = findPath(frames, draggedId);
+  const draggedFrame = draggedPath[draggedPath.length - 1];
+  if (!draggedFrame) return { kind: "none" };
+
+  const targetIsLarger =
+    targetLeaf.gridW > draggedFrame.gridW &&
+    targetLeaf.gridH > draggedFrame.gridH;
+  if (!targetIsLarger) return { kind: "none" };
+
+  return { kind: "demote", targetTopLevelId: hitTopLevel.id };
 }
 
 /** Walk the tree and recompute every wireframe (`content === null && !isBand`)
