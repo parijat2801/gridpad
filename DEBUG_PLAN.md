@@ -336,7 +336,8 @@ Pure test update; no production code change.
 | Post-Fix-5 (52b0964 + d69e9ae) | 569/0 | 131/13 | shouldEscalateResidual + bandSlackRows + bandSiblings. No harness delta — targeted tests 4140/3770 turned out to be Fix 14 territory too. |
 | Post-Fix-10 (07d889d) | 574/0 | **132/12** | Home/End handlers in prose mode. Cleared test 2891. ✓ |
 | Post-Fix-2 (926764c) | 579/0 | 132/12 | clampBandMoveDelta past doc end. No targeted-red-test cleared but defensive correctness fix. |
-| Post-Fix-9 (pending commit) | 580/0 | **134/10** | Commit-on-mouseup pattern in DemoV2.tsx. Cleared tests 2705 + 2723. ✓ |
+| Post-Fix-9 (4b745bf) | 580/0 | **134/10** | Commit-on-mouseup pattern in DemoV2.tsx. Cleared tests 2705 + 2723. ✓ |
+| Post-Fix-14 (pending commit) | 587/0 | **134/11** | computeRotationBudget single source of truth, plus promote-target row clamp to doc bounds. Cleared "prose order UP" + new Fix 14 test. Regressed "prose order DOWN" + "promote old parent" — exposed downstream reparent-on-drop issues that rotation-eats-prose previously masked. Net neutral count, better failure quality. |
 
 **Branch:** `harness_fixes` (forked from `main` @ cc70f5c).
 **Pending:** 12 harness failures across 5 root causes (below).
@@ -356,7 +357,7 @@ Pure test update; no production code change.
 | 10 (Home/End in prose mode) | DONE (07d889d) | 574/0 | -1 (test 2891) | -1 ✓ |
 | 2 (rotation clip past EOF) | DONE (926764c) | 579/0 | no test directly red for data loss past doc end | 0 ✓ defensive correctness via 5 unit tests |
 | 9 (resize undo doesn't shrink doc) | DONE 2026-05-01 | 580/0 | -2 (2705, 2723) | -2 ✓ Commit-on-mouseup landed: snapshot stateRef at mousedown, dispatch all ticks with addToHistory(false), at mouseup commit one transaction against snapshot with cumulative final effects + addToHistory(true). |
-| 14 (no crossing prose lines) | ATTEMPTED, REVERTED | n/a | targeted: -2 (3594, 3631) re-attributed; also -2 (4140, 3770) | — Implemented prose-budget clamp via maxUp/maxDown extension to clampBandMoveDelta + countBlankLinesAbove/Below + applyMove pre-mapPos lookup. Sonnet PASS on design. Net 0 harness delta but caused wireframe A to disappear in `drag box down onto another` test. Interaction with mergeOverlappingBands + band rotation needs deeper investigation. Reverted. |
+| 14 (no crossing prose lines) | DONE 2026-05-01 | 587/0 | net 0 (cleared "prose order up", regressed "prose order down" + "promote old parent") | — computeRotationBudget pure helper called from BOTH unifiedDocSync's rotation handler AND framesField.update's applyMove (single source of truth, against tr.startState). Treats blank-walk walls as: non-blank prose, doc edges, OR another top-level band's claim. Plus promote-target row clamped to doc bounds. The two new regressions are downstream reparent-on-drop issues (promote past doc end clobbers prose) — pre-Fix-14 they failed for "rotation ate prose" reason; post-Fix-14 they fail for "reparent clobbers prose" reason. Same tests, different layer. New test "Fix 14: drag does not cross non-blank prose line" passes. |
 | 11 (cross-parent drag merges bands) | TODO | n/a | -1 (3507) | — Depends on Fix 14 |
 | 12 (drag-independence between adjacent bands) | TODO | new unit test | -1 (3827) | — Depends on Fix 14 |
 | 13 (sibling-band separation on continued drag) | TODO (NEW) | new unit test | new red harness tests | — Depends on Fix 14 |

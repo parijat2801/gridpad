@@ -9,6 +9,7 @@ import {
   StateEffect,
   Transaction,
   type Extension,
+  type Text,
 } from "@codemirror/state";
 import { history, undo, redo, undoDepth, redoDepth, invertedEffects } from "@codemirror/commands";
 import type { Frame } from "./frame";
@@ -168,12 +169,29 @@ const framesField = StateField.define<Frame[]>({
         return clearDirty(result);
       } else if (e.is(moveFrameEffect)) {
         const docLines = tr.state.doc.lines;
+        // Fix 14: same rotation budget unifiedDocSync uses on the doc side.
+        // Computed against tr.startState (pre-transaction) so frame and doc
+        // changes apply against the same snapshot. Skip for non-claiming
+        // frames (children inside bands) — their motion is band-relative,
+        // not rotation. Skip for frames not yet in startState (newly added
+        // this transaction).
+        const startFrames = tr.startState.field(framesField);
+        const startDoc = tr.startState.doc;
+        const startFrame = findFrameInList(startFrames, e.value.id);
+        const useRotationBudget = !!startFrame && startFrame.lineCount > 0;
+        const budget = useRotationBudget
+          ? computeRotationBudget(startFrames, startDoc, e.value.id)
+          : { maxUp: 0, maxDown: 0 };
         const applyMove = (f: Frame): Frame => {
           if (f.id === e.value.id) {
-            // Clamp band-claiming frames so their claim stays in doc bounds
-            // (Fix 2). Without this, dragging a band past doc end leaves
-            // gridRow > docLines - lineCount; serializer drops claim rows.
-            const clampedDRow = clampBandMoveDelta(f.gridRow, f.lineCount, e.value.dRow, docLines);
+            // First, doc-bounds clamp (Fix 2). Then rotation-budget clamp
+            // (Fix 14) for claiming frames.
+            let clampedDRow = clampBandMoveDelta(f.gridRow, f.lineCount, e.value.dRow, docLines);
+            if (useRotationBudget) {
+              clampedDRow = clampedDRow > 0
+                ? Math.min(clampedDRow, budget.maxDown)
+                : Math.max(clampedDRow, -budget.maxUp);
+            }
             return moveFrame(f, { dCol: e.value.dCol, dRow: clampedDRow, charWidth: e.value.charWidth, charHeight: e.value.charHeight });
           }
           if (f.children.length > 0) return { ...f, children: f.children.map(applyMove) };
@@ -682,22 +700,13 @@ export function createEditorState(init: EditorStateInit): EditorState {
         // empty lines stay empty; surrounding prose is untouched.
         const dRow = e.value.dRow;
 
-        // Drag = ROTATION ONLY. Motion is clamped to consecutive blank lines
-        // around the frame (the "rotation budget"). We do NOT grow the doc
-        // when the user drags past the budget — that would insert chars
-        // before/after sibling frames and mapPos would drag them along.
-        let maxDown = 0;
-        for (let n = endLineNum + 1; n <= doc.lines; n++) {
-          const ln = doc.line(n);
-          if (ln.length === 0) maxDown++;
-          else break;
-        }
-        let maxUp = 0;
-        for (let n = startLine.number - 1; n >= 1; n--) {
-          const ln = doc.line(n);
-          if (ln.length === 0) maxUp++;
-          else break;
-        }
+        // Drag = ROTATION ONLY. Motion is clamped by computeRotationBudget,
+        // which walks blank lines around the frame's claim and stops at
+        // walls: non-blank prose lines, doc edges, OR another top-level
+        // band's claim (Fix 14 — no crossing prose, no crossing other
+        // bands). Single source of truth: framesField.update's applyMove
+        // calls the same helper so frame and doc state can't disagree.
+        const { maxUp, maxDown } = computeRotationBudget(frames, doc, frame.id);
         const effectiveDRow = dRow > 0
           ? Math.min(dRow, maxDown)
           : Math.max(dRow, -maxUp);
@@ -1699,6 +1708,56 @@ export function clampBandMoveDelta(
   const targetGridRow = gridRow + dRow;
   const clamped = Math.max(minGridRow, Math.min(maxGridRow, targetGridRow));
   return clamped - gridRow;
+}
+
+/** Fix 14: rotation budget for a top-level claiming frame.
+ *
+ * Walks the doc lines above and below the frame's claim, stops at the
+ * first row that is EITHER non-blank OR claimed by a different top-
+ * level band. Returns the max number of rows the frame can rotate up
+ * or down before hitting a wall.
+ *
+ * Single source of truth: both unifiedDocSync (for the doc-side
+ * rotation) and framesField.update (for the frame-side gridRow update)
+ * call this helper so they cannot disagree on the clamp.
+ *
+ * Returns {0, 0} for non-claiming frames (lineCount === 0). */
+export function computeRotationBudget(
+  frames: Frame[],
+  doc: Text,
+  frameId: string,
+): { maxUp: number; maxDown: number } {
+  const frame = findFrameInList(frames, frameId);
+  if (!frame || frame.lineCount === 0) return { maxUp: 0, maxDown: 0 };
+  const startLine = doc.lineAt(frame.docOffset);
+  const endLineNum = startLine.number + frame.lineCount - 1;
+  if (endLineNum > doc.lines) return { maxUp: 0, maxDown: 0 };
+
+  // A wall is: non-blank line, doc edge, or a row claimed by ANOTHER
+  // top-level band. The dragging frame's own claim rows are not walls.
+  const isWall = (lineNumber: number): boolean => {
+    if (lineNumber < 1 || lineNumber > doc.lines) return true;
+    const ln = doc.line(lineNumber);
+    if (ln.length > 0) return true;
+    // Check for another band's claim. Convert 1-based line number to
+    // 0-based gridRow.
+    const row = lineNumber - 1;
+    const band = findBandAtRow(frames, row);
+    if (band && band.id !== frame.id) return true;
+    return false;
+  };
+
+  let maxDown = 0;
+  for (let n = endLineNum + 1; n <= doc.lines; n++) {
+    if (isWall(n)) break;
+    maxDown++;
+  }
+  let maxUp = 0;
+  for (let n = startLine.number - 1; n >= 1; n--) {
+    if (isWall(n)) break;
+    maxUp++;
+  }
+  return { maxUp, maxDown };
 }
 
 /** Predicate for the residual-escalation rule (Fix 5).

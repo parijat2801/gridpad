@@ -2912,16 +2912,18 @@ describe("eager-band data correctness regressions", () => {
     expect(getDoc(state2).length).toBe(docLenAfterAdd + 3);
   });
 
-  it("dragging one band into another merges them into a single band", () => {
-    // BUG: drag rotation counts blank lines as rotation budget, but blank
-    // lines inside another band's claim are NOT free space. Rotating into
-    // them puts both bands' claim ranges over the same rows, breaking the
-    // row-partition invariant. Bands must merge instead.
+  it("dragging one band toward another stops at the other band's claim (Fix 14)", () => {
+    // Pre-Fix-14: rotation budget counted blank lines as free space, so a
+    // band could rotate into another band's rows; mergeOverlappingBands
+    // then folded them together. That hid the bug — bands shouldn't cross.
     //
-    // Setup: two bands stacked with a 3-row gap of pure prose between.
-    // Drag the bottom band up by enough that its claim collides with the
-    // top band's claim. After: ONE band whose claim spans both originals
-    // and contains both rects as children.
+    // With Fix 14, computeRotationBudget treats another band's claim as a
+    // wall. The dragging band stops at the wall — both bands survive.
+    //
+    // Setup: two bands stacked with a 3-row blank gap between them.
+    // Drag the bottom band up by 5 rows — but it can only rotate up by 3
+    // (the blank-row gap). After: 2 separate bands; bottom band landed
+    // adjacent to top, no merge.
     const state0 = createEditorState({
       prose: "\n\n\n\n\n\n\n\n\n\n\n\n", frames: [], proseSegmentMap: [],
     });
@@ -2935,22 +2937,25 @@ describe("eager-band data correctness regressions", () => {
     expect(bandA.children).toHaveLength(1);
     expect(bandB.children).toHaveLength(1);
 
-    // Drag bandB upward by 5 rows — would put bandB at gridRow=1 (overlapping
-    // bandA's rows 0..2). Expect merge: one band, two child rects.
+    // Drag bandB upward by 5 rows. Rotation budget = 3 blank rows; bandB
+    // clamps at gridRow=3, leaving 1 row of separation between the bands.
     state = state.update({
       effects: [moveFrameEffect.of({ id: bandB.id, dCol: 0, dRow: -5, charWidth: CW, charHeight: CH })],
     }).state;
 
     const after = getFrames(state);
-    expect(after).toHaveLength(1);
-    expect(after[0].isBand).toBe(true);
-    expect(after[0].children).toHaveLength(2);
-    // Merged band's claim must cover both rects' absolute row ranges.
-    const merged = after[0];
-    for (const child of merged.children) {
-      const childAbsBottom = merged.gridRow + child.gridRow + child.gridH;
-      expect(childAbsBottom).toBeLessThanOrEqual(merged.gridRow + merged.gridH);
-    }
+    // Both bands still exist — no merge.
+    expect(after).toHaveLength(2);
+    const aAfter = after.find(f => f.id === bandA.id);
+    const bAfter = after.find(f => f.id === bandB.id);
+    expect(aAfter, "bandA still exists").toBeTruthy();
+    expect(bAfter, "bandB still exists").toBeTruthy();
+    // bandA didn't move.
+    expect(aAfter!.gridRow).toBe(0);
+    // bandB clamped at the wall: gridRow=3 means rows 3-5, immediately
+    // below bandA's rows 0-2 (no overlap).
+    expect(bAfter!.gridRow).toBe(3);
+    expect(bAfter!.gridRow).toBeGreaterThanOrEqual(bandA.gridRow + bandA.lineCount);
   });
 });
 

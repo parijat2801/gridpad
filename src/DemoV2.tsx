@@ -609,7 +609,6 @@ export default function DemoV2() {
     }
     const dx = px - drag.startX, dy = py - drag.startY;
     if (!drag.hasMoved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
-    const isFirstDragStep = !drag.hasMoved;
     drag.hasMoved = true;
     if (drag.resizeHandle) {
       setCanvasCursor(RESIZE_CURSOR_MAP[drag.resizeHandle]);
@@ -801,13 +800,17 @@ export default function DemoV2() {
           const decision = decideReparent(framesRef.current, draggedId, upPx, upPy);
           if (decision.kind === "demote") {
             const cw = cwRef.current, ch = chRef.current;
-            const aRow = Math.round(upPy / ch);
+            const docLines = stateRef.current.doc.lines;
+            const aRow = Math.max(0, Math.min(docLines - 1, Math.round(upPy / ch)));
             const aCol = Math.round(upPx / cw);
             stateRef.current = applyReparentFrame(stateRef.current, draggedId, decision.targetTopLevelId, aRow, aCol, cw, ch);
             syncRefsFromState();
           } else if (decision.kind === "promote") {
             const cw = cwRef.current, ch = chRef.current;
-            const aRow = Math.round(upPy / ch);
+            const docLines = stateRef.current.doc.lines;
+            // Fix 14: clamp promote target row to doc bounds so cursor past
+            // doc end doesn't clobber trailing prose.
+            const aRow = Math.max(0, Math.min(docLines - 1, Math.round(upPy / ch)));
             const aCol = Math.round(upPx / cw);
             stateRef.current = applyReparentFrame(stateRef.current, draggedId, null, aRow, aCol, cw, ch);
             syncRefsFromState();

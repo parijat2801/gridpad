@@ -4208,4 +4208,63 @@ test.describe("eager-band interactive UX regressions", () => {
     // CRITICAL: lower rect must NOT have moved.
     expect(Math.abs(lowerAfter!.y - lowerBefore.y), "lower must stay anchored").toBeLessThanOrEqual(1);
   });
+
+  // Fix 14: a wireframe must not be dragged across a non-blank prose line.
+  // Fixture: wireframe A, blank, "Middle" prose, blank, wireframe B.
+  // Drag A down 300px — far past Middle. Expected: A clamps just above
+  // Middle (rotation budget = 1 blank line above Middle). B is untouched.
+  // Pre-fix: A rotates past Middle, eats the prose, or merges with B.
+  test("Fix 14: drag does not cross non-blank prose line", async ({ page }) => {
+    // Wireframe A | blank | "Middle" prose | blank | wireframe B.
+    // Drag A down ~80px (4-5 rows). Cursor ends near "Middle" but NOT on
+    // B's band — so onMouseUp's reparent branch returns "none" (no target,
+    // no escape past doc bounds). The drag must clamp at the prose wall:
+    // A stays just above Middle; doc preserves Top/Middle/Bottom order.
+    const FIXTURE = `Top\n\n┌────┐\n│ A  │\n└────┘\n\nMiddle\n\n┌────┐\n│ B  │\n└────┘\n\nBottom`;
+    await load(page, FIXTURE);
+    writeArtifact("fix-14-prose-wall", "input.md", FIXTURE);
+    const before = await getFrames(page);
+    expect(before.length).toBe(2);
+    const aBefore = before[0];
+    const bBefore = before[1];
+    const treeBefore = await getFrameTree(page);
+    writeArtifact("fix-14-prose-wall", "frames-before.json",
+      JSON.stringify(before, null, 2));
+    writeArtifact("fix-14-prose-wall", "tree-before.json",
+      JSON.stringify(treeBefore, null, 2));
+
+    await clickFrame(page, 0); // select A
+    const selectedAfterClick = await page.evaluate(() => (window as any).__gridpad.getSelectedId());
+    writeArtifact("fix-14-prose-wall", "selected-after-click.txt", String(selectedAfterClick));
+    await dragSelected(page, 0, 80); // try to push past the prose wall
+    await clickProse(page, 5, 5);
+    const after = await getFrames(page);
+    const treeAfter = await getFrameTree(page);
+    writeArtifact("fix-14-prose-wall", "tree-after.json",
+      JSON.stringify(treeAfter, null, 2));
+    const aAfter = after.find(f => f.id === aBefore.id);
+    const bAfter = after.find(f => f.id === bBefore.id);
+    writeArtifact("fix-14-prose-wall", "frames-after.json",
+      JSON.stringify(after.map(f => ({ id: f.id, gridRow: f.gridRow, lineCount: f.lineCount })), null, 2));
+    expect(aAfter, "A still exists after drag").toBeTruthy();
+    expect(bAfter, "B still exists after drag").toBeTruthy();
+
+    const saved = await save(page);
+    writeArtifact("fix-14-prose-wall", "output.md", saved);
+    // "Middle" prose must survive intact, in its original position relative
+    // to A and B.
+    expect(saved, "Middle prose survives the drag").toContain("Middle");
+    const idxA = saved.indexOf("│ A");
+    const idxMiddle = saved.indexOf("Middle");
+    const idxB = saved.indexOf("│ B");
+    expect(idxA).toBeGreaterThanOrEqual(0);
+    expect(idxMiddle).toBeGreaterThanOrEqual(0);
+    expect(idxB).toBeGreaterThanOrEqual(0);
+    // Order must be preserved: A appears before Middle which appears before B.
+    expect(idxA, "A before Middle").toBeLessThan(idxMiddle);
+    expect(idxMiddle, "Middle before B").toBeLessThan(idxB);
+    // No ghosts (merged/duplicated wireframes).
+    const ghosts = await findGhostsFromPage(page, saved);
+    expect(ghosts).toEqual([]);
+  });
 });
