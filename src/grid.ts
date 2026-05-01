@@ -9,7 +9,7 @@ let _charHeight = 0;
 let _measured = false;
 
 const FALLBACK_CHAR_WIDTH = 9.6;
-const FALLBACK_CHAR_HEIGHT = 18.4;
+const FALLBACK_CHAR_HEIGHT = 22.4;
 
 export async function measureCellSize(): Promise<{
   charWidth: number;
@@ -25,8 +25,8 @@ export async function measureCellSize(): Promise<{
   const metrics = ctx.measureText("M");
   _charHeight =
     metrics.actualBoundingBoxAscent !== undefined
-      ? (metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent) * 1.15
-      : FONT_SIZE * 1.25;
+      ? (metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent) * 1.4
+      : FONT_SIZE * 1.5;
   if (_charWidth < 4 || _charWidth > 40) _charWidth = FALLBACK_CHAR_WIDTH;
   if (_charHeight < 4 || _charHeight > 40) _charHeight = FALLBACK_CHAR_HEIGHT;
   _measured = true;
