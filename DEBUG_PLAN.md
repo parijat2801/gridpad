@@ -337,7 +337,9 @@ Pure test update; no production code change.
 | Post-Fix-10 (07d889d) | 574/0 | **132/12** | Home/End handlers in prose mode. Cleared test 2891. ✓ |
 | Post-Fix-2 (926764c) | 579/0 | 132/12 | clampBandMoveDelta past doc end. No targeted-red-test cleared but defensive correctness fix. |
 | Post-Fix-9 (4b745bf) | 580/0 | **134/10** | Commit-on-mouseup pattern in DemoV2.tsx. Cleared tests 2705 + 2723. ✓ |
-| Post-Fix-14 (pending commit) | 587/0 | **134/11** | computeRotationBudget single source of truth, plus promote-target row clamp to doc bounds. Cleared "prose order UP" + new Fix 14 test. Regressed "prose order DOWN" + "promote old parent" — exposed downstream reparent-on-drop issues that rotation-eats-prose previously masked. Net neutral count, better failure quality. |
+| Post-Fix-14 (01b255b) | 587/0 | **134/11** | computeRotationBudget single source of truth, plus promote-target row clamp to doc bounds. Cleared "prose order UP" + new Fix 14 test. Regressed "prose order DOWN" + "promote old parent" — exposed downstream reparent-on-drop issues that rotation-eats-prose previously masked. Net neutral count, better failure quality. |
+| Post-line-height (f747d04) | 587/0 | 134/11 | Cosmetic: bump _charHeight multiplier 1.15× → 1.4× ascent+descent. No behavior change. |
+| Post-reparent-revival (3a06b24) | 590/0 | not re-run | (1) Removed Fix 3's leaf-vs-leaf size guard in decideReparent — guard was rejecting every realistic drop because draggedFrame was the full-width band, not the leaf. (2) Skipped recomputeWireframeBounds for move-only effects — bbox no longer follows moved children, so children can leave their parent. (3) Added doLayout(); paint() at end of onMouseUp drag block — fixes "places on next click" lag after commit-on-mouseup. Vitest +3 (one test updated, two passing for new behavior). Harness not re-run — many failures expected to flip status given fundamental drag-reparent flow change. |
 
 **Branch:** `harness_fixes` (forked from `main` @ cc70f5c).
 **Pending:** 12 harness failures across 5 root causes (below).
@@ -947,46 +949,54 @@ Fix 2 first (already done), then Fix 14, then Fix 13.
 
 ---
 
-## Recommended fix order (REVISED 2026-05-01 after solution review)
+## Recommended fix order (REVISED 2026-05-02 after reparent revival)
 
-**This session shipped Fix 3, 5, 10, 2.** Fix 14 attempted, reverted.
-Fix 9 deferred. Each remaining fix's solution was reviewed against
-the actual code; sections above record the revised approach.
+**Sessions shipped:** Fix 2, 3, 5, 9, 10, 14, plus reparent revival
+(size guard removed, bbox-skip-on-move, mouseup repaint). Reparent
+revival was NOT in the original plan — it emerged from runtime
+testing where the architect noticed "drag-onto-frame does nothing."
 
-**New order, justified by the review:**
+**Critical re-evaluation needed.** The reparent revival fundamentally
+changed the drag-and-drop UX: children can now leave their parent,
+nest into other frames, and the bbox stays put. Many of the
+remaining 11 harness failures (134/11 pre-revival) likely behave
+differently now. The harness should be re-run as a baseline before
+any further plan work.
 
-1. **Fix 9** (resize undo doc-state restore) — INDEPENDENT, do first.
-   Root cause confirmed via grep: `DemoV2.tsx:709` uses
-   `addToHistory.of(isFirstDragStep)`, so only tick 1 of a resize is
-   in history. Fix is the commit-on-mouseup pattern (snapshot at
-   mousedown, visual-only ticks, single committed transaction at
-   mouseup). Self-contained — does not touch the rotation handler or
-   merge logic. Land it independent of Fix 14.
+**Open work, re-prioritized:**
 
-2. **Fix 14** (no crossing prose lines) — RETRY with single source
-   of truth. Build pure helper `computeRotationBudget` that walks
-   blank lines around the band's claim and stops at non-blank prose
-   OR another top-level band's claim. Use it in BOTH
-   `unifiedDocSync` (replacing the inline maxUp/maxDown walks) AND
-   `framesField.update`'s applyMove. Last attempt failed because
-   two clamp authorities disagreed; this approach has one
-   authority called from two sites.
+1. **Re-baseline harness** — run `npx playwright test e2e/harness.spec.ts
+   --workers=8` to see post-revival pass/fail count. Then list which
+   prior failures cleared, which still fail, which regressed.
+   Compare against the matrix entries above to figure out what's
+   actually still broken.
 
-3. **Fix 13** (sibling-band separation) — depends on Fix 14. Reuses
-   existing `applyReparentFrame(state, id, null, ...)` from drag
-   handler when `clampedDRow=0 && residualDRow!=0 && bandSiblings>1`.
-   No new effect.
+2. **Fix 13** (sibling-band separation) — was deferred awaiting Fix 14.
+   Now needs re-evaluation: the reparent revival likely changes the
+   "what happens when you drag a sibling out of its band" path.
+   Don't write code until step 1 (re-baseline) confirms 13 is still
+   relevant.
 
-4. **Fix 12** (drag-independence) — INVESTIGATE, don't fix yet. The
-   probe diagnosis at line 645-651 of this doc is internally
-   inconsistent with the actual rotation handler. Re-instrument
-   to capture `tr.changes.toJSON()` and `mapPos` directly before
-   choosing a fix.
+3. **Fix 12** (drag-independence) — same: re-evaluate after baseline.
+   Original probe diagnosis (DEBUG_SCRATCH lines 645-651) was
+   internally inconsistent. Likely needs fresh instrumentation
+   against current code.
 
-5. **Fix 11** (cross-parent merge) — likely auto-resolved by Fix 14.
-   If 3507 still fails after Fix 14, revisit.
+4. **Fix 11** (cross-parent merge) — Fix 14 partially addresses this.
+   Re-test 3507 after baseline.
 
-Final target: 144/0 + Fix 13/14 tests green.
+5. **Architectural cleanup** (deferred, optional) — the per-tick
+   drag handler still mutates state via `moveFrameEffect` even
+   though Fix 9's commit-on-mouseup makes the per-tick mutations
+   redundant for history purposes, and the reparent revival
+   showed that per-tick state pollutes mouseup hit-testing
+   decisions. A pure mouseup-only model (visual ghost during
+   drag, single commit at mouseup) would simplify the codebase
+   significantly. Big change — only worth it if remaining
+   harness failures cluster around per-tick state-vs-cursor
+   disagreement.
+
+Final target unchanged: harness 144/0.
 
 After each commit: run `npx vitest run` and `npx playwright test e2e/harness.spec.ts --workers=8` (8 workers cuts harness time from 156s → 81s).
 
