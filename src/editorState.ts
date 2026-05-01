@@ -1645,6 +1645,42 @@ export function decideSelectionForMouseDown(
   return { kind: "applyRule", frameId: resolveSelectionTarget(hit, currentSelectedId, frames, false) };
 }
 
+/** Predicate for the residual-escalation rule (Fix 5).
+ *
+ * A drag of a child rect inside a band can produce a "residual" — the
+ * portion of the user's drag delta that exceeds the band's bounds for
+ * the rect. Pre-fix, any nonzero residual escalated to a band-level
+ * moveFrameEffect (rotating the band). That rotates the band even when
+ * the user's intent is "move within band, hit wall, stop", which has
+ * harmful side effects on adjacent bands via mapPos.
+ *
+ * Distinguish two zero-vertical-slack cases by sibling count:
+ *   - Single-wireframe band (`bandSiblings === 1`): the rect IS the
+ *     wireframe; dragging it is supposed to rotate the band. All motion
+ *     is residual; escalate unconditionally.
+ *   - Multi-child band (`bandSiblings > 1`, side-by-side rects): each
+ *     rect fills the band vertically but they're independent. A drag
+ *     past the wall must NOT rotate the band (would move siblings).
+ *     Clamp residual silently.
+ *
+ * For bands with vertical slack (single rect with blank-row slack —
+ * `bandSiblings === 1` and `bandSlackRows > 0`), use the gesture-level
+ * rule: only escalate after the rect has demonstrably moved within
+ * the band (preserves "drag past edge to keep moving"). */
+export function shouldEscalateResidual(
+  clampedDRow: number,
+  residualDRow: number,
+  gestureHadClampedMotion: boolean,
+  bandSlackRows = 1,
+  bandSiblings = 1,
+): boolean {
+  if (residualDRow === 0) return false;
+  if (bandSiblings > 1) return false;
+  if (bandSlackRows === 0) return true;
+  if (clampedDRow !== 0) return true;
+  return gestureHadClampedMotion;
+}
+
 export type ReparentDecision =
   | { kind: "demote"; targetTopLevelId: string }
   | { kind: "promote" }

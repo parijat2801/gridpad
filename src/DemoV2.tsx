@@ -14,7 +14,7 @@ import {
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
-  resolveSelectionTarget, decideSelectionForMouseDown, decideReparent,
+  resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, shouldEscalateResidual,
   findContainingBandDeep, getBandRelativeRow, getBandRelativeCol,
   type CursorPos,
 } from "./editorState";
@@ -165,6 +165,11 @@ interface DragState {
   // because the hit was the current selection or a descendant. If
   // hasMoved stays false through mouseup, we drill via the rule THEN.
   deferredDrillHit?: Frame;
+  // Fix 5: gesture-level state — true once any tick has produced
+  // clamped vertical motion of the dragged rect inside its band. Used
+  // by shouldEscalateResidual to avoid rotating the band when the rect
+  // was at the wall from the first tick.
+  gestureHadClampedMotion?: boolean;
 }
 
 type ToolName = "select" | "rect" | "line" | "text";
@@ -678,7 +683,14 @@ export default function DemoV2() {
           if (clampedDRow !== 0 || clampedDCol !== 0) {
             effects.push(moveFrameEffect.of({ id: drag.frameId, dCol: clampedDCol, dRow: clampedDRow, charWidth: cw, charHeight: ch }));
           }
-          if (residualDRow !== 0) {
+          if (clampedDRow !== 0) drag.gestureHadClampedMotion = true;
+          // Band slack = vertical room for the rect inside the band.
+          // bandSiblings = number of direct children (a single-wireframe
+          // band has 1; side-by-side rects have 2+). The predicate uses
+          // both to distinguish "rotate the band" from "clamp at wall".
+          const bandSlackRows = containingBand.gridH - child.gridH;
+          const bandSiblings = containingBand.children.length;
+          if (shouldEscalateResidual(clampedDRow, residualDRow, drag.gestureHadClampedMotion ?? false, bandSlackRows, bandSiblings)) {
             effects.push(moveFrameEffect.of({ id: containingBand.id, dCol: 0, dRow: residualDRow, charWidth: cw, charHeight: ch }));
           }
         } else {
