@@ -14,7 +14,7 @@ import {
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   editorUndo, editorRedo,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
-  resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, shouldEscalateResidual,
+  resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, shouldEscalateResidual, findImmediateParent,
   findContainingBandDeep, getBandRelativeRow, getBandRelativeCol,
   type CursorPos,
 } from "./editorState";
@@ -685,11 +685,17 @@ export default function DemoV2() {
           }
           if (clampedDRow !== 0) drag.gestureHadClampedMotion = true;
           // Band slack = vertical room for the rect inside the band.
-          // bandSiblings = number of direct children (a single-wireframe
-          // band has 1; side-by-side rects have 2+). The predicate uses
-          // both to distinguish "rotate the band" from "clamp at wall".
+          // bandSiblings = number of immediate siblings of the dragged
+          // rect — counted at its parent (which may be the band itself
+          // OR a wireframe wrapper inside the band, e.g., side-by-side
+          // rects share a wireframe parent, not the band). Excludes
+          // text-content children (labels), which aren't draggable
+          // wireframes.
           const bandSlackRows = containingBand.gridH - child.gridH;
-          const bandSiblings = containingBand.children.length;
+          const dragParent = findImmediateParent(framesRef.current, drag.frameId);
+          const bandSiblings = dragParent
+            ? dragParent.children.filter(c => c.content?.type !== "text").length
+            : 1;
           if (shouldEscalateResidual(clampedDRow, residualDRow, drag.gestureHadClampedMotion ?? false, bandSlackRows, bandSiblings)) {
             effects.push(moveFrameEffect.of({ id: containingBand.id, dCol: 0, dRow: residualDRow, charWidth: cw, charHeight: ch }));
           }

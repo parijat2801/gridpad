@@ -1520,6 +1520,16 @@ export function findContainingBandDeep(frames: Frame[], frameId: string): Frame 
   return null;
 }
 
+/** Immediate parent of a frame in the tree (the frame whose `children`
+ * array contains it). Returns null if the frame is top-level or absent.
+ * Used by drag-residual logic to count sibling wireframes inside the
+ * same wireframe-or-band container. */
+export function findImmediateParent(frames: Frame[], frameId: string): Frame | null {
+  const path = findPath(frames, frameId);
+  if (path.length < 2) return null;
+  return path[path.length - 2];
+}
+
 /** Sum gridRow offsets along the path from `bandId` (exclusive) to `frameId`
  * (inclusive). Throws if `frameId` is not in the tree. Returns 0 when
  * `frameId === bandId`. Used by drag clamp + push physics to compute a
