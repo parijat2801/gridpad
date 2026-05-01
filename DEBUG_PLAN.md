@@ -990,6 +990,55 @@ move/rotation paths.
 - "move-then-enter: move frame down, then Enter above it"
 - "dragging a rect up inside its band clamps at band top edge"
 
+### Group D — transient double-band after promote (no test yet)
+
+**Reported by user 2026-05-02. Visual issue, not in harness.**
+
+**Symptom:** After horizontally dragging a child wireframe OUT of
+its parent dashboard (promote → new top-level band), TWO BANDS
+visibly coexist for some time. The new band's selection bbox and
+the old band's selection bbox overlap vertically by 1-2 rows.
+While both bands exist, subsequent drags of either wireframe behave
+weirdly (motion clamps strangely, frame jumps unexpectedly). Once
+the user moves either wireframe enough that the two bands' claim
+ranges actually OVERLAP, `mergeOverlappingBands` fires and
+collapses them into ONE band. From then on, motion is correct.
+
+**Hypothesis:**
+1. Promote (`applyReparentFrame` with `null` parent) creates a new
+   band at `aRow = Math.round(upPy / ch)`. The new band's claim
+   occupies `[aRow, aRow + gridH)`.
+2. The OLD parent band's claim was `[oldRow, oldRow + oldH)`. When
+   the child leaves, the old band may shrink (cascade-prune) or
+   not, depending on remaining children.
+3. If the new band's claim is ADJACENT to the old band's (e.g.,
+   one starts where the other ends, sharing an edge but not rows),
+   `mergeOverlappingBands` sees no overlap → both survive.
+4. The visual selection bbox extends 1-2 rows beyond the actual
+   claim due to padding/handles, making them LOOK overlapping
+   even when their claims don't.
+5. Each band has its own `computeRotationBudget` walls; the two
+   bands wall each other off, producing the "weird motion."
+6. Once the user drags one band by enough to ACTUALLY overlap the
+   other band's claim (not just visually), `mergeOverlappingBands`
+   collapses them and motion normalizes.
+
+**Possible fixes (not implemented):**
+- After `applyReparentFrame` (promote case), explicitly check if
+  the new band's claim is adjacent to any other band's claim. If
+  so, eagerly merge or place the new band with at least 1 blank
+  row of separation.
+- Or: change the promote target so the new band always lands in
+  EMPTY blank space (not row-adjacent to existing bands), which
+  may require shifting the promote drop position.
+- Or: relax `mergeOverlappingBands` to also merge ADJACENT bands
+  (touching but not overlapping). Risky — bands separated by 0
+  blank rows may be intentionally distinct in some flows.
+
+**Severity:** UX papercut, not data corruption. Self-heals when
+user keeps interacting. Worth fixing but lower priority than
+Groups A/B.
+
 ---
 
 ## Recommended fix order (REVISED 2026-05-02 after reparent revival)
