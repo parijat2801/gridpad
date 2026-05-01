@@ -339,7 +339,8 @@ Pure test update; no production code change.
 | Post-Fix-9 (4b745bf) | 580/0 | **134/10** | Commit-on-mouseup pattern in DemoV2.tsx. Cleared tests 2705 + 2723. ✓ |
 | Post-Fix-14 (01b255b) | 587/0 | **134/11** | computeRotationBudget single source of truth, plus promote-target row clamp to doc bounds. Cleared "prose order UP" + new Fix 14 test. Regressed "prose order DOWN" + "promote old parent" — exposed downstream reparent-on-drop issues that rotation-eats-prose previously masked. Net neutral count, better failure quality. |
 | Post-line-height (f747d04) | 587/0 | 134/11 | Cosmetic: bump _charHeight multiplier 1.15× → 1.4× ascent+descent. No behavior change. |
-| Post-reparent-revival (3a06b24) | 590/0 | not re-run | (1) Removed Fix 3's leaf-vs-leaf size guard in decideReparent — guard was rejecting every realistic drop because draggedFrame was the full-width band, not the leaf. (2) Skipped recomputeWireframeBounds for move-only effects — bbox no longer follows moved children, so children can leave their parent. (3) Added doLayout(); paint() at end of onMouseUp drag block — fixes "places on next click" lag after commit-on-mouseup. Vitest +3 (one test updated, two passing for new behavior). Harness not re-run — many failures expected to flip status given fundamental drag-reparent flow change. |
+| Post-reparent-revival (3a06b24) | 590/0 | not re-run | (1) Removed Fix 3's leaf-vs-leaf size guard in decideReparent — guard was rejecting every realistic drop because draggedFrame was the full-width band, not the leaf. (2) Skipped recomputeWireframeBounds for move-only effects — bbox no longer follows moved children, so children can leave their parent. (3) Added doLayout(); paint() at end of onMouseUp drag block — fixes "places on next click" lag after commit-on-mouseup. Vitest +3 (one test updated, two passing for new behavior). |
+| Post-baseline (38f5e2a) | 590/0 | **132/13** | Re-baseline after reparent revival. Slight count regression (134→132) but the failure SHAPE changed: prior "rotation eats prose" failures are now "drag-then-drop demotes when test expected pass-through" — tests asserting old behavior are now violating new (correct, Figma-like) UX. See "Failure categorization" section below. |
 
 **Branch:** `harness_fixes` (forked from `main` @ cc70f5c).
 **Pending:** 12 harness failures across 5 root causes (below).
@@ -949,6 +950,48 @@ Fix 2 first (already done), then Fix 14, then Fix 13.
 
 ---
 
+## Failure categorization (after 2026-05-02 baseline, 132/13)
+
+The 13 failing tests cluster into three groups:
+
+### Group A — tests assert pre-revival behavior (5 tests)
+
+These tests assert "drag wireframe past another wireframe does not
+nest" or "equal-size frames don't nest each other." Pre-revival, the
+size guard rejected these drops; post-revival, drops now legitimately
+demote when cursor lands on a target. The tests need to be UPDATED
+to reflect the new (Figma-like) UX. These are not bugs.
+
+- "equal-size frames passed through each other do not nest"
+- "Fix 14: drag does not cross non-blank prose line"
+- "drag frame A past frame B: B does not move"
+- "large-drag: drag first wireframe past second, no collision"
+- "drag box down onto another — overlapping positions"
+
+### Group B — reparent-on-drop interactions (4 tests)
+
+Tests that drag a wireframe with extreme cursor offset (past doc end,
+into prose, etc.). Reparent now fires more aggressively; in some
+cases the new band lands at a row that collides with prose or
+existing claims. Drop position needs better post-clamp handling.
+
+- "prose order preserved when dragging wireframe down"
+- "promote then drag old parent: promoted frame stays put"
+- "promote then drag the promoted frame: old parent stays put"
+- "undo a drag-into-frame reparent restores original tree"
+
+### Group C — independent issues (4 tests)
+
+Not directly related to reparent revival; pre-existing bugs in
+move/rotation paths.
+
+- "drag: move box down, no ghosts"
+- "drag shared-horizontal box down, no ghosts"
+- "move-then-enter: move frame down, then Enter above it"
+- "dragging a rect up inside its band clamps at band top edge"
+
+---
+
 ## Recommended fix order (REVISED 2026-05-02 after reparent revival)
 
 **Sessions shipped:** Fix 2, 3, 5, 9, 10, 14, plus reparent revival
@@ -965,27 +1008,27 @@ any further plan work.
 
 **Open work, re-prioritized:**
 
-1. **Re-baseline harness** — run `npx playwright test e2e/harness.spec.ts
-   --workers=8` to see post-revival pass/fail count. Then list which
-   prior failures cleared, which still fail, which regressed.
-   Compare against the matrix entries above to figure out what's
-   actually still broken.
+1. **Group A — update tests to match new UX (5 tests, easy).** These
+   tests assert pre-revival behavior that is now incorrect. Update
+   each to assert the new (Figma-like) expected behavior: when the
+   user drags wireframe A onto wireframe B, A nests as a child of B.
+   For "drag past" tests, change the action to drop in EMPTY SPACE
+   past B (cursor not on any wireframe) — that triggers the move
+   path without nesting. ~30 min total.
 
-2. **Fix 13** (sibling-band separation) — was deferred awaiting Fix 14.
-   Now needs re-evaluation: the reparent revival likely changes the
-   "what happens when you drag a sibling out of its band" path.
-   Don't write code until step 1 (re-baseline) confirms 13 is still
-   relevant.
+2. **Group B — fix reparent edge cases (4 tests, medium).** When the
+   drop position lands past doc end or on prose, the resulting
+   reparent corrupts the doc. Two sub-fixes:
+   - Clamp `aRow` for promote/demote so the new claim doesn't
+     overlap non-blank prose lines.
+   - Skip reparent entirely when the drop row is unreachable
+     (cursor past doc end with no blank rows available).
 
-3. **Fix 12** (drag-independence) — same: re-evaluate after baseline.
-   Original probe diagnosis (DEBUG_SCRATCH lines 645-651) was
-   internally inconsistent. Likely needs fresh instrumentation
-   against current code.
+3. **Group C — independent move/rotation bugs (4 tests, varies).**
+   Investigate each. May or may not relate to existing planned
+   fixes (13, 12, 11).
 
-4. **Fix 11** (cross-parent merge) — Fix 14 partially addresses this.
-   Re-test 3507 after baseline.
-
-5. **Architectural cleanup** (deferred, optional) — the per-tick
+4. **Architectural cleanup** (deferred, optional) — the per-tick
    drag handler still mutates state via `moveFrameEffect` even
    though Fix 9's commit-on-mouseup makes the per-tick mutations
    redundant for history purposes, and the reparent revival
@@ -994,7 +1037,7 @@ any further plan work.
    drag, single commit at mouseup) would simplify the codebase
    significantly. Big change — only worth it if remaining
    harness failures cluster around per-tick state-vs-cursor
-   disagreement.
+   disagreement after Groups A and B are addressed.
 
 Final target unchanged: harness 144/0.
 
