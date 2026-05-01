@@ -323,7 +323,7 @@ Pure test update; no production code change.
 
 ---
 
-## Status — post-Fix-1, Fix-7, Fix-4, Fix-8 (branch `harness_fixes`)
+## Status — post-Fix-3/5/10/2 (branch `harness_fixes`)
 
 | Date | Vitest | Harness | Notes |
 |------|--------|---------|-------|
@@ -332,9 +332,13 @@ Pure test update; no production code change.
 | Post-Fix-7 (e6e9251) | 559/0 | 128/16 | Test asserted pre-Phase-B tree shape |
 | Post-Fix-4 (6ba9c7c) | 559/0 | 129/15 | Text frames excluded from resize handles |
 | Post-Fix-8 (f3df3cc) | 559/0 | 131/13 | Tests drill from shrink-wrap before resize |
+| Post-Fix-3 (70822a2) | 563/0 | 131/13 | decideReparent helper, leaf-vs-leaf size guard. No harness delta — tests 3594/3631 are actually Fix 14 territory (re-attributed below). |
+| Post-Fix-5 (52b0964 + d69e9ae) | 569/0 | 131/13 | shouldEscalateResidual + bandSlackRows + bandSiblings. No harness delta — targeted tests 4140/3770 turned out to be Fix 14 territory too. |
+| Post-Fix-10 (07d889d) | 574/0 | **132/12** | Home/End handlers in prose mode. Cleared test 2891. ✓ |
+| Post-Fix-2 (926764c) | 579/0 | 132/12 | clampBandMoveDelta past doc end. No targeted-red-test cleared but defensive correctness fix. |
 
 **Branch:** `harness_fixes` (forked from `main` @ cc70f5c).
-**Pending:** 13 harness failures across 7 distinct root causes (below).
+**Pending:** 12 harness failures across 5 root causes (below).
 
 ---
 
@@ -346,15 +350,16 @@ Pure test update; no production code change.
 | 7 (test update side-by-side) | DONE | 559/0 | -1 (test 32) | -1 ✓ |
 | 4 (text frames no handles) | DONE | 559/0 | -1 (test 29) | -1 ✓ |
 | 8 (drill before resize) | DONE | 559/0 | -2 (tests 87, 92) | -2 ✓ |
-| 3 (reparent guard) | TODO | n/a | -2 (3594, 3631) | — |
-| 5 (residual escalation) | TODO | n/a | -2 (3749, 4140) | — |
-| 2 (rotation clip past EOF) | TODO | new unit test | -3 to -4 (959, 2216, 2759, possibly 1889) | — |
-| 9 (resize undo doesn't shrink doc) | TODO | new unit test | -2 (2705, 2723) | — |
-| 10 (Backspace at line-2 home) | TODO | n/a | -1 (2891) | — |
-| 11 (cross-parent drag merges bands) | TODO | n/a | -1 (3507) | — |
-| 12 (drag-independence between adjacent bands) | TODO | new unit test | -1 (3827) | — |
-| 13 (sibling-band separation on continued drag) | TODO (NEW) | new unit test | new red harness tests | — |
-| 14 (no crossing prose lines) | TODO (NEW) | new unit test | new red harness tests | — |
+| 3 (reparent guard) | DONE (70822a2) | 563/0 | targeted -2 tests not cleared (re-attributed to Fix 14) | 0 ✓ correct on merits, proven via 4 unit tests |
+| 5 (residual escalation) | DONE (52b0964 + d69e9ae) | 569/0 | targeted -2 tests not cleared (Fix 14 territory) | 0 ✓ proven via 6 unit tests |
+| 10 (Home/End in prose mode) | DONE (07d889d) | 574/0 | -1 (test 2891) | -1 ✓ |
+| 2 (rotation clip past EOF) | DONE (926764c) | 579/0 | no test directly red for data loss past doc end | 0 ✓ defensive correctness via 5 unit tests |
+| 9 (resize undo doesn't shrink doc) | DEFERRED | n/a | -2 (2705, 2723) | — Tried multi-tick history join via Transaction.time + addToHistory.of(true). Didn't auto-join; CM history requires commit-on-mouseup pattern (capture state at mousedown, dispatch synthetic delta-only transaction at mouseup). Reverted attempt. |
+| 14 (no crossing prose lines) | ATTEMPTED, REVERTED | n/a | targeted: -2 (3594, 3631) re-attributed; also -2 (4140, 3770) | — Implemented prose-budget clamp via maxUp/maxDown extension to clampBandMoveDelta + countBlankLinesAbove/Below + applyMove pre-mapPos lookup. Sonnet PASS on design. Net 0 harness delta but caused wireframe A to disappear in `drag box down onto another` test. Interaction with mergeOverlappingBands + band rotation needs deeper investigation. Reverted. |
+| 11 (cross-parent drag merges bands) | TODO | n/a | -1 (3507) | — Depends on Fix 14 |
+| 12 (drag-independence between adjacent bands) | TODO | new unit test | -1 (3827) | — Depends on Fix 14 |
+| 13 (sibling-band separation on continued drag) | TODO (NEW) | new unit test | new red harness tests | — Depends on Fix 14 |
+| 14 (no crossing prose lines) | TODO (NEW, attempt failed) | new unit test | new red harness tests + 4 existing | — See ATTEMPTED row above |
 
 **Final target:** harness 144/0 (zero failures) + new Fix 13/14 tests green.
 
@@ -780,25 +785,53 @@ to know where the wall is).
 
 ## Recommended fix order (next session)
 
-1. **Fix 3** (reparent guard, leaf-vs-leaf) — small, clears 2. Low risk.
-2. **Fix 5** (residual escalation guard) — small, clears 2. Medium risk.
-3. **Fix 10** (Backspace at column 0) — small, clears 1. Low risk.
-4. **Fix 2** (band gridRow clamp past doc end) — TDD-first. Clears 3-4. Medium risk.
-5. **Fix 9** (resize undo doc-state restore) — TDD-first. Clears 2. Medium-high risk.
-6. **Fix 14** (no crossing prose lines) — NEW, user-reported. TDD-first.
-   Clears new red tests. Medium risk. Do before Fix 13 (Fix 13 needs
-   to know where the wall is).
-7. **Fix 13** (sibling-band separation on continued drag) — NEW,
-   user-reported. TDD-first. Clears new red tests. Medium risk.
-   Likely subsumes Fix 12 once it lands.
-8. **Fix 12** (drag-independence between adjacent bands) — re-evaluate
-   after Fix 13/14; may already be fixed. High risk if still needed.
-9. **Fix 11** (cross-parent drag merges bands) — depends on 12/13/14;
-   merge logic should be re-examined once those land. High risk.
+**This session shipped Fix 3, 5, 10, 2.** Fix 14 attempted, reverted — see ATTEMPTED row in matrix above. Fix 9 deferred.
 
-Final target: 144/0 (zero failures) plus new Fix 13/14 tests passing.
+Remaining:
 
-After each commit: run `npx vitest run` and `npx playwright test e2e/harness.spec.ts`.
+1. **Fix 14** (no crossing prose lines) — RETRY needed.
+   Last attempt: extended `clampBandMoveDelta` with maxUp/maxDown,
+   added `countBlankLinesAbove`/`countBlankLinesBelow`, wired into
+   `framesField.update`'s applyMove with a pre-mapPos lookup against
+   `tr.startState.field(framesField)`. Sonnet design-review PASS.
+   Vitest 585/0 (added 6 unit tests for prose-clamp).
+   But harness regressed: `large-drag` and `drag box down onto another`
+   broke — wireframe A literally disappeared in the latter, with a
+   stray `┌────┐` ghost at the bottom. Suggests interaction between
+   the new clamp and `mergeOverlappingBands`/band rotation.
+   Approach to try next: don't clamp the FRAME's gridRow at all in
+   applyMove; instead, ensure `unifiedDocSync`'s rotation budget is
+   the only clamp authority and that frame.gridRow is updated
+   consistently with the doc-side rotation via `relocateFrameEffect`.
+   Keep `countBlankLinesAbove`/`countBlankLinesBelow` and
+   `clampBandMoveDelta(maxUp, maxDown)` — they work; just rewire
+   how they're applied.
+   Once Fix 14 lands, expect to clear: 3594, 3631 (re-attributed
+   from Fix 3), 4140 (re-attributed from Fix 5), and the test
+   updates needed for `large-drag` + `drag box down onto another`
+   (these expected pre-Fix-14 cross-prose behavior; need spec-update).
+
+2. **Fix 13** (sibling-band separation on continued drag) — depends
+   on Fix 14 landing first.
+
+3. **Fix 9** (resize undo doc-state restore) — DEFERRED.
+   Approach to try next: commit-on-mouseup pattern. At mousedown,
+   capture `stateRef.current` snapshot. During drag, dispatch with
+   `addToHistory.of(false)` (visual-only). At mouseup, dispatch ONE
+   transaction whose changes equal the cumulative delta from
+   snapshot to current — this single transaction goes into history
+   and undoes atomically. Don't use Transaction.time auto-join; CM
+   doesn't reliably join transactions with restoreFramesEffect
+   inverted-effects.
+
+4. **Fix 12** (drag-independence between adjacent bands) — re-evaluate
+   after Fix 13/14.
+
+5. **Fix 11** (cross-parent drag merges bands) — depends on 12/13/14.
+
+Final target: 144/0 + Fix 13/14 tests green.
+
+After each commit: run `npx vitest run` and `npx playwright test e2e/harness.spec.ts --workers=8` (8 workers cuts harness time from 156s → 81s).
 
 ---
 
