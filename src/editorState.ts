@@ -167,8 +167,15 @@ const framesField = StateField.define<Frame[]>({
           }));
         return clearDirty(result);
       } else if (e.is(moveFrameEffect)) {
+        const docLines = tr.state.doc.lines;
         const applyMove = (f: Frame): Frame => {
-          if (f.id === e.value.id) return moveFrame(f, { dCol: e.value.dCol, dRow: e.value.dRow, charWidth: e.value.charWidth, charHeight: e.value.charHeight });
+          if (f.id === e.value.id) {
+            // Clamp band-claiming frames so their claim stays in doc bounds
+            // (Fix 2). Without this, dragging a band past doc end leaves
+            // gridRow > docLines - lineCount; serializer drops claim rows.
+            const clampedDRow = clampBandMoveDelta(f.gridRow, f.lineCount, e.value.dRow, docLines);
+            return moveFrame(f, { dCol: e.value.dCol, dRow: clampedDRow, charWidth: e.value.charWidth, charHeight: e.value.charHeight });
+          }
           if (f.children.length > 0) return { ...f, children: f.children.map(applyMove) };
           return f;
         };
@@ -1671,6 +1678,27 @@ export function decideSelectionForMouseDown(
     return { kind: "preserveSelection", frameId: currentSelectedId };
   }
   return { kind: "applyRule", frameId: resolveSelectionTarget(hit, currentSelectedId, frames, false) };
+}
+
+/** Clamp a band's vertical move dRow so its claim stays within the
+ * doc bounds (Fix 2). Without this clamp, dragging a band past doc
+ * end lands at gridRow > docLines - lineCount; serialization drops
+ * the rows past doc end (silent data loss).
+ *
+ * lineCount === 0 means "not a band-claiming frame" — pass through
+ * dRow unchanged. */
+export function clampBandMoveDelta(
+  gridRow: number,
+  lineCount: number,
+  dRow: number,
+  docLines: number,
+): number {
+  if (lineCount === 0) return dRow;
+  const minGridRow = 0;
+  const maxGridRow = Math.max(0, docLines - lineCount);
+  const targetGridRow = gridRow + dRow;
+  const clamped = Math.max(minGridRow, Math.min(maxGridRow, targetGridRow));
+  return clamped - gridRow;
 }
 
 /** Predicate for the residual-escalation rule (Fix 5).
