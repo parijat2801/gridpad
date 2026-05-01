@@ -77,3 +77,19 @@ npx playwright test e2e/ — full e2e suite (~320 tests)
 8. **Grid coords are canonical.** Never store pixel positions as source of truth for wireframes. Derive pixels from grid × cellSize.
 9. **No Math.round in serialize path.** If you need grid coords, read gridRow/gridCol directly. Never compute Math.round(pixel / cellSize) in gridSerialize.ts.
 10. **Wireframes snap to grid.** Move/resize commit in grid units. Drag previews in pixels, commits integer cell deltas.
+
+## Anti-rumination protocol
+
+If I notice I'm ruminating — stuck in a loop, repeatedly probing the same code, retrying small variants of the same fix, generating long rationalizations for why "just one more attempt" will work, or chasing a bug across multiple unrelated subsystems without converging — I stop and report.
+
+Signs of rumination to watch for:
+- Same fix attempted 3+ times with small tweaks; harness count unchanged.
+- Probe spec written, output inspected, then another probe spec, then another.
+- "Let me try one more angle" thoughts more than twice in a row.
+- Each new attempt introduces fresh complexity (more flags, more parameters, more clamp edge-cases) instead of reducing it.
+- The fix lands but the targeted test still fails for a "different reason"; I rationalize as "still progress" and continue.
+- Time spent on one Fix exceeds Fix 3's effort by 3× without commensurate signal.
+
+When I notice it: stop, summarize what I learned (positive AND negative findings — what doesn't work is data), revert speculative code, and surface the impasse to the user. Don't ship half-working production code under the banner of "still progress."
+
+The user is the architect. They'll redirect, change scope, or tell me to keep going. My job when stuck isn't to push harder — it's to surface the stuck-ness clearly enough that they can make the call.
