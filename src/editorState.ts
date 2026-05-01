@@ -447,8 +447,17 @@ const framesField = StateField.define<Frame[]>({
       const lineCount = Math.min(f.lineCount, maxLineCount);
       return { ...f, gridRow: lineNum, lineCount };
     });
-    // Recompute wireframe bboxes whenever any effect changed the tree.
-    if (result !== frames) {
+    // Recompute wireframe bboxes only for effects that change child SIZE
+    // or composition (resize, add, delete, reparent). Move-only effects
+    // do NOT recompute — letting bboxes track moved children grows the
+    // parent's hit area to envelop the child's new position, which then
+    // poisons mouseup hit-testing (cursor lands in the grown bbox →
+    // decideReparent sees same top-ancestor → rejects the drop). Children
+    // that move past their parent's bbox are detached on mouseup via
+    // reparent; the parent's bbox stays at the resize-implied size.
+    const hasMoveOnlyEffects = tr.effects.length > 0
+      && tr.effects.every(e => e.is(moveFrameEffect) || e.is(relocateFrameEffect));
+    if (result !== frames && !hasMoveOnlyEffects) {
       result = recomputeWireframeBounds(result);
     }
     return result;
@@ -1852,16 +1861,11 @@ export function decideReparent(
   if (hitTopLevel.id === draggedTopAncestor.id) return { kind: "none" };
   if (hitTopLevel.id === draggedId) return { kind: "none" };
 
-  // Find the dragged frame's actual gridW/gridH (not the top-ancestor's).
-  const draggedPath = findPath(frames, draggedId);
-  const draggedFrame = draggedPath[draggedPath.length - 1];
-  if (!draggedFrame) return { kind: "none" };
-
-  const targetIsLarger =
-    targetLeaf.gridW > draggedFrame.gridW &&
-    targetLeaf.gridH > draggedFrame.gridH;
-  if (!targetIsLarger) return { kind: "none" };
-
+  // Mouseup-only decision: if the cursor lands inside another top-level
+  // frame, intent is to nest. No size guard — Figma allows nesting frames
+  // of any relative size, and "passing through" during drag is a
+  // non-issue because decideReparent only runs at mouseup (cursor is in
+  // FINAL position, not during traversal).
   return { kind: "demote", targetTopLevelId: hitTopLevel.id };
 }
 

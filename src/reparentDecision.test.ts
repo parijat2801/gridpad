@@ -109,8 +109,14 @@ function absCenter(frames: Frame[], id: string): { px: number; py: number } | nu
   return walk(frames, 0, 0);
 }
 
-describe("decideReparent — leaf-vs-leaf size guard (Fix 3)", () => {
-  it("returns 'none' when dropping a same-size frame onto another same-size frame", () => {
+describe("decideReparent (mouseup-only, no size guard)", () => {
+  it("returns 'demote' when dropping a same-size frame onto another same-size frame (size guard removed)", () => {
+    // Pre-revision this returned "none" (Fix 3's size guard rejected
+    // same-size targets to prevent accidental nesting from "passing
+    // through" during drag). The guard was wrong — decideReparent only
+    // runs at mouseup, by which time the cursor is in its FINAL position;
+    // a drop INSIDE another frame is unambiguous user intent. Figma
+    // allows nesting frames of any relative size.
     const state = createEditorStateUnified(TWO_SAME_SIZE, cw, ch);
     const frames = getFrames(state);
     const wireA = findWireframeByLabel(frames, "A")!;
@@ -123,7 +129,12 @@ describe("decideReparent — leaf-vs-leaf size guard (Fix 3)", () => {
     // Drop point: middle of wireB's leaf in absolute canvas coords.
     const drop = absCenter(frames, wireB.id)!;
     const decision = decideReparent(frames, wireA.id, drop.px, drop.py);
-    expect(decision.kind).toBe("none");
+    expect(decision.kind).toBe("demote");
+    if (decision.kind === "demote") {
+      const bBand = bandFor(frames, wireB.id);
+      expect(bBand).toBeTruthy();
+      expect(decision.targetTopLevelId).toBe(bBand!.id);
+    }
   });
 
   it("returns 'demote' with target top-level when dropping a smaller frame onto a strictly larger frame", () => {

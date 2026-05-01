@@ -818,6 +818,11 @@ export default function DemoV2() {
         }
       }
       dragRef.current = null; scheduleAutosave();
+      // Repaint after commit-on-mouseup + reparent — these only sync refs,
+      // not the canvas. Without this, the post-drag layout shows up only on
+      // the next interaction (any click triggers a paint somewhere down its
+      // path), producing visible "frozen at last drag tick" until then.
+      doLayout(); paint();
     }
     const preview = drawPreviewRef.current;
     if (!preview) return;
