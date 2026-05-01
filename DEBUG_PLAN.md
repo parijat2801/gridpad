@@ -336,6 +336,7 @@ Pure test update; no production code change.
 | Post-Fix-5 (52b0964 + d69e9ae) | 569/0 | 131/13 | shouldEscalateResidual + bandSlackRows + bandSiblings. No harness delta — targeted tests 4140/3770 turned out to be Fix 14 territory too. |
 | Post-Fix-10 (07d889d) | 574/0 | **132/12** | Home/End handlers in prose mode. Cleared test 2891. ✓ |
 | Post-Fix-2 (926764c) | 579/0 | 132/12 | clampBandMoveDelta past doc end. No targeted-red-test cleared but defensive correctness fix. |
+| Post-Fix-9 (pending commit) | 580/0 | **134/10** | Commit-on-mouseup pattern in DemoV2.tsx. Cleared tests 2705 + 2723. ✓ |
 
 **Branch:** `harness_fixes` (forked from `main` @ cc70f5c).
 **Pending:** 12 harness failures across 5 root causes (below).
@@ -354,7 +355,7 @@ Pure test update; no production code change.
 | 5 (residual escalation) | DONE (52b0964 + d69e9ae) | 569/0 | targeted -2 tests not cleared (Fix 14 territory) | 0 ✓ proven via 6 unit tests |
 | 10 (Home/End in prose mode) | DONE (07d889d) | 574/0 | -1 (test 2891) | -1 ✓ |
 | 2 (rotation clip past EOF) | DONE (926764c) | 579/0 | no test directly red for data loss past doc end | 0 ✓ defensive correctness via 5 unit tests |
-| 9 (resize undo doesn't shrink doc) | DEFERRED | n/a | -2 (2705, 2723) | — Tried multi-tick history join via Transaction.time + addToHistory.of(true). Didn't auto-join; CM history requires commit-on-mouseup pattern (capture state at mousedown, dispatch synthetic delta-only transaction at mouseup). Reverted attempt. |
+| 9 (resize undo doesn't shrink doc) | DONE 2026-05-01 | 580/0 | -2 (2705, 2723) | -2 ✓ Commit-on-mouseup landed: snapshot stateRef at mousedown, dispatch all ticks with addToHistory(false), at mouseup commit one transaction against snapshot with cumulative final effects + addToHistory(true). |
 | 14 (no crossing prose lines) | ATTEMPTED, REVERTED | n/a | targeted: -2 (3594, 3631) re-attributed; also -2 (4140, 3770) | — Implemented prose-budget clamp via maxUp/maxDown extension to clampBandMoveDelta + countBlankLinesAbove/Below + applyMove pre-mapPos lookup. Sonnet PASS on design. Net 0 harness delta but caused wireframe A to disappear in `drag box down onto another` test. Interaction with mergeOverlappingBands + band rotation needs deeper investigation. Reverted. |
 | 11 (cross-parent drag merges bands) | TODO | n/a | -1 (3507) | — Depends on Fix 14 |
 | 12 (drag-independence between adjacent bands) | TODO | new unit test | -1 (3827) | — Depends on Fix 14 |
@@ -495,34 +496,72 @@ changes ARE part of the merged transaction's changeset, so CodeMirror
 history stores them. On undo, the inverted changeset SHOULD delete the
 extra lines.
 
-**Why it doesn't work:** the resize-grow transaction's changeset is
-`{from: endLine.to, insert: "\n\n"}`. CM history inverts that to
-`{from: endLine.to, to: endLine.to + 2}` — a deletion. **But the
-undo transaction also fires a `restoreFramesEffect` that overrides
-the framesField wholesale.** The framesField after restore has the
-original 4-row band; but the doc still has 10 lines, so the band's
-docOffset/lineCount don't match doc reality. Save serializes the
-4-row band against a 10-line doc → 2 trailing blanks.
+**Confirmed root cause (verified 2026-05-01 via grep):**
+`DemoV2.tsx:709` dispatches the resize drag with
+`Transaction.addToHistory.of(isFirstDragStep)`. Only the very first
+tick of the gesture (`isFirstDragStep === true`) goes into CM
+history; tick 2..N pass `false`.
 
-Need to verify: does `editorUndo` actually emit the inverted changeset
-to the doc, or does it only restore frames? Check
-`editorState.ts` undo wiring.
+So the undo stack contains: ONE transaction whose changeset takes
+the doc from "original (8 lines)" to "after first tick (8 lines + 1
+blank)". Subsequent ticks grow the doc to 10 lines, but those
+changes are NOT in history. Cmd+Z inverts the first-tick transaction
+only → reverts 1 blank line, leaving 1 stray blank. The framesField
+restoreFramesEffect path is fine — it's the doc side that's missing
+9 ticks of history.
 
-**Fix shape:** ensure undo restores BOTH frames AND doc state. If
-`editorUndo` currently uses CM's stock `undo` plus
-`restoreFramesEffect`, the doc DOES revert (CM handles it) — but
-something is preventing the doc revert from going through. Possible
-causes: (a) the resize doc-change is not annotated `addToHistory`, so
-CM doesn't track it; (b) the restoreFramesEffect transaction is
-dispatched in a way that skips CM's standard undo of the doc.
+The plan's speculation about `restoreFramesEffect` overriding the
+doc was incorrect. There is no doc-override; there's just nothing
+in history to undo.
 
-**TDD path:** write a unit test that dispatches resize, calls
-`editorUndo`, and asserts both `getFrames(state).length === 1`,
-`frames[0].gridH === original`, AND `getDoc(state).split("\n").length
-=== originalLineCount`.
+**Right fix — commit-on-mouseup pattern:**
+1. At `onMouseDown` (resize handle hit), capture
+   `mouseDownState = stateRef.current` and `mouseDownFrames =
+   framesRef.current` snapshots.
+2. During `onMouseMove` ticks, dispatch with
+   `addToHistory.of(false)` for ALL ticks (not just non-first).
+   These are visual-only updates; nothing goes into history.
+3. At `onMouseUp`, if `dragRef.hasMoved`:
+   - Compute the cumulative resize delta from the snapshot to
+     current state.
+   - Dispatch ONE transaction containing
+     `[resizeFrameEffect.of({...final dims...}), moveFrameEffect.of(
+     {...final position...})]` against `mouseDownState` as the
+     starting state. This produces a single doc changeset spanning
+     the full resize.
+   - Annotate this single transaction with
+     `addToHistory.of(true)`. Cmd+Z now inverts the entire resize
+     atomically.
+4. Same pattern applies to move drag (`DemoV2.tsx:707-710`) — same
+   bug structure, currently masked by the simpler shape of move
+   doc-changes (rotation is balanced; resize is not).
 
-**Risk:** medium-high. Undo wiring is foundational; a regression here
-breaks far more than 2 tests.
+**Subtleties to verify:**
+- The commit-on-mouseup transaction will NOT see the intermediate
+  doc state. `unifiedDocSync` runs against `tr.startState =
+  mouseDownState`, computes the doc-change for the FINAL gridH, and
+  emits the right number of insert/delete chars. Check that the
+  ranges work — specifically that `frame.docOffset` in
+  `mouseDownState` is still the original, not the mid-drag offset.
+- Tests at `editorState.test.ts:2556` already use
+  `addToHistory.of(i === 0)` patterns — confirm those don't break.
+- The first-tick visual update needs to actually render. Currently
+  the first tick goes into history AND renders; under the new
+  pattern, the first tick just renders. Verify
+  `syncRefsFromState()` after every visual-only dispatch.
+
+**TDD path:**
+1. Vitest test (drives state directly, no canvas): apply 5
+   resizeFrameEffect dispatches with `addToHistory.of(false)` for
+   all, then ONE final dispatch with `addToHistory.of(true)`.
+   Call `editorUndo`. Assert `getDoc(state).split("\n").length ===
+   originalLineCount` AND `frames[0].gridH === originalH`.
+2. Repeat for move-drag with `moveFrameEffect`.
+3. Then update DemoV2.tsx to match.
+
+**Risk:** medium. The commit-on-mouseup pattern is well-defined but
+intrusive — touches resize and move drag in DemoV2.tsx. Verify in
+isolation (vitest first) before changing the canvas handlers.
 
 ---
 
@@ -609,18 +648,41 @@ multi-cell wireframe.
 **The merge is irreversible** — `mergeOverlappingBands` consumes both
 bands and returns a single new one. There is no inverse operation.
 
-**Fix shape:** two options.
-- **A.** Make `mergeOverlappingBands` only fire on EXPLICIT user gestures
-  (e.g., drag-and-drop reparent), not on every intermediate drag-tick.
-  Drag-tick rotations should be allowed to overlap *temporarily* —
-  bands only merge on mouseup if they still overlap.
-- **B.** Move `mergeOverlappingBands` from `framesField.update` to
-  `onMouseUp` so per-tick drag rotations don't trigger it.
+**Fix shape (REVISED 2026-05-01 after solution review):**
 
-**Risk:** medium-high. `mergeOverlappingBands` exists for a reason
-(invariant: "row-partition; bands never share rows"). Moving it to
-mouseup may violate the invariant during drag, causing render glitches.
-Need to study why it's there.
+The plan's options A and B both treat the merge as the bug. The
+merge is not the bug — it's the consequence of allowing the
+dragging band to rotate INTO another band's claim rows. If Fix 14
+(no crossing prose lines + no crossing other-band claims) lands
+correctly, the dragging band physically can't enter another band's
+rows. `mergeOverlappingBands` then never fires in the drag path
+because the precondition (overlap) never occurs.
+
+**The right ordering:** Fix 14 is the prerequisite. Land it, run the
+harness, see if test 3507 still fails. If it does, only THEN reach
+for an explicit fix here.
+
+**If Fix 14 doesn't auto-resolve test 3507 (verify, don't assume):**
+the fix is to make `computeRotationBudget` (Fix 14's helper) treat
+"row claimed by ANY top-level band whose id !== rotating band's id"
+as a wall. That's already part of Fix 14's spec. So if Fix 14 is
+implemented correctly, Fix 11 must be resolved.
+
+**Why option B (move merge to mouseup) is risky:** the row-partition
+invariant ("bands never share rows") is enforced by
+`mergeOverlappingBands` so downstream consumers — serializer, hit-
+tester, mapPos behavior — can assume non-overlapping bands. If two
+bands transiently overlap during drag, hit-test results during the
+drag may be wrong (which band owns row 5?), causing follow-up
+effects to go to the wrong frame. This is exactly the kind of
+inconsistency that produced the Fix 14 first-attempt regression.
+
+**Action for this fix:** none directly. Implement Fix 14, then
+recheck test 3507 specifically. Update this section after that
+verification.
+
+**Risk:** zero if Fix 14 is correct (no code change here). High if
+we attempt to move the merge — defer.
 
 ---
 
@@ -658,19 +720,68 @@ docOffset += 1 → frame moves down.
 for E135** (`drag frame A past frame B: B does not move`). It also
 likely affects test 3749 (Fix 5) at the boundary case.
 
-**Fix shape:** band rotation must be DOC-NEUTRAL for other bands. The
-balanced delete+insert pair must net to zero shift on docOffsets that
-sit OUTSIDE the rotating band's claim. Options:
-- Use `mapPos` with `assoc=-1` on the lower band's docOffset (so the
-  upstream insert doesn't shift it).
-- Or: `unifiedDocSync` could, alongside the rotation, emit a
-  `relocateFrameEffect` for adjacent bands to anchor their docOffsets.
-- Or: rethink — store band identity by *line index* rather than
-  *char offset*, so insertions on other lines don't matter.
+**Diagnosis review (REVISED 2026-05-01):** the probe's stated cause —
+"the OUTER band, which lives at a docOffset BEFORE the promoted
+band's claim, sees only the insert" — is INCONSISTENT with the actual
+rotation handler at `editorState.ts:706-715`.
 
-**Risk:** high. This is the architectural issue at the heart of
-"drag independence" — likely the same root as several E-bucket
-failures and possibly hides under multiple symptoms.
+The rotation emits TWO change specs in this order:
+```
+{ from: endLine.to, to: endLine.to + N }          // delete N chars after band
+{ from: startLine.from, insert: movedChars }      // insert N chars before band
+```
+
+For a band whose `docOffset` is BEFORE `startLine.from` (i.e., ABOVE
+the rotating band): both edits are DOWNSTREAM of its docOffset.
+`mapPos(offset, +1)` returns the offset unchanged. So Outer (above)
+should NOT shift.
+
+For a band whose `docOffset` is AFTER `endLine.to + N` (i.e., BELOW
+the rotating band): both edits are UPSTREAM. The delete removes N
+chars at endLine.to (upstream → offset shifts by -N). The insert
+adds N chars at startLine.from (upstream → offset shifts by +N).
+Net zero, as the comment at line 707-709 promises.
+
+For a band whose `docOffset` is AT `startLine.from` exactly (BAND
+ITSELF): the insert at `startLine.from` with assoc=+1 pushes its
+offset forward by N. That's the rotating band's own offset, which
+is then overwritten by `relocateFrameEffect` at line 733. ✓
+
+**So the probe's reported symptom — Outer above shifts down 40px —
+should not happen via rotation alone.** Either:
+1. The probe interpretation is wrong about which band is "above."
+2. The shift comes from `mergeOverlappingBands` (Fix 11 territory),
+   not mapPos.
+3. The probe captured a state where Outer isn't actually above —
+   e.g., promote initially placed the new band at the SAME row as
+   Outer, triggering a merge.
+4. There's a code path that reorders or merges the change specs
+   before mapPos sees them.
+
+**Required investigation BEFORE picking a fix:**
+1. Re-instrument the probe (or write a vitest equivalent of it).
+   Capture `tr.changes.toJSON()` AND `tr.startState.field(
+   framesField)` for the failing tick.
+2. Capture `mapPos(outer.docOffset, +1)` directly. If it's nonzero,
+   the rotation handler's specs are different from what's documented
+   above. If it's zero, the shift comes from elsewhere
+   (`mergeOverlappingBands`, the ordering of `extraEffects`, or
+   `applyMove` itself).
+3. Only after this is verified, pick a fix.
+
+**Possible fixes once root cause is confirmed:**
+- If mapPos shifts unexpectedly: change `mapPos(offset, +1)` to
+  `mapPos(offset, -1)` for offsets ABOVE the rotating band's
+  startLine; this is non-trivial because `framesField.update` runs
+  AFTER `unifiedDocSync` but doesn't know which effects are
+  rotations.
+- If shift comes from merge: defer to Fix 11.
+- If shift comes from `extraEffects` ordering: reorder so
+  `relocateFrameEffect` runs before mapPos remaps other frames.
+
+**Risk:** high. Don't pick a fix yet — investigate first. The
+plan's three options (mapPos assoc=-1, relocate-adjacent-bands,
+line-index-identity) are all premature.
 
 ---
 
@@ -702,20 +813,44 @@ deadband (matches Figma).
 `W1` at a prose line before it can separate, Rule 14 wins — `W1`
 stops at the prose wall and never separates.
 
-**Fix shape (no architectural rewrite):**
-- In `onMouseMove`'s drag handler (`DemoV2.tsx:680-690`), when
-  `clampedDRow === 0` AND `residualDRow !== 0` AND the band has
-  more than one wireframe child, do NOT escalate to a band-level
-  `moveFrameEffect`. Instead, emit a `splitBandEffect` (new effect
-  in `editorState.ts` framesField) that:
-  1. Removes the dragged child from `B`.
-  2. Creates a new band `B'` at `B.gridRow + residualDRow` with
-     just the dragged child as its lone wireframe child.
-  3. Recomputes `B`'s claim from its remaining children.
-  4. Emits matching doc-changes via `unifiedDocSync` to insert
-     blank rows where `B'` lives now.
-- Single-child bands keep the existing residual-escalation behavior
-  (Fix 5 still applies for the "rect at wall" case).
+**Fix shape (REVISED 2026-05-01 after solution review):**
+
+The original proposal — a new `splitBandEffect` — duplicates work that
+`reparentFrameEffect` with `newParentId === null` already does. Look
+at `editorState.ts:256-283`: promote-to-top-level wraps the
+extracted child in a fresh full-width band at the target absolute
+row, prunes the now-empty source band if needed, and inserts blank
+claim lines via `unifiedDocSync`'s `reparentFrameEffect` doc-change
+branch. That IS "split band on drag past edge."
+
+**Why the current code never triggers it during drag:** the drag
+handler (`DemoV2.tsx:680-705`) only emits `moveFrameEffect`s.
+`reparentFrameEffect` is gated by `decideReparent` on `mouseup`
+(`DemoV2.tsx:746-770`), which checks for hit-target, not for "rect
+escaped its band." So a multi-sibling band always sees the residual
+escalate to band rotation (Fix 5 explicitly excludes multi-sibling
+bands from residual-drop, see `shouldEscalateResidual` at
+`editorState.ts:1734`: `if (bandSiblings > 1) return false`).
+
+**Right approach:**
+1. In the drag handler, when `clampedDRow === 0 && residualDRow !==
+   0 && bandSiblings > 1`, REPLACE the band-level `moveFrameEffect`
+   with `applyReparentFrame(state, draggedId, null, aRow, aCol, cw,
+   ch)` where `aRow = found.absY/ch + residualDRow`.
+2. The existing promote-path handles claim-row insertion and source-
+   band cleanup. No new effect.
+3. Critical ordering: Fix 14 must land first. Without Fix 14, the
+   newly-promoted band lands wherever the cursor is, which can be
+   inside another band's claim or past the doc end. Fix 14's
+   rotation-budget clamp gives the bound for `aRow`.
+
+**Mid-drag-promote risk to verify:** after the promote, the new band
+exists alongside the old band on the next mousemove tick. The drag
+handler holds `dragRef.frameId = draggedId`. The next tick's
+`findContainingBandDeep(draggedId)` returns the NEW band. Check
+that this is true — if `dragRef`'s captured `startFrameY` etc. are
+still in old-band coordinates, the next tick's clamp math could
+jump. May need to re-sync `dragRef` after the promote.
 
 **TDD path:**
 1. Red harness test: TWO_RECTS_ONE_BAND fixture; drag `W1` down past
@@ -723,12 +858,13 @@ stops at the prose wall and never separates.
    stays at original row.
 2. Red harness test (upward): same fixture, drag `W1` up past `B`'s
    top; assert `W1` lands above `B`, `W2` unmoved.
-3. Vitest unit test for `splitBandEffect` reducer.
+3. Vitest unit test for the drag-handler decision: given band-edge +
+   residual + bandSiblings > 1, returns "promote" instead of "rotate
+   band."
 
-**Risk:** medium. Touches the residual-escalation rule (Fix 5
-territory) and adds a new framesField effect. Order matters: do
-Fix 5 first (drop residual when `clampedDRow === 0` for *single*-
-child bands), then Fix 13 (split-on-residual for *multi*-child bands).
+**Risk:** medium. No new effect — reuses promote path. Main risk is
+`dragRef` coherence post-promote (see "Mid-drag-promote risk" above).
+Order: Fix 14 first, then Fix 13.
 
 ---
 
@@ -754,80 +890,100 @@ NOT subject to this rule (renesting works exactly as if both
 wireframes were in the same band — tree topology is independent
 of vertical motion).
 
-**Fix shape:**
-- Add helper `proseBoundsFor(frames, doc, frameId)` →
-  `{ minGridRow, maxGridRow }`. Walks the doc lines around the
-  frame's claim, finds nearest non-blank line that's not part of
-  any wireframe's claim. Returns the row range the frame can
-  occupy.
-- In `onMouseMove` drag handler, after computing `dRow`, clamp
-  the new `gridRow` against `proseBoundsFor(...)`.
-- Reparent-into-target (`onMouseUp`'s reparent branch) skips
-  this clamp entirely — drop position is determined by cursor
-  position, which can be on the other side of prose.
+**Fix shape (REVISED 2026-05-01 after solution review):**
+
+The original proposal — adding a `proseBoundsFor` helper and clamping
+`gridRow` inside `onMouseMove` — is the WRONG LAYER. That's why the
+last attempt regressed: it clamped frame state in `applyMove` while
+`unifiedDocSync` ran a separate clamp via its blank-line walk
+(`editorState.ts:689-703`). Two clamp authorities on different
+`tr.startState` snapshots disagreed; `mergeOverlappingBands` then ran
+on inconsistent state.
+
+**The clamp already half-exists.** `unifiedDocSync` walks blank lines
+above (`maxUp`) and below (`maxDown`) the rotating band's claim and
+breaks at the first non-blank line. That break IS the prose-wall
+clamp for adjacent prose. What's missing: it does NOT stop at lines
+owned by ANOTHER band's claim — those are also walls.
+
+**Right approach (single source of truth):**
+1. Extract a pure helper `computeRotationBudget(frames, doc, frameId)
+   → { maxUp, maxDown }`. Walks doc lines around the frame's claim,
+   stops at the first row that is EITHER non-blank OR claimed by a
+   different top-level band (`findBandAtRow` on the candidate row).
+2. Use this helper in `unifiedDocSync` to replace the existing
+   inline `maxUp`/`maxDown` walks (lines 689-703 of editorState.ts).
+3. Mirror the same clamp in `framesField.update`'s `applyMove` so
+   `frame.gridRow` and the doc rotation can never disagree. Either
+   call the helper twice (frame and doc sides), or have
+   `unifiedDocSync` emit an annotation carrying `effectiveDRow` and
+   `applyMove` reads it from the transaction.
+4. Reparent path (`onMouseUp`) is unchanged — it doesn't go through
+   `moveFrameEffect`, so the clamp doesn't apply to drop-on-target.
+
+**Why this avoids last attempt's regression:** there is one walk, one
+budget, one number. `mergeOverlappingBands` only runs on `applyMove`'s
+result, which now matches the doc-side rotation's clamp by
+construction. No transient overlap, no merge.
 
 **TDD path:**
-1. Red harness test: wireframe + prose line + wireframe fixture;
+1. Vitest unit test for `computeRotationBudget`: covers (a) blank-
+   line walls, (b) non-blank prose walls, (c) other-band-claim
+   walls, (d) doc start/end as walls.
+2. Red harness test: wireframe + prose line + wireframe fixture;
    drag upper wireframe down 100px; assert it clamps at the prose
    line, doesn't merge with lower wireframe.
-2. Red harness test (upward): drag lower wireframe up; assert
+3. Red harness test (upward): drag lower wireframe up; assert
    clamp at prose above.
-3. Green test: reparent-across-prose still works — drop wireframe
+4. Green test: reparent-across-prose still works — drop wireframe
    onto a target across a prose line; assert nesting succeeds.
 
-**Risk:** medium. New clamp interacts with Fix 2 (rotation past
-EOF) and Fix 13 (band separation). Order: do Fix 2 first
-(simpler, covers EOF case), then Fix 14 (covers prose-line case),
-then Fix 13 (covers band-separation, which already needs Fix 14
-to know where the wall is).
+**Risk:** medium. The change replaces inline blank-line walks with
+a helper call, which is mostly mechanical IF the helper matches the
+existing semantics for the all-blank case. The new "stop at other-
+band claim" rule is additive. No new effects, no new fields. Order:
+Fix 2 first (already done), then Fix 14, then Fix 13.
 
 ---
 
-## Recommended fix order (next session)
+## Recommended fix order (REVISED 2026-05-01 after solution review)
 
-**This session shipped Fix 3, 5, 10, 2.** Fix 14 attempted, reverted — see ATTEMPTED row in matrix above. Fix 9 deferred.
+**This session shipped Fix 3, 5, 10, 2.** Fix 14 attempted, reverted.
+Fix 9 deferred. Each remaining fix's solution was reviewed against
+the actual code; sections above record the revised approach.
 
-Remaining:
+**New order, justified by the review:**
 
-1. **Fix 14** (no crossing prose lines) — RETRY needed.
-   Last attempt: extended `clampBandMoveDelta` with maxUp/maxDown,
-   added `countBlankLinesAbove`/`countBlankLinesBelow`, wired into
-   `framesField.update`'s applyMove with a pre-mapPos lookup against
-   `tr.startState.field(framesField)`. Sonnet design-review PASS.
-   Vitest 585/0 (added 6 unit tests for prose-clamp).
-   But harness regressed: `large-drag` and `drag box down onto another`
-   broke — wireframe A literally disappeared in the latter, with a
-   stray `┌────┐` ghost at the bottom. Suggests interaction between
-   the new clamp and `mergeOverlappingBands`/band rotation.
-   Approach to try next: don't clamp the FRAME's gridRow at all in
-   applyMove; instead, ensure `unifiedDocSync`'s rotation budget is
-   the only clamp authority and that frame.gridRow is updated
-   consistently with the doc-side rotation via `relocateFrameEffect`.
-   Keep `countBlankLinesAbove`/`countBlankLinesBelow` and
-   `clampBandMoveDelta(maxUp, maxDown)` — they work; just rewire
-   how they're applied.
-   Once Fix 14 lands, expect to clear: 3594, 3631 (re-attributed
-   from Fix 3), 4140 (re-attributed from Fix 5), and the test
-   updates needed for `large-drag` + `drag box down onto another`
-   (these expected pre-Fix-14 cross-prose behavior; need spec-update).
+1. **Fix 9** (resize undo doc-state restore) — INDEPENDENT, do first.
+   Root cause confirmed via grep: `DemoV2.tsx:709` uses
+   `addToHistory.of(isFirstDragStep)`, so only tick 1 of a resize is
+   in history. Fix is the commit-on-mouseup pattern (snapshot at
+   mousedown, visual-only ticks, single committed transaction at
+   mouseup). Self-contained — does not touch the rotation handler or
+   merge logic. Land it independent of Fix 14.
 
-2. **Fix 13** (sibling-band separation on continued drag) — depends
-   on Fix 14 landing first.
+2. **Fix 14** (no crossing prose lines) — RETRY with single source
+   of truth. Build pure helper `computeRotationBudget` that walks
+   blank lines around the band's claim and stops at non-blank prose
+   OR another top-level band's claim. Use it in BOTH
+   `unifiedDocSync` (replacing the inline maxUp/maxDown walks) AND
+   `framesField.update`'s applyMove. Last attempt failed because
+   two clamp authorities disagreed; this approach has one
+   authority called from two sites.
 
-3. **Fix 9** (resize undo doc-state restore) — DEFERRED.
-   Approach to try next: commit-on-mouseup pattern. At mousedown,
-   capture `stateRef.current` snapshot. During drag, dispatch with
-   `addToHistory.of(false)` (visual-only). At mouseup, dispatch ONE
-   transaction whose changes equal the cumulative delta from
-   snapshot to current — this single transaction goes into history
-   and undoes atomically. Don't use Transaction.time auto-join; CM
-   doesn't reliably join transactions with restoreFramesEffect
-   inverted-effects.
+3. **Fix 13** (sibling-band separation) — depends on Fix 14. Reuses
+   existing `applyReparentFrame(state, id, null, ...)` from drag
+   handler when `clampedDRow=0 && residualDRow!=0 && bandSiblings>1`.
+   No new effect.
 
-4. **Fix 12** (drag-independence between adjacent bands) — re-evaluate
-   after Fix 13/14.
+4. **Fix 12** (drag-independence) — INVESTIGATE, don't fix yet. The
+   probe diagnosis at line 645-651 of this doc is internally
+   inconsistent with the actual rotation handler. Re-instrument
+   to capture `tr.changes.toJSON()` and `mapPos` directly before
+   choosing a fix.
 
-5. **Fix 11** (cross-parent drag merges bands) — depends on 12/13/14.
+5. **Fix 11** (cross-parent merge) — likely auto-resolved by Fix 14.
+   If 3507 still fails after Fix 14, revisit.
 
 Final target: 144/0 + Fix 13/14 tests green.
 

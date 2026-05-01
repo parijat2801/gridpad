@@ -171,6 +171,9 @@ interface DragState {
   // by shouldEscalateResidual to avoid rotating the band when the rect
   // was at the wall from the first tick.
   gestureHadClampedMotion?: boolean;
+  // Fix 9: snapshot of EditorState at mousedown. Used by commitCumulativeDrag
+  // to apply a single history-recorded transaction from pre-drag → post-drag.
+  mouseDownState?: EditorState;
 }
 
 type ToolName = "select" | "rect" | "line" | "text";
@@ -509,7 +512,7 @@ export default function DemoV2() {
       if (sel && sel.frame.content?.type !== "text") {
         const handleHit = hitTestHandle(computeHandleRects(sel.absX, sel.absY, sel.frame.w, sel.frame.h), px, py);
         if (handleHit) {
-          dragRef.current = { frameId: sel.frame.id, startX: px, startY: py, startFrameX: sel.absX, startFrameY: sel.absY, startFrameW: sel.frame.w, startFrameH: sel.frame.h, hasMoved: false, resizeHandle: handleHit };
+          dragRef.current = { frameId: sel.frame.id, startX: px, startY: py, startFrameX: sel.absX, startFrameY: sel.absY, startFrameW: sel.frame.w, startFrameH: sel.frame.h, hasMoved: false, resizeHandle: handleHit, mouseDownState: stateRef.current };
           paint(); return;
         }
       }
@@ -560,6 +563,7 @@ export default function DemoV2() {
           startFrameW: found.frame.w, startFrameH: found.frame.h,
           hasMoved: false,
           deferredDrillHit: decision.kind === "preserveSelection" ? hit : undefined,
+          mouseDownState: stateRef.current,
         };
       }
       paint();
@@ -642,7 +646,7 @@ export default function DemoV2() {
       ];
       stateRef.current = stateRef.current.update({
         effects,
-        annotations: [Transaction.addToHistory.of(isFirstDragStep)],
+        annotations: [Transaction.addToHistory.of(false)],
       }).state;
       syncRefsFromState();
     } else {
@@ -706,13 +710,49 @@ export default function DemoV2() {
         if (effects.length > 0) {
           stateRef.current = stateRef.current.update({
             effects,
-            annotations: [Transaction.addToHistory.of(isFirstDragStep)],
+            annotations: [Transaction.addToHistory.of(false)],
           }).state;
           syncRefsFromState();
         }
       }
     }
     doLayout(); paint();
+  }
+
+  // Fix 9: apply one history-recorded transaction from mouseDownState to the
+  // current frame positions so undo reverts the full drag atomically.
+  function commitCumulativeDrag(frameId: string, snapshot: EditorState, isResize: boolean) {
+    const snapFrames = getFrames(snapshot);
+    const curFrames = framesRef.current;
+    const snapFound = findFrameById(snapFrames, frameId);
+    const curFound = findFrameById(curFrames, frameId);
+    if (!snapFound || !curFound) return;
+    const cw = cwRef.current, ch = chRef.current;
+    const effects: StateEffect<unknown>[] = [];
+    const dCol = curFound.frame.gridCol - snapFound.frame.gridCol;
+    const dRow = curFound.frame.gridRow - snapFound.frame.gridRow;
+    if (dCol !== 0 || dRow !== 0) {
+      effects.push(moveFrameEffect.of({ id: frameId, dCol, dRow, charWidth: cw, charHeight: ch }));
+    }
+    if (isResize) {
+      effects.push(resizeFrameEffect.of({ id: frameId, gridW: curFound.frame.gridW, gridH: curFound.frame.gridH, charWidth: cw, charHeight: ch }));
+    }
+    // Band-row residual: detect if the containing band itself moved.
+    const snapBand = findContainingBandDeep(snapFrames, frameId);
+    const curBand = findContainingBandDeep(curFrames, frameId);
+    if (snapBand && curBand && snapBand.id === curBand.id) {
+      const bandDRow = curBand.gridRow - snapBand.gridRow;
+      if (bandDRow !== 0) {
+        effects.push(moveFrameEffect.of({ id: snapBand.id, dCol: 0, dRow: bandDRow, charWidth: cw, charHeight: ch }));
+      }
+    }
+    if (effects.length === 0) return;
+    const committed = snapshot.update({
+      effects,
+      annotations: [Transaction.addToHistory.of(true)],
+    }).state;
+    stateRef.current = committed;
+    syncRefsFromState();
   }
 
   function onMouseUp(e?: React.MouseEvent) {
@@ -737,6 +777,12 @@ export default function DemoV2() {
           }).state;
           paint();
         }
+      }
+      // Fix 9: commit cumulative drag as a single history entry.
+      // All mousemove ticks use addToHistory=false; here we apply the net
+      // delta from mouseDownState so undo reverts the full gesture atomically.
+      if (dragRef.current.hasMoved && dragRef.current.mouseDownState) {
+        commitCumulativeDrag(dragRef.current.frameId, dragRef.current.mouseDownState, !!dragRef.current.resizeHandle);
       }
       // Reparent on drop: if mouseup cursor lands inside a different
       // top-level frame than where the dragged frame's current parent is,

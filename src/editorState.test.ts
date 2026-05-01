@@ -510,6 +510,55 @@ describe("drag undo — history=false then history=true (Phase 1)", () => {
     expect(getFrames(undone)[0].w).toBe(100);
     expect(getFrames(undone)[0].h).toBe(100);
   });
+
+  // Fix 9: doc-state must revert atomically along with frames after a multi-
+  // tick resize. The fix is the commit-on-mouseup pattern: drag ticks dispatch
+  // with addToHistory(false) (visual-only, no history), then mouseup dispatches
+  // ONE transaction against the mousedown snapshot containing the cumulative
+  // final effects with addToHistory(true). Undo inverts the single committed
+  // transaction → frames AND doc revert together.
+  //
+  // This test simulates that pattern at the state layer (no canvas).
+  it("commit-on-mouseup: multi-tick resize undo reverts doc AND frames", () => {
+    const cw = 9.6, ch = 18;
+    const SIMPLE_BOX = "Prose above\n\n┌────┐\n│    │\n│    │\n└────┘\n\nProse below";
+    const initial = createEditorStateUnified(SIMPLE_BOX, cw, ch);
+    const id = getFrames(initial)[0].id;
+    const linesBefore = getDoc(initial).split("\n").length;
+    const gridHBefore = getFrames(initial)[0].gridH;
+
+    // Snapshot at "mousedown" — what commitCumulativeDrag captures.
+    const snapshot = initial;
+
+    // Visual-only ticks: 3 tick dispatches, all addToHistory=false.
+    let state = initial;
+    for (const targetH of [5, 6, 7]) {
+      state = state.update({
+        effects: resizeFrameEffect.of({ id, gridW: 6, gridH: targetH, charWidth: cw, charHeight: ch }),
+        annotations: Transaction.addToHistory.of(false),
+      }).state;
+    }
+    // Sanity: doc and frame grew through visual ticks.
+    expect(getDoc(state).split("\n").length).toBe(linesBefore + 3);
+    expect(getFrames(state)[0].gridH).toBe(7);
+
+    // Commit-on-mouseup: dispatch ONE transaction against the snapshot with
+    // the cumulative final effect, addToHistory=true.
+    const finalFrame = getFrames(state)[0];
+    const committed = snapshot.update({
+      effects: resizeFrameEffect.of({
+        id, gridW: finalFrame.gridW, gridH: finalFrame.gridH, charWidth: cw, charHeight: ch,
+      }),
+      annotations: Transaction.addToHistory.of(true),
+    }).state;
+    expect(getDoc(committed).split("\n").length).toBe(linesBefore + 3);
+    expect(getFrames(committed)[0].gridH).toBe(7);
+
+    // Undo inverts the single committed transaction atomically.
+    const undone = editorUndo(committed);
+    expect(getFrames(undone)[0].gridH).toBe(gridHBefore);
+    expect(getDoc(undone).split("\n").length).toBe(linesBefore);
+  });
 });
 
 // ── Task 4: Unified undo/redo ────────────────────────────────────────────────
