@@ -353,8 +353,10 @@ Pure test update; no production code change.
 | 10 (Backspace at line-2 home) | TODO | n/a | -1 (2891) | — |
 | 11 (cross-parent drag merges bands) | TODO | n/a | -1 (3507) | — |
 | 12 (drag-independence between adjacent bands) | TODO | new unit test | -1 (3827) | — |
+| 13 (sibling-band separation on continued drag) | TODO (NEW) | new unit test | new red harness tests | — |
+| 14 (no crossing prose lines) | TODO (NEW) | new unit test | new red harness tests | — |
 
-**Final target:** harness 144/0 (zero failures).
+**Final target:** harness 144/0 (zero failures) + new Fix 13/14 tests green.
 
 ---
 
@@ -667,6 +669,115 @@ failures and possibly hides under multiple symptoms.
 
 ---
 
+### Fix 13 — sibling wireframes in same band move together (NEW, user-reported)
+
+**Tests:** to be added (red harness tests, expected to fail until fix).
+
+**Spec (from user):** "A wireframe knows how many bands it needs, so if a
+user continues to pull on a wireframe, their bands can separate."
+
+**User-observable failure:** two wireframes `W1` and `W2` live on the
+same band `B` (e.g., side-by-side, sharing a row range). User clicks
+`W1` and drags it down. Currently, once `W1` reaches `B`'s vertical
+edge, the residual escalates to a `moveFrameEffect` on `B` itself
+(`DemoV2.tsx:688-690`). Band `B` rotates → `W2` visually moves down
+with `W1`. Sibling-independence is broken inside the same band.
+
+**Expected behavior:** `W1` separates from `B` into its own band at
+the new position; `W2` and any other siblings stay put on the
+original `B` (which shrinks/splits accordingly). The wireframe owns
+its `lineCount`; the band is just a grouping abstraction that
+contains whatever children currently claim those rows.
+
+**Trigger threshold:** immediate — as soon as `W1`'s desired
+`gridRow` exits `B`'s claim by 1 row, it separates. No deliberate
+deadband (matches Figma).
+
+**Interaction with Rule 14 (no crossing prose):** if Rule 14 clamps
+`W1` at a prose line before it can separate, Rule 14 wins — `W1`
+stops at the prose wall and never separates.
+
+**Fix shape (no architectural rewrite):**
+- In `onMouseMove`'s drag handler (`DemoV2.tsx:680-690`), when
+  `clampedDRow === 0` AND `residualDRow !== 0` AND the band has
+  more than one wireframe child, do NOT escalate to a band-level
+  `moveFrameEffect`. Instead, emit a `splitBandEffect` (new effect
+  in `editorState.ts` framesField) that:
+  1. Removes the dragged child from `B`.
+  2. Creates a new band `B'` at `B.gridRow + residualDRow` with
+     just the dragged child as its lone wireframe child.
+  3. Recomputes `B`'s claim from its remaining children.
+  4. Emits matching doc-changes via `unifiedDocSync` to insert
+     blank rows where `B'` lives now.
+- Single-child bands keep the existing residual-escalation behavior
+  (Fix 5 still applies for the "rect at wall" case).
+
+**TDD path:**
+1. Red harness test: TWO_RECTS_ONE_BAND fixture; drag `W1` down past
+   `W2`; assert post-save tree has two distinct top-level bands; `W2`
+   stays at original row.
+2. Red harness test (upward): same fixture, drag `W1` up past `B`'s
+   top; assert `W1` lands above `B`, `W2` unmoved.
+3. Vitest unit test for `splitBandEffect` reducer.
+
+**Risk:** medium. Touches the residual-escalation rule (Fix 5
+territory) and adds a new framesField effect. Order matters: do
+Fix 5 first (drop residual when `clampedDRow === 0` for *single*-
+child bands), then Fix 13 (split-on-residual for *multi*-child bands).
+
+---
+
+### Fix 14 — wireframe drag must not cross a prose line (NEW, user-reported)
+
+**Tests:** to be added (red harness tests, expected to fail until fix).
+
+**Spec (from user):** "No wireframe can be taken across a prose
+boundary."
+
+**User-observable failure:** wireframe `W` lives in band `B1`. Below
+`B1` is a non-blank prose line (e.g., "Some heading"), then band `B2`.
+User drags `W` down past the prose line. Currently, `W` either: (a)
+rotates `B1` past the prose, eating prose chars (Fix 2 territory);
+(b) merges `B1` and `B2` via `mergeOverlappingBands` (Fix 11). Both
+are wrong — the prose line is a wall.
+
+**Expected behavior:** `W`'s vertical motion is bounded by the
+nearest non-blank, non-wireframe line above and below its current
+claim. The drag clamps at the wall (Figma-style — cursor moves
+past, frame doesn't follow). Reparent-into-target on mouseup is
+NOT subject to this rule (renesting works exactly as if both
+wireframes were in the same band — tree topology is independent
+of vertical motion).
+
+**Fix shape:**
+- Add helper `proseBoundsFor(frames, doc, frameId)` →
+  `{ minGridRow, maxGridRow }`. Walks the doc lines around the
+  frame's claim, finds nearest non-blank line that's not part of
+  any wireframe's claim. Returns the row range the frame can
+  occupy.
+- In `onMouseMove` drag handler, after computing `dRow`, clamp
+  the new `gridRow` against `proseBoundsFor(...)`.
+- Reparent-into-target (`onMouseUp`'s reparent branch) skips
+  this clamp entirely — drop position is determined by cursor
+  position, which can be on the other side of prose.
+
+**TDD path:**
+1. Red harness test: wireframe + prose line + wireframe fixture;
+   drag upper wireframe down 100px; assert it clamps at the prose
+   line, doesn't merge with lower wireframe.
+2. Red harness test (upward): drag lower wireframe up; assert
+   clamp at prose above.
+3. Green test: reparent-across-prose still works — drop wireframe
+   onto a target across a prose line; assert nesting succeeds.
+
+**Risk:** medium. New clamp interacts with Fix 2 (rotation past
+EOF) and Fix 13 (band separation). Order: do Fix 2 first
+(simpler, covers EOF case), then Fix 14 (covers prose-line case),
+then Fix 13 (covers band-separation, which already needs Fix 14
+to know where the wall is).
+
+---
+
 ## Recommended fix order (next session)
 
 1. **Fix 3** (reparent guard, leaf-vs-leaf) — small, clears 2. Low risk.
@@ -674,14 +785,18 @@ failures and possibly hides under multiple symptoms.
 3. **Fix 10** (Backspace at column 0) — small, clears 1. Low risk.
 4. **Fix 2** (band gridRow clamp past doc end) — TDD-first. Clears 3-4. Medium risk.
 5. **Fix 9** (resize undo doc-state restore) — TDD-first. Clears 2. Medium-high risk.
-6. **Fix 12** (drag-independence between adjacent bands) — last,
-   biggest design change. Clears 1 directly, may also affect Fix 5
-   correctness. High risk.
-7. **Fix 11** (cross-parent drag merges bands) — depends on Fix 12;
-   merge logic should be re-examined once drag-independence is fixed.
-   Clears 1. High risk.
+6. **Fix 14** (no crossing prose lines) — NEW, user-reported. TDD-first.
+   Clears new red tests. Medium risk. Do before Fix 13 (Fix 13 needs
+   to know where the wall is).
+7. **Fix 13** (sibling-band separation on continued drag) — NEW,
+   user-reported. TDD-first. Clears new red tests. Medium risk.
+   Likely subsumes Fix 12 once it lands.
+8. **Fix 12** (drag-independence between adjacent bands) — re-evaluate
+   after Fix 13/14; may already be fixed. High risk if still needed.
+9. **Fix 11** (cross-parent drag merges bands) — depends on 12/13/14;
+   merge logic should be re-examined once those land. High risk.
 
-Final target: 144/0 (no failures).
+Final target: 144/0 (zero failures) plus new Fix 13/14 tests passing.
 
 After each commit: run `npx vitest run` and `npx playwright test e2e/harness.spec.ts`.
 
@@ -696,157 +811,3 @@ After each commit: run `npx vitest run` and `npx playwright test e2e/harness.spe
 - `e2e/probe-investigations.spec.ts` — five INV probes for Fixes 2/9/10/11/12 (delete after fixes commit).
 
 These can be deleted before merge, or kept as regression-watch tests.
-
----
-
-## Revision — 2026-04-30: spike outcome + revised architecture
-
-### Spike outcome (read-only investigation, verified)
-
-A spike was attempted to replace band rotation with derived bands +
-doc projection. The investigation surfaced ONE fatal flaw and TWO
-secondary obstacles before any code shipped:
-
-**Fatal — top-level wireframe immobility under the naive rewrite.**
-`wrapAsBand` (frame.ts:550-596) sets `band.gridH = maxRow - minRow`,
-i.e., the band is exactly as tall as the union of its children. For
-a single-child band wrapping a top-level wireframe, `band.gridH ===
-child.gridH`, so the child's clamp range inside the band
-(DemoV2.tsx:676-682) is `[0, 0]` — zero slack in either direction.
-Today, `clampedDRow === 0` and `residualDRow === dRow`; line
-688-690 escalates the full delta to the band's id, and
-`unifiedDocSync` rotates newlines around the band's claim, making
-the wireframe appear to move. **If you delete the residual
-escalation (the spike's "drop residual silently" instruction), every
-top-level wireframe freezes in place — they have no other path to
-motion.** Manually verified by reading frame.ts:540-596 and
-DemoV2.tsx:640-704.
-
-**Secondary obstacles** (would have surfaced during implementation):
-- `unifiedDocSync` emits `relocateFrameEffect` keyed by band id; if
-  recompute regenerates band ids, the relocate effect targets a
-  ghost.
-- `framesField.update` runs on every transaction, including pure
-  prose edits; `recomputeBands` would need an early-out to avoid
-  thrashing band identity unnecessarily.
-
-**Conclusion:** the full doc-projection rewrite is too risky in a
-3-hour spike. A SMALLER, surgical version of the same idea is
-viable.
-
-### Revised architecture — recomputeBands replaces mergeOverlappingBands
-
-Keep band rotation in `unifiedDocSync` and the residual escalation in
-`DemoV2.tsx`. They're load-bearing for top-level wireframe motion.
-
-**The change:** replace `mergeOverlappingBands` (called from
-`framesField.update`, editorState.ts:~181) with a `recomputeBands(
-frames, charWidth, charHeight, docWidthCols)` pass that:
-
-1. Walks top-level frames.
-2. Ungroups every band's children back to absolute grid coords.
-3. Re-groups via the existing `groupIntoContainers` logic (rows that
-   overlap → same band).
-4. Re-wraps each group via `wrapAsBand`.
-5. Returns a fresh frames[] array.
-
-**Early-out:** only run when the transaction had at least one frame
-effect (move, resize, reparent, etc.). Pure prose edits skip the
-recompute.
-
-**Why this clears Fix 11 (cross-parent drag merges bands):** today
-`mergeOverlappingBands` greedily fuses any bands whose row ranges
-touch, even mid-drag. With `recomputeBands`, mid-drag rotations that
-TEMPORARILY put bands adjacent don't merge — the recompute sees that
-each band's children belong to distinct logical groupings and keeps
-them separate. The merge only happens when children's rows actually
-overlap.
-
-**Why this clears Fix 12 (drag-independence between adjacent bands):**
-recomputed bands get fresh `docOffset` values derived from their
-children's claims (`wrapAsBand` line 564). Today's `mapPos` cascade
-shifts an adjacent band's docOffset when an upstream insert lands;
-with recompute, the docOffset is REDERIVED from the post-edit child
-positions, breaking the cascade.
-
-**Risk:** medium. Touches the band-identity invariant — band ids no
-longer persist across transactions. If anything in the codebase
-relies on stable band ids (selection state across edits, undo
-references, animation keys), it will break. Need to grep before
-shipping.
-
-### Mini-spike (proof-of-concept, before full plan execution)
-
-**Where:** `.claude/worktrees/spike-derived-bands` (already exists).
-**Time budget:** 90 minutes.
-**Scope:**
-1. Add `recomputeBands` to `src/frame.ts`.
-2. Replace `mergeOverlappingBands` call in `framesField.update` with
-   `recomputeBands` + early-out.
-3. Don't touch band rotation, doc projection, escalation, or
-   anything else.
-
-**Pass/fail signals:**
-- ✅ vitest stays at 559/0 (or drops by ≤2 with a clear explanation).
-- ✅ harness 131/13 → some delta. Watch test 3507 (Fix 11) and 3827
-  (Fix 12).
-- ✅ Fix 11 (3507) flips GREEN → strong signal architectural claim
-  holds.
-- ✅ Fix 12 (3827) flips GREEN → recompute also fixes mapPos cascade.
-- ❌ Vitest drops >5 OR harness <125 → abandon, go fully surgical.
-- ⚠️ 11/12 stay red, no regression → recompute alone insufficient,
-  surgical fixes for 11/12 still needed.
-
-### Two new issues from user (2026-04-30)
-
-**Issue 1 — Fix 13: band separation on continued drag.** Two
-wireframes sharing a band can't be moved independently today. User
-spec: a wireframe knows its own lineCount; if dragged past the band's
-edge, the band SPLITS — the dragged wireframe lands on its own claim
-below (or above), and the original band shrinks to wrap the
-remaining children. The other children must NOT move (visually or in
-gridRow).
-
-This falls out for free from `recomputeBands` — once the dragged
-child's gridRow no longer overlaps siblings', the recompute splits
-the band naturally. So Fix 13 is mostly a consequence of the
-mini-spike's success.
-
-**Issue 2 — Fix 14: no wireframe across prose.** A wireframe's
-vertical motion is bounded by the nearest non-blank, non-wireframe
-prose line above and below its current claim. Reparent-into-target
-ignores this rule (drops are tree topology, not vertical motion).
-
-This requires a new clamp added to the move handler. Not a
-consequence of recompute — separate concern.
-
-**Trigger threshold:** immediate (Figma-style). No deliberate
-threshold for separation.
-
-**Conflict resolution:** when Rule 13 (separation) and Rule 14
-(prose-clamp) conflict — e.g., dragging a child past the band edge
-into prose immediately below — Rule 14 wins (drag clamps at the
-prose row).
-
-### Revised fix order
-
-1. **Fix 3** (reparent guard, leaf-vs-leaf) — small, clears 2. Low
-   risk. **Independent of architecture work.**
-2. **Fix 5** (residual escalation guard at wall) — small, clears 2.
-   Medium risk.
-3. **Fix 10** (Backspace at column 0) — small, clears 1. Low risk.
-4. **Mini-spike: recomputeBands replacement** — proves the
-   architectural claim. Time-boxed 90 min.
-5. **If spike succeeds:** ship recomputeBands. Re-evaluate Fix 11,
-   Fix 12, Fix 13 — likely cleared or significantly reduced.
-6. **Fix 14** (no-cross-prose clamp) — independent of recompute.
-   Add to move handler.
-7. **Fix 2** (band gridRow clamp past doc end) — TDD-first. Clears
-   3-4. Medium risk.
-8. **Fix 9** (resize undo doc-state restore) — TDD-first. Clears 2.
-   Medium-high risk.
-9. **Fix 11/12 surgical fallback** (only if mini-spike doesn't clear
-   them) — `mapPos` assoc adjustment + move `mergeOverlappingBands`
-   to mouseup. High risk.
-
-Final target: 144/0 (no failures).
