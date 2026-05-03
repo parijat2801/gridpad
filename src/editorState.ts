@@ -1833,26 +1833,39 @@ function frameContains(frame: Frame, id: string): boolean {
  * remains the leaf's containing top-level — children are added under
  * `applyReparentFrame(state, draggedId, targetTopLevelId, ...)`.
  *
+ * `docExtentPy` is the pixel height of the document body (= docLines * ch).
+ * When the drop point lands outside the document bounds (dropPy < 0 or
+ * dropPy > docExtentPy), promote is suppressed and `none` is returned.
+ * This prevents dragging a child frame past the doc end from spuriously
+ * promoting it, emptying its parent band, and producing ghost glyphs.
+ * Pass `Number.POSITIVE_INFINITY` to disable the doc-bound guard (useful
+ * in tests that explicitly test the promote path).
+ *
  * Returns:
  *   - `demote` with target top-level id when the cursor lands inside a
  *     different top-level AND the leaf at the drop point is strictly
  *     larger than the dragged frame.
- *   - `promote` when the cursor lands on empty space (no leaf) AND the
- *     dragged frame is currently a child (has a non-self top-ancestor).
+ *   - `promote` when the cursor lands on empty space (no leaf), the
+ *     dragged frame is currently a child (has a non-self top-ancestor),
+ *     AND the drop point is within the document bounds.
  *   - `none` in all other cases (no movement target, same-size siblings,
- *     same top-level, etc.). */
+ *     same top-level, drop outside doc bounds, etc.). */
 export function decideReparent(
   frames: Frame[],
   draggedId: string,
   dropPx: number,
   dropPy: number,
+  docExtentPy: number,
 ): ReparentDecision {
   const draggedTopAncestor = frames.find(f => frameContains(f, draggedId));
   if (!draggedTopAncestor) return { kind: "none" };
 
   const targetLeaf = hitTestFrames(frames, dropPx, dropPy);
   if (!targetLeaf) {
-    if (draggedTopAncestor.id !== draggedId) return { kind: "promote" };
+    if (draggedTopAncestor.id !== draggedId) {
+      if (dropPy < 0 || dropPy > docExtentPy) return { kind: "none" };
+      return { kind: "promote" };
+    }
     return { kind: "none" };
   }
 

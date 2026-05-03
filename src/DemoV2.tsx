@@ -795,9 +795,10 @@ export default function DemoV2() {
           const upPx = e.clientX - rect.left;
           const upPy = e.clientY - rect.top + (canvasEl.parentElement?.scrollTop ?? 0);
           const draggedId = dragRef.current.frameId;
+          const docExtentPy = stateRef.current.doc.lines * chRef.current;
           // Reparent decision: leaf-vs-leaf size guard (Fix 3). Pure helper
           // in editorState.ts; see reparentDecision.test.ts for cases.
-          const decision = decideReparent(framesRef.current, draggedId, upPx, upPy);
+          const decision = decideReparent(framesRef.current, draggedId, upPx, upPy, docExtentPy);
           if (decision.kind === "demote") {
             const cw = cwRef.current, ch = chRef.current;
             const docLines = stateRef.current.doc.lines;

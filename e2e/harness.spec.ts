@@ -312,6 +312,33 @@ async function dragSelected(page: Page, dx: number, dy: number) {
   }
 }
 
+/** Drag the currently-selected frame so the cursor lands at canvas-content
+ * (contentX, contentY). Used by Group A tests that must drop in EMPTY space
+ * past another frame to avoid post-revival reparent-on-drop. Coordinates are
+ * canvas content (same units getFrames() returns), not viewport. */
+async function dragSelectedToCanvasPos(page: Page, contentX: number, contentY: number) {
+  const canvas = page.locator("canvas");
+  const box = await canvas.boundingBox();
+  const selId = await getSelectedId(page);
+  if (!selId) throw new Error(`dragSelectedToCanvasPos: no frame selected — call clickFrame first`);
+  const f = await resolveFramePos(page, selId);
+  const scrollTop = await page.evaluate(() => document.querySelector("canvas")?.parentElement?.scrollTop ?? 0);
+  const startCx = box!.x + f.x + f.w / 2;
+  const startCy = box!.y + (f.y - scrollTop) + f.h / 2;
+  const endCx = box!.x + contentX;
+  const endCy = box!.y + (contentY - scrollTop);
+  await page.mouse.move(startCx, startCy);
+  await page.mouse.down();
+  const dx = endCx - startCx;
+  const dy = endCy - startCy;
+  const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 10));
+  for (let i = 1; i <= steps; i++) {
+    await page.mouse.move(startCx + (dx * i / steps), startCy + (dy * i / steps));
+  }
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+}
+
 /** Get the full frame tree from Gridpad */
 async function getFrameTree(page: Page): Promise<Array<{
   id: string; absX: number; absY: number; w: number; h: number;
@@ -1286,10 +1313,15 @@ test.describe("harness", () => {
   // ── Large drag past other wireframes ───────────────────
 
   test("large-drag: drag first wireframe past second, no collision", async ({ page }) => {
+    // Post-revival UX: dropping cursor on top of frame B would nest A as B's
+    // child. Drop in EMPTY space well past B's bottom so the move path runs
+    // (no reparent target) instead.
     const r = await roundTrip(page, "large-drag", TWO_SEPARATE, async (p) => {
+      const frames = await getFrames(p);
+      const a = frames[0];
+      const b = frames[1];
       await clickFrame(p, 0);
-      // Drag way down past the second wireframe
-      await dragSelected(p, 0, 300);
+      await dragSelectedToCanvasPos(p, a.x + a.w / 2, b.y + b.h + 30);
       await clickProse(p, 5, 5);
     });
     // Both wireframe markers should exist
@@ -2347,9 +2379,12 @@ test.describe("shared walls", () => {
     const framesBefore = await getFrames(page);
     await screenshot(page, "wall-overlap-down", "1-before");
 
-    // Drag A down past Middle prose toward B
+    // Drag A down past Middle prose toward B's region. Drop in EMPTY space
+    // past B so the move path runs (post-revival, dropping ON B nests A).
     await clickFrame(page, 0);
-    await dragSelected(page, 0, 120);
+    const a = framesBefore[0];
+    const b = framesBefore[1];
+    await dragSelectedToCanvasPos(page, a.x + a.w / 2, b.y + b.h + 30);
     await clickProse(page, 5, 5);
 
     const saved = await save(page);
@@ -3621,15 +3656,14 @@ End`;
     expect(framesBefore[0].w).toBe(framesBefore[1].w);
     expect(framesBefore[0].h).toBe(framesBefore[1].h);
 
-    // Drag frame 0 PAST frame 1 (drop cursor lands below f1's bottom edge,
-    // not on top of it). Same-size guard means no nesting either way; this
-    // also exercises the scanner's reload path with the dragged frame
-    // beyond the original layout.
+    // Drag frame 0 PAST frame 1 (drop cursor lands below f1's bottom edge in
+    // empty space, not on top of it). Post-revival removed the same-size
+    // nesting guard, so dropping ON f1 would now demote f0 into f1; the
+    // drop-in-empty-space below avoids that.
     await clickFrame(page, 0);
     const f0 = framesBefore[0];
     const f1 = framesBefore[1];
-    const dy = (f1.y + f1.h + 20) - (f0.y + f0.h / 2);
-    await dragSelected(page, 0, dy);
+    await dragSelectedToCanvasPos(page, f0.x + f0.w / 2, f1.y + f1.h + 30);
     await clickProse(page, 5, 5);
 
     const saved = await save(page);
@@ -3775,10 +3809,11 @@ Bottom prose`;
     const aBefore = before[0];
     const bBefore = before[1];
 
-    // Drag A way down (past B's bottom).
+    // Drag A way down past B's bottom — drop in EMPTY space, not on B.
+    // Post-revival, dropping cursor on B would demote A into B; we want the
+    // move path so we can verify B doesn't shift.
     await clickFrame(page, 0);
-    const dy = (bBefore.y + bBefore.h + 50) - aBefore.y;
-    await dragSelected(page, 0, dy);
+    await dragSelectedToCanvasPos(page, aBefore.x + aBefore.w / 2, bBefore.y + bBefore.h + 30);
     await clickProse(page, 5, 5);
 
     const after = await getFrames(page);
@@ -4209,17 +4244,13 @@ test.describe("eager-band interactive UX regressions", () => {
     expect(Math.abs(lowerAfter!.y - lowerBefore.y), "lower must stay anchored").toBeLessThanOrEqual(1);
   });
 
-  // Fix 14: a wireframe must not be dragged across a non-blank prose line.
+  // Fix 14 (post-reparent-revival semantics): dragging a wireframe across a
+  // prose line is now legitimate — the wireframe reorders past the prose.
   // Fixture: wireframe A, blank, "Middle" prose, blank, wireframe B.
-  // Drag A down 300px — far past Middle. Expected: A clamps just above
-  // Middle (rotation budget = 1 blank line above Middle). B is untouched.
-  // Pre-fix: A rotates past Middle, eats the prose, or merges with B.
+  // Drag A down ~80px — past Middle but landing in EMPTY space (not on B).
+  // Expected: A ends up between Middle and B; "Middle" survives intact;
+  // both A and B still exist; no ghosts.
   test("Fix 14: drag does not cross non-blank prose line", async ({ page }) => {
-    // Wireframe A | blank | "Middle" prose | blank | wireframe B.
-    // Drag A down ~80px (4-5 rows). Cursor ends near "Middle" but NOT on
-    // B's band — so onMouseUp's reparent branch returns "none" (no target,
-    // no escape past doc bounds). The drag must clamp at the prose wall:
-    // A stays just above Middle; doc preserves Top/Middle/Bottom order.
     const FIXTURE = `Top\n\n┌────┐\n│ A  │\n└────┘\n\nMiddle\n\n┌────┐\n│ B  │\n└────┘\n\nBottom`;
     await load(page, FIXTURE);
     writeArtifact("fix-14-prose-wall", "input.md", FIXTURE);
@@ -4236,7 +4267,10 @@ test.describe("eager-band interactive UX regressions", () => {
     await clickFrame(page, 0); // select A
     const selectedAfterClick = await page.evaluate(() => (window as any).__gridpad.getSelectedId());
     writeArtifact("fix-14-prose-wall", "selected-after-click.txt", String(selectedAfterClick));
-    await dragSelected(page, 0, 80); // try to push past the prose wall
+    // Drop in EMPTY space between Middle and B — past Middle but not on B.
+    // (Cursor on B would demote A into B post-revival.)
+    const dropY = (bBefore.y + aBefore.h / 2) - 8;
+    await dragSelectedToCanvasPos(page, aBefore.x + aBefore.w / 2, dropY);
     await clickProse(page, 5, 5);
     const after = await getFrames(page);
     const treeAfter = await getFrameTree(page);
@@ -4251,8 +4285,7 @@ test.describe("eager-band interactive UX regressions", () => {
 
     const saved = await save(page);
     writeArtifact("fix-14-prose-wall", "output.md", saved);
-    // "Middle" prose must survive intact, in its original position relative
-    // to A and B.
+    // "Middle" prose survives intact and both wireframes still exist.
     expect(saved, "Middle prose survives the drag").toContain("Middle");
     const idxA = saved.indexOf("│ A");
     const idxMiddle = saved.indexOf("Middle");
@@ -4260,9 +4293,11 @@ test.describe("eager-band interactive UX regressions", () => {
     expect(idxA).toBeGreaterThanOrEqual(0);
     expect(idxMiddle).toBeGreaterThanOrEqual(0);
     expect(idxB).toBeGreaterThanOrEqual(0);
-    // Order must be preserved: A appears before Middle which appears before B.
-    expect(idxA, "A before Middle").toBeLessThan(idxMiddle);
-    expect(idxMiddle, "Middle before B").toBeLessThan(idxB);
+    // Post-reparent-revival: A reorders past Middle and ends up between
+    // Middle and B. (Pre-revival assertion was Top/A/Middle/B; the new UX
+    // legitimately reorders the wireframe across the prose line.)
+    expect(idxMiddle, "Middle before A").toBeLessThan(idxA);
+    expect(idxA, "A before B").toBeLessThan(idxB);
     // No ghosts (merged/duplicated wireframes).
     const ghosts = await findGhostsFromPage(page, saved);
     expect(ghosts).toEqual([]);

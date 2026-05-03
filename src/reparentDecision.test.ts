@@ -128,7 +128,7 @@ describe("decideReparent (mouseup-only, no size guard)", () => {
 
     // Drop point: middle of wireB's leaf in absolute canvas coords.
     const drop = absCenter(frames, wireB.id)!;
-    const decision = decideReparent(frames, wireA.id, drop.px, drop.py);
+    const decision = decideReparent(frames, wireA.id, drop.px, drop.py, Number.POSITIVE_INFINITY);
     expect(decision.kind).toBe("demote");
     if (decision.kind === "demote") {
       const bBand = bandFor(frames, wireB.id);
@@ -155,7 +155,7 @@ describe("decideReparent (mouseup-only, no size guard)", () => {
 
     // Drop small onto big's center (absolute coords).
     const drop = absCenter(frames, big.id)!;
-    const decision = decideReparent(frames, small.id, drop.px, drop.py);
+    const decision = decideReparent(frames, small.id, drop.px, drop.py, Number.POSITIVE_INFINITY);
     expect(decision.kind).toBe("demote");
     if (decision.kind === "demote") {
       const bigBand = bandFor(frames, big.id);
@@ -171,9 +171,11 @@ describe("decideReparent (mouseup-only, no size guard)", () => {
     expect(wireA).toBeTruthy();
 
     // Drop far below the doc, off any frame entirely.
+    // Pass POSITIVE_INFINITY as docExtentPy so the doc-bound guard does not
+    // suppress promote — this test specifically exercises the promote path.
     const dropPx = 50 * cw;
     const dropPy = 200 * ch;
-    const decision = decideReparent(frames, wireA.id, dropPx, dropPy);
+    const decision = decideReparent(frames, wireA.id, dropPx, dropPy, Number.POSITIVE_INFINITY);
     expect(decision.kind).toBe("promote");
   });
 
@@ -185,7 +187,7 @@ describe("decideReparent (mouseup-only, no size guard)", () => {
 
     // Drop on wireA itself (same top-level → no reparent).
     const drop = absCenter(frames, wireA.id)!;
-    const decision = decideReparent(frames, wireA.id, drop.px, drop.py);
+    const decision = decideReparent(frames, wireA.id, drop.px, drop.py, Number.POSITIVE_INFINITY);
     expect(decision.kind).toBe("none");
   });
 });
