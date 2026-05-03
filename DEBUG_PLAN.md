@@ -1,8 +1,8 @@
 # Debug plan — gridpad harness recovery
 
 **Worktree:** `.claude/worktrees/unified-document`
-**Current status:** vitest 589/1 (the 1 fail is the diag test that surfaces deferred Bug B), harness **134/11**.
-**Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 134/11 (today). Target: 144/0.
+**Current status:** vitest 603/2 (both fails are diag tests that pin deferred apply-layer bugs B + C), harness **139/6**.
+**Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 139/6 (today). Target: 144/0.
 
 This is the **live working doc**. The "Shipped fixes" table summarizes what's already landed; the rest of the file is open work — Group A/B/C/D taxonomy, recommended next-step order, and the active investigation appended at the bottom.
 
@@ -24,8 +24,9 @@ This is the **live working doc**. The "Shipped fixes" table summarizes what's al
 | 14 — computeRotationBudget single source of truth | 01b255b | net 0 (better failure quality, exposed downstream reparent issues) |
 | line-height bump (1.15× → 1.4×) | f747d04 | cosmetic |
 | reparent revival (size guard removal, bbox-skip-on-move, mouseup repaint) | 3a06b24 | shape-shift; rebaseline 132/13 |
-| **Bug A — decideReparent doc bound** | (uncommitted, 2026-05-02) | **+2 (132/13 → 134/11)** |
-| **Bug B — landingGridFromCursor (grab-offset)** | (uncommitted, 2026-05-03) | **0 net (correctness fix; 1 test rewritten)** |
+| **Bug A — decideReparent doc bound** | 537ee5e | **+2 (132/13 → 134/11)** |
+| **Bug B — landingGridFromCursor (grab-offset)** | eb74556 | **0 net (correctness fix; 1 test rewritten)** |
+| **Bug C — decideReparent prose-row guard** | (this session, 2026-05-03) | **+5 (134/11 → 139/6); 1 sibling regression exposed** |
 
 **Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 134/11 (today). Final target: 144/0.
 
@@ -360,5 +361,68 @@ export function decideReparent(
 **Open work unchanged.** The 11 remaining failures still cluster as Group A (5 demote-onto-frame ghosts), Group B (3 reparent edge cases), Group C (3 move/clamp bugs). Next session needs a fresh hypothesis for Group A specifically — Bug B is exhausted as an explanation. Probable next probes:
 - Instrument `applyReparentFrame` to log the source-band cleanup vs. the destination claim — does the source band's claim release fully when the dragged child demotes into a different parent? (i.e. is there a row-overlap leak between source and destination when both top-levels are vertically close?)
 - Look at `unifiedDocSync` for the reparent transaction — does it serialize the new claim BEFORE releasing the old one, leaving the source's wireframe glyphs in the doc text temporarily and then failing to clear them?
+
+### 2026-05-03 (session) — Bug C investigation: promote into prose-occupied row
+
+**Trigger.** Group A re-attack via systematic-debugging skill. Picked the cleanest failing test (`equal-size frames passed through each other do not nest`) for a model-layer reproducer.
+
+**Reproducer:** `src/ghostOnEqualSizePromote.diag.test.ts` (4 tests, 1 fail surfaces the bug). The failure reproduces purely at the model layer — calls `applyReparentFrame(state, A, null, aRow=11, aCol=0, ...)` with no Playwright. Saved markdown matches the harness fingerprint exactly: "Bottom" prose lost, orphan `┌────┐` at the end with no closing `└`.
+
+**DIAG trace (test 4 in the file):**
+- BEFORE: 13-line doc; band-A claims rows 2-4 (`docOffset=5`); band-B claims rows 8-10 (`docOffset=17`); "Bottom" at row 12.
+- aRow computed by `landingGridFromCursor(dropPy=232.4, grabOffsetPy=A.h/2=27.6, ch=18.4, docLines=13)` → `framePy=204.8`, `aRow=round(204.8/18.4)=11`. Clamped to docLines-1=12 max → 11.
+- AFTER: 12-line doc; "Middle" shifts up to row 3 (was 6); "Bottom" lands at row 11 (was 12); new band-A' has `gridRow=11 lineCount=3 docOffset=20`. **The new band's claim covers row 11 — which contains "Bottom" prose.**
+- Serializer renders frame cells at row 11 → "Bottom" overwritten with `┌────┐`. Rows 12 and 13 of the band's claim don't exist in the doc → clipped silently.
+
+**Root cause (Bug C):** A promote whose `aRow + frame.gridH` lands on or past existing prose silently destroys that prose. Specifically the `unifiedDocSync` promote handler (`editorState.ts:811-833`) inserts only the difference between `frame.gridH` and consecutive blank rows after `targetLine`. When there are zero blank rows after the target (because the target IS prose), it inserts blanks BEFORE the prose line. The framesField then maps `docOffset` to `tr.newDoc.lineAt(...)` and lands on the prose line itself, not on the freshly inserted blanks. The serializer overrides docLines[row] with the band's content for any claimed row → ghost.
+
+**Why Bug A (doc-bound guard) didn't catch it.** `dropPy = 232.4` < `docExtentPy = 13 * 18.4 = 239.2`. Drop is in bounds; Bug A's guard only refuses out-of-bounds. The drop is in the legal-but-occupied region between the last band and doc end.
+
+**Fix surface decision.** Three candidates considered:
+1. **decideReparent** — extend signature to take prose-row info; refuse promote when target row(s) overlap prose. Mirrors Bug A's `docExtentPy` pattern; decision oracle stays the single source of truth.
+2. **applyReparentFrame** — silently no-op promote when target overlaps prose. Localized but pushes business logic into the apply layer.
+3. **unifiedDocSync** — re-order or relocate the blank inserts. Most invasive; transactions already complex.
+
+**Chosen: option 1.** Extend `decideReparent` to take a `proseRows: Set<number>` (rows containing non-blank prose). Promote branch refuses when any row in `[aRow, aRow + draggedFrame.gridH)` is in `proseRows`. Caller (`DemoV2.tsx`) builds the set from doc text; tests pass an empty set to preserve their pre-fix behavior unless they explicitly test the new guard.
+
+Optional refinement: fold `landingGridFromCursor` into `decideReparent` so the oracle owns the row computation. Deferred for now to keep the diff small — the call site already computes aRow/aCol and passes both to `applyReparentFrame`; passing them to `decideReparent` too is one extra param.
+
+**Predicted impact.** Clears `equal-size frames passed through each other do not nest` (verified at model layer). Likely clears `Fix 14: drag does not cross non-blank prose line` (same mechanism — promote target lands on prose). Less certain for the other 3 Group A tests where the drop is ON another frame (demote path, not promote).
+
+### Phase 6 outcome — Bug C fix landed, harness 134/11 → 139/6 (+5)
+
+**Diff applied** (3 files):
+- `src/editorState.ts:1859-1916` — `decideReparent` now takes optional 6th param `promoteLanding: { aRow, gridH, proseRows }`. Promote branch refuses when any row in `[aRow, aRow + gridH)` is in `proseRows`. `findFrameInList` exported for caller use.
+- `src/DemoV2.tsx:798-830` — call site computes `proseRows` (rows with non-blank doc text) and passes `promoteLanding` to `decideReparent`. The aRow already came from `landingGridFromCursor`.
+- `src/ghostOnEqualSizePromote.diag.test.ts` — 5 tests: input fixture pin, decideReparent without/with prose-rows, apply-layer pin (failing — defers deeper apply-layer bug), DIAG trace.
+
+**Suites:**
+- vitest: 603/2. Two failing tests are intentional pins of the deferred apply-layer bugs (Bug B's leftover in `ghostOnDragPastEnd.diag.test.ts`, and Bug C's apply-layer in `ghostOnEqualSizePromote.diag.test.ts`). Same pattern as established in Phase 4 (vitest 589/1 → 603/2 after adding 14 new passing tests + 1 new pinning test).
+- harness: **139/6**. Cleared 6 from baseline 134/11:
+  - `large-drag: drag first wireframe past second`
+  - `move-then-enter: move frame down, then Enter above`
+  - `drag shared-horizontal box down, no ghosts`
+  - `drag box down onto another — overlapping positions`
+  - `drag frame A past frame B: B does not move`
+  - `Fix 14: drag does not cross non-blank prose line`
+- One **regression**: `move two separate boxes toward each other, save` now fails. Pre-fix it passed.
+
+**Regression mechanism (NOT a true regression, but a sibling bug exposed).** The test moves A down 80px, then moves B up 80px. Pre-fix, A's drag down created a ghost (mostly silently — the test didn't assert against the ghost, only `expect(saved).toContain("A")`). Post-fix, A's drag-down works correctly. THEN B's drag up triggers a demote-into-A or a promote whose target row overlaps A's new row → produces a NEW ghost in the opposite direction. The bug is the same class (apply-layer overwriting prose during reparent) but on the demote side.
+
+**Still failing (6):**
+
+| Group | Test | Mechanism |
+|-------|------|-----------|
+| (regression) | move two separate boxes toward each other, save | Same as Bug C but on demote side |
+| A | equal-size frames passed through each other do not nest | Tree-shape assertion mismatch (test outdated for band wrapping; not a ghost any more) |
+| B | undo a drag-into-frame reparent restores original tree | Reparent edge case |
+| B | promote then drag old parent: promoted frame stays put | Reparent edge case |
+| B | promote then drag the promoted frame: old parent stays put | Reparent edge case |
+| C | dragging a rect up inside its band clamps at band top edge | In-band clamp bug |
+
+**Next.** Two paths to consider:
+1. **Bug D (sibling of Bug C, demote side):** Apply same proseRows guard to demote branch in `decideReparent`. When demote target row + dragged.gridH would overlap prose past the destination top-level's claim, refuse demote. Risk: too aggressive — legitimate nest-into-frame drops shouldn't be blocked.
+2. **Update `equal-size frames` test assertion:** Walk past band-wrapper to assert "no nested rects under any rect leaf" rather than "tree[0] has no rect children". The test is asserting the pre-band-wrap tree shape.
+3. **Group B (3 tests):** Distinct from Bug C/D; investigate separately.
 
 
