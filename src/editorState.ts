@@ -111,7 +111,7 @@ function findBandAtRow(frames: Frame[], row: number): Frame | null {
 
 // Mark a frame dirty by id, propagating up to ancestors.
 /** Recursively find a frame by id in a frame tree (incl. children). */
-function findFrameInList(frames: Frame[], id: string): Frame | null {
+export function findFrameInList(frames: Frame[], id: string): Frame | null {
   for (const f of frames) {
     if (f.id === id) return f;
     const found = findFrameInList(f.children, id);
@@ -1879,21 +1879,33 @@ export function landingGridFromCursor(
  * Pass `Number.POSITIVE_INFINITY` to disable the doc-bound guard (useful
  * in tests that explicitly test the promote path).
  *
+ * `promoteLanding` (optional) lets the caller block in-bounds promotes
+ * whose target rows would overlap existing prose. Pass `{ aRow, gridH,
+ * proseRows }` and the helper refuses to promote when any row in
+ * `[aRow, aRow + gridH)` is in `proseRows`. Mirrors Bug A's docExtentPy
+ * pattern at row granularity: a promote that would overwrite prose is
+ * "out of legal landing zone" the same way an out-of-bounds drop is.
+ * When omitted, no prose-row check is performed (preserves pre-fix
+ * behavior for callers that don't care, e.g. tests).
+ *
  * Returns:
  *   - `demote` with target top-level id when the cursor lands inside a
  *     different top-level AND the leaf at the drop point is strictly
  *     larger than the dragged frame.
  *   - `promote` when the cursor lands on empty space (no leaf), the
  *     dragged frame is currently a child (has a non-self top-ancestor),
- *     AND the drop point is within the document bounds.
+ *     AND the drop point is within the document bounds AND the landing
+ *     rows do not overlap prose (when promoteLanding is supplied).
  *   - `none` in all other cases (no movement target, same-size siblings,
- *     same top-level, drop outside doc bounds, etc.). */
+ *     same top-level, drop outside doc bounds, drop would overwrite
+ *     prose, etc.). */
 export function decideReparent(
   frames: Frame[],
   draggedId: string,
   dropPx: number,
   dropPy: number,
   docExtentPy: number,
+  promoteLanding?: { aRow: number; gridH: number; proseRows: ReadonlySet<number> },
 ): ReparentDecision {
   const draggedTopAncestor = frames.find(f => frameContains(f, draggedId));
   if (!draggedTopAncestor) return { kind: "none" };
@@ -1902,6 +1914,12 @@ export function decideReparent(
   if (!targetLeaf) {
     if (draggedTopAncestor.id !== draggedId) {
       if (dropPy < 0 || dropPy > docExtentPy) return { kind: "none" };
+      if (promoteLanding) {
+        const { aRow, gridH, proseRows } = promoteLanding;
+        for (let r = aRow; r < aRow + gridH; r++) {
+          if (proseRows.has(r)) return { kind: "none" };
+        }
+      }
       return { kind: "promote" };
     }
     return { kind: "none" };

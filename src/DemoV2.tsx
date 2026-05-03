@@ -15,7 +15,7 @@ import {
   proseMoveToLineStart, proseMoveToLineEnd,
   editorUndo, editorRedo,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
-  resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, landingGridFromCursor, shouldEscalateResidual, findImmediateParent,
+  resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, landingGridFromCursor, shouldEscalateResidual, findImmediateParent, findFrameInList,
   findContainingBandDeep, getBandRelativeRow, getBandRelativeCol,
   type CursorPos,
 } from "./editorState";
@@ -798,7 +798,6 @@ export default function DemoV2() {
           const docExtentPy = stateRef.current.doc.lines * chRef.current;
           // Reparent decision: leaf-vs-leaf size guard (Fix 3). Pure helper
           // in editorState.ts; see reparentDecision.test.ts for cases.
-          const decision = decideReparent(framesRef.current, draggedId, upPx, upPy, docExtentPy);
           // Bug B fix: translate cursor at mouseup back to the dragged frame's
           // top-left grid cell using the grab offset captured at mousedown.
           // Pre-fix this used `round(upPx/cw), round(upPy/ch)` — placing the
@@ -812,6 +811,22 @@ export default function DemoV2() {
           const grabOffsetPy = dragRef.current.startY - dragRef.current.startFrameY;
           const { aRow, aCol } = landingGridFromCursor(
             upPx, upPy, grabOffsetPx, grabOffsetPy, cw, ch, docLines,
+          );
+          // Bug C fix: refuse promote when target rows would overwrite prose.
+          // proseRows is the set of doc rows that contain non-blank prose.
+          // The dragged frame's gridH determines how many rows it'd claim if
+          // promoted — checked inside decideReparent.
+          const draggedFrame = findFrameInList(framesRef.current, draggedId);
+          const draggedGridH = draggedFrame?.gridH ?? 0;
+          const proseRows = new Set<number>();
+          const docText = stateRef.current.doc;
+          for (let i = 1; i <= docText.lines; i++) {
+            const ln = docText.line(i);
+            if (ln.length > 0) proseRows.add(i - 1);
+          }
+          const decision = decideReparent(
+            framesRef.current, draggedId, upPx, upPy, docExtentPy,
+            { aRow, gridH: draggedGridH, proseRows },
           );
           if (decision.kind === "demote") {
             stateRef.current = applyReparentFrame(stateRef.current, draggedId, decision.targetTopLevelId, aRow, aCol, cw, ch);
