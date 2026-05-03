@@ -25,6 +25,7 @@ This is the **live working doc**. The "Shipped fixes" table summarizes what's al
 | line-height bump (1.15× → 1.4×) | f747d04 | cosmetic |
 | reparent revival (size guard removal, bbox-skip-on-move, mouseup repaint) | 3a06b24 | shape-shift; rebaseline 132/13 |
 | **Bug A — decideReparent doc bound** | (uncommitted, 2026-05-02) | **+2 (132/13 → 134/11)** |
+| **Bug B — landingGridFromCursor (grab-offset)** | (uncommitted, 2026-05-03) | **0 net (correctness fix; 1 test rewritten)** |
 
 **Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 134/11 (today). Final target: 144/0.
 
@@ -338,5 +339,26 @@ export function decideReparent(
 2. **Group B/C investigation.** Each likely a separate root cause; needs its own systematic-debugging round.
 
 **Lessons (prediction vs reality).** Phase 3 estimated +8 fixes (~140/5); actual was +2 (134/11), miss of ~6. Cause: I assumed all 5 Group A failures hit Bug A's past-doc-end branch. Only 2 did (`drag: move box down`, `prose order preserved when dragging wireframe down`). The other 3 Group A drops land *on* B's bbox, triggering `demote` — which uses the same `aCol = round(upPx/cw)` formula in `DemoV2.tsx:805` (cursor-center, not frame-edge) → Bug B's column drift produces equivalent ghosts on the demote side. Bug A and Bug B are sibling expressions of the same underlying issue: `onMouseUp` translates cursor coordinates to frame coordinates without accounting for (a) doc bounds, (b) where on the frame the user originally grabbed. Fixing Bug B should clear the rest of Group A and possibly some of Group B.
+
+### Phase 5 outcome — Bug B fix landed, harness 134/11 (no net move)
+
+**Diff applied** (3 files):
+- `src/editorState.ts:1820-1859` — new pure helper `landingGridFromCursor(upPx, upPy, grabOffsetPx, grabOffsetPy, cw, ch, docLines)` translates a cursor-at-mouseup back to the dragged frame's top-left grid cell. Clamps `aRow` to `[0, docLines-1]` and `aCol` to `[0, ∞)`.
+- `src/DemoV2.tsx:798-820` — both `demote` and `promote` branches now compute `grabOffsetPx = startX - startFrameX` (and same for Py) from the existing `dragRef.current` (no new state needed), then call the helper. Replaces inline `aRow = round(upPy/ch); aCol = round(upPx/cw)` in both branches.
+- `src/landingGridFromCursor.test.ts` — 5 unit tests pin the helper (vertical-only drag preserves col, edge-grab tracks frame-left, clamps in both axes).
+- `src/dragGeometry.diag.test.ts` — 5 invariant tests pin the geometry: grabbed point follows cursor for center / top-left / bottom-right / vertical-only / horizontal-only drags.
+- `e2e/harness.spec.ts:3608-3614` — `drag child to a different parent` test updated to drop at `b.y + b.h/2 + childNode.h/2` so Inner's top edge lands at B-center (not at B-title) under the new (correct) center-grab geometry.
+
+**Suites:**
+- vitest: 599/1 (added 10 tests). The 1 fail is the same pre-existing `applyReparentFrame promote empties the band` diag test that calls the model directly — unchanged signal, intentional pin.
+- harness: **134/11 (net 0)**. The Bug B fix is geometrically correct (verified by 10 unit tests) but did NOT clear any of the original 11 failures. The 1 transient regression (`drag child to a different parent`) was caused by the test having been tuned to the buggy off-by-h/2 behavior; updating its drop coordinates restored it.
+
+**Lessons (prediction vs reality, again).** Phase 4 hypothesis: "Bug B's column drift on demote produces equivalent ghosts → fixing it clears the 3 Group A demote tests and possibly some of Group B." Actual: 0 of those 11 cleared. The hypothesis was wrong. Ghost glyphs in the remaining failures have a DIFFERENT root cause — Bug B was a real correctness bug (sibling of Bug A) but is **not the lever** for the residual harness failures. Two takeaways:
+1. The cursor-center vs frame-edge gap mattered for the `drag past doc end` cases (Bug A) because the doc-bound clamp turned a small horizontal drift into a same-row prose collision. Without that clamp interaction, the column drift alone doesn't surface as a harness ghost — `unifiedDocSync` handles in-doc drag deltas correctly via `moveFrameEffect` per tick; only the reparent application path saw the wrong column, and apparently that drift mostly fell within tolerance for the remaining tests.
+2. Test `drag child to a different parent` was a hidden tripwire: it asserted "Outer B label survives" when grabbing Inner's center and dropping at B-center. With pre-fix off-by-h/2 placement, Inner landed below B-title (passes by accident). With correct centering, Inner overlaps B-title. **Whenever a test passes with a known buggy geometry, it's pinning the bug, not the spec.** Worth grep-auditing other passing tests for similar accidental dependencies.
+
+**Open work unchanged.** The 11 remaining failures still cluster as Group A (5 demote-onto-frame ghosts), Group B (3 reparent edge cases), Group C (3 move/clamp bugs). Next session needs a fresh hypothesis for Group A specifically — Bug B is exhausted as an explanation. Probable next probes:
+- Instrument `applyReparentFrame` to log the source-band cleanup vs. the destination claim — does the source band's claim release fully when the dragged child demotes into a different parent? (i.e. is there a row-overlap leak between source and destination when both top-levels are vertically close?)
+- Look at `unifiedDocSync` for the reparent transaction — does it serialize the new claim BEFORE releasing the old one, leaving the source's wireframe glyphs in the doc text temporarily and then failing to clear them?
 
 
