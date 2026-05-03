@@ -26,51 +26,34 @@ This is the **live working doc**. The "Shipped fixes" table summarizes what's al
 | reparent revival (size guard removal, bbox-skip-on-move, mouseup repaint) | 3a06b24 | shape-shift; rebaseline 132/13 |
 | **Bug A — decideReparent doc bound** | 537ee5e | **+2 (132/13 → 134/11)** |
 | **Bug B — landingGridFromCursor (grab-offset)** | eb74556 | **0 net (correctness fix; 1 test rewritten)** |
-| **Bug C — decideReparent prose-row guard** | (this session, 2026-05-03) | **+5 (134/11 → 139/6); 1 sibling regression exposed** |
+| **Bug C — decideReparent prose-row guard** | 8fb4593 | **+5 (134/11 → 139/6); 1 sibling regression exposed (Bug D)** |
 
-**Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 134/11 (today). Final target: 144/0.
+**Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 139/6 (today). Final target: 144/0.
 
-**Open work** lives in the next sections (Group A/B/C/D + the 2026-05-02 ghost-on-drag investigation).
+**Open work** lives in the "Current open failures" table below. Session narratives (Phases 3-6) follow at the bottom for context on how each Bug A/B/C fix was investigated.
 
-## Failure categorization (drawn against 132/13 baseline; 2 of these have since cleared via Bug A fix)
+## Current open failures (6 tests, harness 139/6)
 
-The 13 baseline failing tests clustered into three groups (still useful for navigating remaining 11):
+| # | Test | Class | Hypothesis |
+|---|------|-------|------------|
+| 1 | shared walls › move two separate boxes toward each other, save | **Bug D** (Bug C sibling on demote side) | After A's drag-down works correctly (Bug C cleared the ghost), B's drag-up triggers a demote/promote whose target row overlaps prose → ghost on the opposite side. Same apply-layer mishandling, just exposed by Bug C clearing the symmetric noise. |
+| 2 | reparent › equal-size frames passed through each other do not nest | Test outdated | Output is now clean (no ghost). Test asserts `tree[0].children` has no rect, but `getFrameTree` returns band-wrapped frames so `tree[0]=band-A → [rect-A,…]`. Assertion needs to walk past the band wrapper. |
+| 3 | reparent › undo a drag-into-frame reparent restores original tree | Group B (reparent edge case) | Undo of a demote doesn't fully restore the source band's claim. Untriaged. |
+| 4 | drag independence › promote then drag old parent: promoted frame stays put | Group B | After promote, dragging the old parent shifts the promoted frame. Likely shared-claim mapPos issue between adjacent bands. Untriaged. |
+| 5 | drag independence › promote then drag the promoted frame: old parent stays put | Group B | Mirror of #4. Untriaged. |
+| 6 | eager-band UX regressions › dragging a rect up inside its band clamps at band top edge | Group C | In-band clamp bug; unrelated to reparent. Untriaged. |
 
-### Group A — tests assert pre-revival behavior (5 tests)
+**Recommended next attack:** Bug D (#1). Same investigation pattern as Bug C — write a model-layer reproducer for the demote side, find the apply-layer leak, decide whether to guard at decision layer (parallel to Bug C) or fix the apply layer (would also clear the deferred apply-layer pins in `ghostOnDragPastEnd.diag.test.ts` and `ghostOnEqualSizePromote.diag.test.ts`).
 
-These tests assert "drag wireframe past another wireframe does not
-nest" or "equal-size frames don't nest each other." Pre-revival, the
-size guard rejected these drops; post-revival, drops now legitimately
-demote when cursor lands on a target. The tests need to be UPDATED
-to reflect the new (Figma-like) UX. These are not bugs.
+---
 
-- "equal-size frames passed through each other do not nest"
-- "Fix 14: drag does not cross non-blank prose line"
-- "drag frame A past frame B: B does not move"
-- "large-drag: drag first wireframe past second, no collision"
-- "drag box down onto another — overlapping positions"
+## Historical categorization (baseline 132/13, 2026-05-02)
 
-### Group B — reparent-on-drop interactions (4 tests)
+Original taxonomy of the 13 failing tests; mostly cleared by Bugs A + C. Kept for context on how groups originally clustered.
 
-Tests that drag a wireframe with extreme cursor offset (past doc end,
-into prose, etc.). Reparent now fires more aggressively; in some
-cases the new band lands at a row that collides with prose or
-existing claims. Drop position needs better post-clamp handling.
-
-- "prose order preserved when dragging wireframe down"
-- "promote then drag old parent: promoted frame stays put"
-- "promote then drag the promoted frame: old parent stays put"
-- "undo a drag-into-frame reparent restores original tree"
-
-### Group C — independent issues (4 tests)
-
-Not directly related to reparent revival; pre-existing bugs in
-move/rotation paths.
-
-- "drag: move box down, no ghosts"
-- "drag shared-horizontal box down, no ghosts"
-- "move-then-enter: move frame down, then Enter above it"
-- "dragging a rect up inside its band clamps at band top edge"
+- **Group A** (5 demote/promote cases): 4 cleared by Bug C, 1 (equal-size) reduced to test-shape mismatch (#2 above).
+- **Group B** (4 reparent edge cases): 1 (prose order preserved) cleared by Bug A, 3 still failing (#3, #4, #5 above).
+- **Group C** (4 independent move/rotation bugs): 3 cleared by Bug C, 1 (in-band top clamp) still failing (#6 above).
 
 ### Group D — transient double-band after promote (no test yet)
 
@@ -123,56 +106,13 @@ Groups A/B.
 
 ---
 
-## Recommended fix order (REVISED 2026-05-02 after reparent revival)
-
-**Sessions shipped:** Fix 2, 3, 5, 9, 10, 14, plus reparent revival
-(size guard removed, bbox-skip-on-move, mouseup repaint). Reparent
-revival was NOT in the original plan — it emerged from runtime
-testing where the architect noticed "drag-onto-frame does nothing."
-
-**Critical re-evaluation needed.** The reparent revival fundamentally
-changed the drag-and-drop UX: children can now leave their parent,
-nest into other frames, and the bbox stays put. Many of the
-remaining 11 harness failures (134/11 pre-revival) likely behave
-differently now. The harness should be re-run as a baseline before
-any further plan work.
-
-**Open work, re-prioritized:**
-
-1. **Group A — update tests to match new UX (5 tests, easy).** These
-   tests assert pre-revival behavior that is now incorrect. Update
-   each to assert the new (Figma-like) expected behavior: when the
-   user drags wireframe A onto wireframe B, A nests as a child of B.
-   For "drag past" tests, change the action to drop in EMPTY SPACE
-   past B (cursor not on any wireframe) — that triggers the move
-   path without nesting. ~30 min total.
-
-2. **Group B — fix reparent edge cases (4 tests, medium).** When the
-   drop position lands past doc end or on prose, the resulting
-   reparent corrupts the doc. Two sub-fixes:
-   - Clamp `aRow` for promote/demote so the new claim doesn't
-     overlap non-blank prose lines.
-   - Skip reparent entirely when the drop row is unreachable
-     (cursor past doc end with no blank rows available).
-
-3. **Group C — independent move/rotation bugs (4 tests, varies).**
-   Investigate each. May or may not relate to existing planned
-   fixes (13, 12, 11).
-
-4. **Architectural cleanup** (deferred, optional) — the per-tick
-   drag handler still mutates state via `moveFrameEffect` even
-   though Fix 9's commit-on-mouseup makes the per-tick mutations
-   redundant for history purposes, and the reparent revival
-   showed that per-tick state pollutes mouseup hit-testing
-   decisions. A pure mouseup-only model (visual ghost during
-   drag, single commit at mouseup) would simplify the codebase
-   significantly. Big change — only worth it if remaining
-   harness failures cluster around per-tick state-vs-cursor
-   disagreement after Groups A and B are addressed.
-
-Final target unchanged: harness 144/0.
+## Workflow
 
 After each commit: run `npx vitest run` and `npx playwright test e2e/harness.spec.ts --workers=8` (8 workers cuts harness time from 156s → 81s).
+
+**Architectural cleanup** (deferred, optional). The per-tick drag handler still mutates state via `moveFrameEffect` even though Fix 9's commit-on-mouseup makes the per-tick mutations redundant for history purposes, and the reparent revival showed that per-tick state pollutes mouseup hit-testing decisions. A pure mouseup-only model (visual ghost during drag, single commit at mouseup) would simplify the codebase significantly. Big change — only worth it if remaining harness failures cluster around per-tick state-vs-cursor disagreement after Bugs A/B/C/D are exhausted.
+
+Final target: harness 144/0.
 
 ---
 
@@ -407,22 +347,6 @@ Optional refinement: fold `landingGridFromCursor` into `decideReparent` so the o
   - `Fix 14: drag does not cross non-blank prose line`
 - One **regression**: `move two separate boxes toward each other, save` now fails. Pre-fix it passed.
 
-**Regression mechanism (NOT a true regression, but a sibling bug exposed).** The test moves A down 80px, then moves B up 80px. Pre-fix, A's drag down created a ghost (mostly silently — the test didn't assert against the ghost, only `expect(saved).toContain("A")`). Post-fix, A's drag-down works correctly. THEN B's drag up triggers a demote-into-A or a promote whose target row overlaps A's new row → produces a NEW ghost in the opposite direction. The bug is the same class (apply-layer overwriting prose during reparent) but on the demote side.
-
-**Still failing (6):**
-
-| Group | Test | Mechanism |
-|-------|------|-----------|
-| (regression) | move two separate boxes toward each other, save | Same as Bug C but on demote side |
-| A | equal-size frames passed through each other do not nest | Tree-shape assertion mismatch (test outdated for band wrapping; not a ghost any more) |
-| B | undo a drag-into-frame reparent restores original tree | Reparent edge case |
-| B | promote then drag old parent: promoted frame stays put | Reparent edge case |
-| B | promote then drag the promoted frame: old parent stays put | Reparent edge case |
-| C | dragging a rect up inside its band clamps at band top edge | In-band clamp bug |
-
-**Next.** Two paths to consider:
-1. **Bug D (sibling of Bug C, demote side):** Apply same proseRows guard to demote branch in `decideReparent`. When demote target row + dragged.gridH would overlap prose past the destination top-level's claim, refuse demote. Risk: too aggressive — legitimate nest-into-frame drops shouldn't be blocked.
-2. **Update `equal-size frames` test assertion:** Walk past band-wrapper to assert "no nested rects under any rect leaf" rather than "tree[0] has no rect children". The test is asserting the pre-band-wrap tree shape.
-3. **Group B (3 tests):** Distinct from Bug C/D; investigate separately.
+**Regression mechanism (NOT a true regression, but a sibling bug exposed).** The test moves A down 80px, then moves B up 80px. Pre-fix, A's drag down created a ghost (mostly silently — the test didn't assert against the ghost, only `expect(saved).toContain("A")`). Post-fix, A's drag-down works correctly. THEN B's drag up triggers a demote-into-A or a promote whose target row overlaps A's new row → produces a NEW ghost in the opposite direction. The bug is the same class (apply-layer overwriting prose during reparent) but on the demote side. Filed as **Bug D**; see "Current open failures" table at top of doc.
 
 
