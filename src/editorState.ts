@@ -1888,17 +1888,31 @@ export function landingGridFromCursor(
  * When omitted, no prose-row check is performed (preserves pre-fix
  * behavior for callers that don't care, e.g. tests).
  *
+ * `demoteLanding` (optional) is the demote-side analog of `promoteLanding`.
+ * Pass `{ aRow, gridH }` and the helper refuses to demote when the
+ * dragged frame's landing rows `[aRow, aRow + gridH)` would overlap any
+ * existing wireframe child of the destination top-level (Bug D — sibling
+ * of Bug C, DEBUG_PLAN.md). Without this guard the apply layer (line
+ * 1524-1535) inserts the dragged rect into the destination band without
+ * expanding the band, producing a rect-vs-rect row overlap → the
+ * serializer renders junctions (`├────┤`) instead of the rect's content
+ * row, so visible prose like "│ A  │" disappears in the saved markdown.
+ * When omitted, no overlap check is performed (preserves pre-fix
+ * behavior for tests).
+ *
  * Returns:
  *   - `demote` with target top-level id when the cursor lands inside a
- *     different top-level AND the leaf at the drop point is strictly
- *     larger than the dragged frame.
+ *     different top-level AND (when demoteLanding is supplied) the
+ *     landing rows do not overlap existing wireframe children of that
+ *     top-level.
  *   - `promote` when the cursor lands on empty space (no leaf), the
  *     dragged frame is currently a child (has a non-self top-ancestor),
  *     AND the drop point is within the document bounds AND the landing
  *     rows do not overlap prose (when promoteLanding is supplied).
  *   - `none` in all other cases (no movement target, same-size siblings,
  *     same top-level, drop outside doc bounds, drop would overwrite
- *     prose, etc.). */
+ *     prose, drop would collide with destination's existing children,
+ *     etc.). */
 export function decideReparent(
   frames: Frame[],
   draggedId: string,
@@ -1906,6 +1920,7 @@ export function decideReparent(
   dropPy: number,
   docExtentPy: number,
   promoteLanding?: { aRow: number; gridH: number; proseRows: ReadonlySet<number> },
+  demoteLanding?: { aRow: number; gridH: number },
 ): ReparentDecision {
   const draggedTopAncestor = frames.find(f => frameContains(f, draggedId));
   if (!draggedTopAncestor) return { kind: "none" };
@@ -1929,6 +1944,36 @@ export function decideReparent(
   if (!hitTopLevel) return { kind: "none" };
   if (hitTopLevel.id === draggedTopAncestor.id) return { kind: "none" };
   if (hitTopLevel.id === draggedId) return { kind: "none" };
+
+  // Bug D fix: refuse demote when the dragged frame would collide with a
+  // SIBLING of comparable size inside the destination band. The apply-
+  // layer demote dispatch (applyReparentFrame line 1524-1535) does not
+  // expand the destination band or offset existing children — when the
+  // dragged frame's claim rows overlap an existing wireframe sibling's
+  // rows, both rects share the same band cells. The serializer renders
+  // the collision as junction glyphs (`├────┤`) and overwrites the
+  // colliding rect's content row, so visible labels disappear.
+  //
+  // The collision-with-larger case is legitimate Figma-style nesting:
+  // dragged is strictly smaller than the existing child, so visually it
+  // sits "inside" — the layer compositor renders the dragged rect over
+  // the larger frame's blank interior. Only refuse when dragged.gridH >=
+  // colliding sibling's gridH (no room to fit inside the existing
+  // child's interior).
+  if (demoteLanding && hitTopLevel.isBand) {
+    const { aRow, gridH } = demoteLanding;
+    const draggedBottom = aRow + gridH;
+    for (const child of hitTopLevel.children) {
+      if (child.id === draggedId) continue;
+      if (child.content?.type === "text") continue; // text labels don't claim rows
+      const childTop = hitTopLevel.gridRow + child.gridRow;
+      const childBottom = childTop + child.gridH;
+      const overlaps = aRow < childBottom && draggedBottom > childTop;
+      if (overlaps && gridH >= child.gridH) {
+        return { kind: "none" };
+      }
+    }
+  }
 
   // Mouseup-only decision: if the cursor lands inside another top-level
   // frame, intent is to nest. No size guard — Figma allows nesting frames

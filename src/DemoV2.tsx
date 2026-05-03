@@ -824,9 +824,15 @@ export default function DemoV2() {
             const ln = docText.line(i);
             if (ln.length > 0) proseRows.add(i - 1);
           }
+          // Bug D fix: demote-side analog of Bug C. When the cursor lands
+          // inside another band, refuse the demote if the dragged frame's
+          // landing rows would overlap an existing wireframe child of that
+          // band — the apply layer doesn't expand the band, and a row
+          // collision silently corrupts both rects' rendering.
           const decision = decideReparent(
             framesRef.current, draggedId, upPx, upPy, docExtentPy,
             { aRow, gridH: draggedGridH, proseRows },
+            { aRow, gridH: draggedGridH },
           );
           if (decision.kind === "demote") {
             stateRef.current = applyReparentFrame(stateRef.current, draggedId, decision.targetTopLevelId, aRow, aCol, cw, ch);
