@@ -15,7 +15,7 @@ import {
   proseMoveToLineStart, proseMoveToLineEnd,
   editorUndo, editorRedo,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
-  resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, shouldEscalateResidual, findImmediateParent,
+  resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, landingGridFromCursor, shouldEscalateResidual, findImmediateParent,
   findContainingBandDeep, getBandRelativeRow, getBandRelativeCol,
   type CursorPos,
 } from "./editorState";
@@ -799,20 +799,24 @@ export default function DemoV2() {
           // Reparent decision: leaf-vs-leaf size guard (Fix 3). Pure helper
           // in editorState.ts; see reparentDecision.test.ts for cases.
           const decision = decideReparent(framesRef.current, draggedId, upPx, upPy, docExtentPy);
+          // Bug B fix: translate cursor at mouseup back to the dragged frame's
+          // top-left grid cell using the grab offset captured at mousedown.
+          // Pre-fix this used `round(upPx/cw), round(upPy/ch)` — placing the
+          // *cursor* at the target cell, not the *frame*. For a center-grab
+          // drag that shifted the frame by w/2 cols → ghost glyph after
+          // serialize. The dragRef stores both the cursor and frame positions
+          // at mousedown, so the offset is free.
+          const cw = cwRef.current, ch = chRef.current;
+          const docLines = stateRef.current.doc.lines;
+          const grabOffsetPx = dragRef.current.startX - dragRef.current.startFrameX;
+          const grabOffsetPy = dragRef.current.startY - dragRef.current.startFrameY;
+          const { aRow, aCol } = landingGridFromCursor(
+            upPx, upPy, grabOffsetPx, grabOffsetPy, cw, ch, docLines,
+          );
           if (decision.kind === "demote") {
-            const cw = cwRef.current, ch = chRef.current;
-            const docLines = stateRef.current.doc.lines;
-            const aRow = Math.max(0, Math.min(docLines - 1, Math.round(upPy / ch)));
-            const aCol = Math.round(upPx / cw);
             stateRef.current = applyReparentFrame(stateRef.current, draggedId, decision.targetTopLevelId, aRow, aCol, cw, ch);
             syncRefsFromState();
           } else if (decision.kind === "promote") {
-            const cw = cwRef.current, ch = chRef.current;
-            const docLines = stateRef.current.doc.lines;
-            // Fix 14: clamp promote target row to doc bounds so cursor past
-            // doc end doesn't clobber trailing prose.
-            const aRow = Math.max(0, Math.min(docLines - 1, Math.round(upPy / ch)));
-            const aCol = Math.round(upPx / cw);
             stateRef.current = applyReparentFrame(stateRef.current, draggedId, null, aRow, aCol, cw, ch);
             syncRefsFromState();
           }

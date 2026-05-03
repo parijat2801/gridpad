@@ -1818,6 +1818,44 @@ function frameContains(frame: Frame, id: string): boolean {
   return false;
 }
 
+/** Translate a mouseup cursor position back to the dragged frame's
+ * landing grid cell. Bug B fix (DEBUG_PLAN.md, Phase 4 lessons):
+ * the previous call site computed `aRow = round(upPy / ch)` and
+ * `aCol = round(upPx / cw)`, which placed the FRAME at the cursor's
+ * grid cell instead of preserving the grab offset. For a center-grab
+ * drag this shifted the frame by w/2 cells horizontally — invisible
+ * during normal drags (the per-tick `moveFrameEffect` carries the
+ * correct delta) but visible at reparent time, where this column
+ * was passed verbatim into `applyReparentFrame` and left a phantom
+ * claim at the wrong column → ghost glyph after serialize.
+ *
+ * Inputs:
+ *   upPx, upPy           — cursor pixel position at mouseup, in canvas coords
+ *   grabOffsetPx, grabOffsetPy — pixel offset from the dragged frame's
+ *                                top-left to the original mousedown cursor
+ *                                (i.e. `startX - startFrameX` from the
+ *                                dragRef captured in DemoV2.tsx)
+ *   cw, ch               — char width / height
+ *   docLines             — current doc line count (used to clamp aRow)
+ *
+ * Output: the grid cell where the frame's TOP-LEFT should land. aRow
+ * is clamped to `[0, docLines-1]`; aCol is clamped to `[0, +∞)`. */
+export function landingGridFromCursor(
+  upPx: number,
+  upPy: number,
+  grabOffsetPx: number,
+  grabOffsetPy: number,
+  cw: number,
+  ch: number,
+  docLines: number,
+): { aRow: number; aCol: number } {
+  const framePx = upPx - grabOffsetPx;
+  const framePy = upPy - grabOffsetPy;
+  const aRow = Math.max(0, Math.min(docLines - 1, Math.round(framePy / ch)));
+  const aCol = Math.max(0, Math.round(framePx / cw));
+  return { aRow, aCol };
+}
+
 /** Decide whether a drag-end at (dropPx, dropPy) should reparent the
  * dragged frame, and if so, into which top-level (Fix 3 — leaf-vs-leaf
  * size guard).

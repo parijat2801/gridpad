@@ -3605,10 +3605,13 @@ End`;
     const cbox = await canvas.boundingBox();
     const cx = cbox!.x + childNode!.absX + childNode!.w / 2;
     const cy = cbox!.y + childNode!.absY + childNode!.h / 2;
-    // Drop near the top-left of B so Inner (18 cols wide) fits comfortably
-    // inside B (25 cols wide) without extending past B's right wall.
+    // Drop so Inner (18 cols wide) fits comfortably inside B (25 cols wide)
+    // without extending past B's right wall, AND lands clear of Outer B's
+    // title row. Drop cursor at B's center + (Inner.h/2) below — with the
+    // Bug B fix, the dragged frame's CENTER lands on the cursor, so its
+    // TOP edge sits at B-center, not B-title.
     const dropX = cbox!.x + b.x + 30;
-    const dropY = cbox!.y + b.y + b.h / 2;
+    const dropY = cbox!.y + b.y + b.h / 2 + childNode!.h / 2;
     await page.mouse.move(cx, cy);
     await page.mouse.down();
     await page.mouse.move(dropX, dropY, { steps: 10 });
