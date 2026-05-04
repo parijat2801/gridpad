@@ -1437,6 +1437,13 @@ export function applyAddChildFrame(
  * newParentId === string → demote to child. unifiedDocSync releases the
  * frame's currently-claimed doc lines.
  */
+/** `extraEffects` (optional, Bug E fix) lets callers prepend additional
+ * effects into the same transaction the reparent dispatches. The drag-and-
+ * reparent path (DemoV2 onMouseUp) uses this to fold the cumulative-drag
+ * commit and the reparent into a SINGLE history entry, so a single user undo
+ * reverses both halves of the gesture. Without this, two history entries
+ * are recorded, and a single undo only reverts the reparent — leaving the
+ * dragged frame at its mid-drag column inside its now-restored source band. */
 export function applyReparentFrame(
   state: EditorState,
   frameId: string,
@@ -1445,6 +1452,7 @@ export function applyReparentFrame(
   absoluteGridCol: number,
   charWidth: number,
   charHeight: number,
+  extraEffects: StateEffect<unknown>[] = [],
 ): EditorState {
   // Eager-band promote: if newParentId === null AND a band already claims
   // absoluteGridRow, redirect to demote-into-that-band. If the promoted
@@ -1482,7 +1490,7 @@ export function applyReparentFrame(
     const existingBand = findBandAtRow(getFrames(state), absoluteGridRow);
     if (existingBand && existingBand.id !== sourceBand?.id) {
       const promoted = findFrameInList(getFrames(state), frameId);
-      const effects: StateEffect<unknown>[] = [];
+      const effects: StateEffect<unknown>[] = [...extraEffects];
       if (promoted) {
         const childRowInBand = absoluteGridRow - existingBand.gridRow;
         const childBottom = childRowInBand + promoted.gridH;
@@ -1522,6 +1530,7 @@ export function applyReparentFrame(
     // a fresh band.
   }
   const effects: StateEffect<unknown>[] = [
+    ...extraEffects,
     reparentFrameEffect.of({
       frameId, newParentId, absoluteGridRow, absoluteGridCol, charWidth, charHeight,
     }),

@@ -28,7 +28,7 @@
 //      back through the inverted ChangeSet.
 
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { StateEffect, type EditorState } from "@codemirror/state";
+import { StateEffect, Transaction, type EditorState } from "@codemirror/state";
 import { undo } from "@codemirror/commands";
 import {
   createEditorStateUnified,
@@ -99,18 +99,22 @@ function absRect(frames: Frame[], leafId: string): AbsRect | null {
   return walk(frames, 0, 0, 0, 0);
 }
 
-/** Replay one harness `dragSelected(dx, dy)` at the model layer. Same shape as
- *  src/ghostOnConvergeDemote.diag.test.ts:simulateDragSelected. Mirrors
- *  DemoV2.tsx onMouseDown → per-tick onMouseMove → onMouseUp. */
+/** Replay one harness `dragSelected(dx, dy)` at the model layer, mirroring
+ *  DemoV2.tsx's drag flow including Bug E's fix: per-tick effects use
+ *  addToHistory(false); at mouseup, the cumulative-drag delta is folded INTO
+ *  the reparent transaction (one history entry total). Without this folding,
+ *  drag and reparent are two transactions and a single undo only reverses
+ *  the second. */
 function simulateDragSelected(
   state0: EditorState,
   leafId: string,
   dx: number,
   dy: number,
 ): EditorState {
-  let state = state0.update({ effects: selectFrameEffect.of(leafId) }).state;
+  const mouseDownState = state0.update({ effects: selectFrameEffect.of(leafId) }).state;
+  let workingState = mouseDownState;
 
-  const frames0 = getFrames(state);
+  const frames0 = getFrames(workingState);
   const leaf0 = findFrameInList(frames0, leafId);
   if (!leaf0) throw new Error(`leaf ${leafId} not found`);
   const abs0 = absRect(frames0, leafId)!;
@@ -129,12 +133,12 @@ function simulateDragSelected(
   const dRow = targetRow - currentRow;
 
   if (dCol !== 0 || dRow !== 0) {
-    const containingBand = findContainingBandDeep(getFrames(state), leafId);
+    const containingBand = findContainingBandDeep(getFrames(workingState), leafId);
     const effects: StateEffect<unknown>[] = [];
     if (containingBand) {
       const child = leaf0;
-      const bandRow = getBandRelativeRow(leafId, containingBand.id, getFrames(state));
-      const bandCol = getBandRelativeCol(leafId, containingBand.id, getFrames(state));
+      const bandRow = getBandRelativeRow(leafId, containingBand.id, getFrames(workingState));
+      const bandCol = getBandRelativeCol(leafId, containingBand.id, getFrames(workingState));
       const minDRow = -bandRow;
       const maxDRow = containingBand.gridH - child.gridH - bandRow;
       const minDCol = -bandCol;
@@ -155,34 +159,60 @@ function simulateDragSelected(
       effects.push(moveFrameEffect.of({ id: leafId, dCol, dRow, charWidth: CW, charHeight: CH }));
     }
     if (effects.length > 0) {
-      state = state.update({ effects }).state;
+      // Per-tick: NOT recorded to history (mirrors DemoV2.tsx:712).
+      workingState = workingState.update({
+        effects,
+        annotations: [Transaction.addToHistory.of(false)],
+      }).state;
     }
   }
 
-  const docExtentPy = state.doc.lines * CH;
+  // Mouseup decision: against post-tick workingState (matches DemoV2.tsx).
+  const docExtentPy = workingState.doc.lines * CH;
   const grabOffsetPx = startX - startFrameX;
   const grabOffsetPy = startY - startFrameY;
   const { aRow, aCol } = landingGridFromCursor(
-    cursorPx, cursorPy, grabOffsetPx, grabOffsetPy, CW, CH, state.doc.lines,
+    cursorPx, cursorPy, grabOffsetPx, grabOffsetPy, CW, CH, workingState.doc.lines,
   );
-  const draggedFrame = findFrameInList(getFrames(state), leafId);
+  const draggedFrame = findFrameInList(getFrames(workingState), leafId);
   const draggedGridH = draggedFrame?.gridH ?? 0;
   const proseRows = new Set<number>();
-  for (let i = 1; i <= state.doc.lines; i++) {
-    const ln = state.doc.line(i);
+  for (let i = 1; i <= workingState.doc.lines; i++) {
+    const ln = workingState.doc.line(i);
     if (ln.length > 0) proseRows.add(i - 1);
   }
   const decision = decideReparent(
-    getFrames(state), leafId, cursorPx, cursorPy, docExtentPy,
+    getFrames(workingState), leafId, cursorPx, cursorPy, docExtentPy,
     { aRow, gridH: draggedGridH, proseRows },
     { aRow, gridH: draggedGridH },
   );
-  if (decision.kind === "demote") {
-    state = applyReparentFrame(state, leafId, decision.targetTopLevelId, aRow, aCol, CW, CH);
-  } else if (decision.kind === "promote") {
-    state = applyReparentFrame(state, leafId, null, aRow, aCol, CW, CH);
+
+  // Compute cumulative-drag delta: workingState - mouseDownState.
+  const mdFrame = findFrameInList(getFrames(mouseDownState), leafId);
+  const wsFrame = findFrameInList(getFrames(workingState), leafId);
+  const dragDCol = mdFrame && wsFrame ? wsFrame.gridCol - mdFrame.gridCol : 0;
+  const dragDRow = mdFrame && wsFrame ? wsFrame.gridRow - mdFrame.gridRow : 0;
+  const dragEffects: StateEffect<unknown>[] = [];
+  if (dragDCol !== 0 || dragDRow !== 0) {
+    dragEffects.push(moveFrameEffect.of({ id: leafId, dCol: dragDCol, dRow: dragDRow, charWidth: CW, charHeight: CH }));
   }
-  return state;
+
+  // Mouseup commit. If reparent fires, fold drag effects into the reparent
+  // transaction via extraEffects. If not, commit drag alone against
+  // mouseDownState.
+  if (decision.kind === "demote") {
+    return applyReparentFrame(mouseDownState, leafId, decision.targetTopLevelId, aRow, aCol, CW, CH, dragEffects);
+  }
+  if (decision.kind === "promote") {
+    return applyReparentFrame(mouseDownState, leafId, null, aRow, aCol, CW, CH, dragEffects);
+  }
+  if (dragEffects.length > 0) {
+    return mouseDownState.update({
+      effects: dragEffects,
+      annotations: [Transaction.addToHistory.of(true)],
+    }).state;
+  }
+  return workingState;
 }
 
 function dumpDoc(state: EditorState, label: string): void {
@@ -193,20 +223,14 @@ function dumpDoc(state: EditorState, label: string): void {
 function dumpFrames(state: EditorState, label: string): void {
   console.log(`${label} top-level frames:`);
   for (const f of getFrames(state)) {
-    console.log(`  ${f.id} isBand=${f.isBand} gridRow=${f.gridRow} gridH=${f.gridH} lineCount=${f.lineCount} docOffset=${f.docOffset} children=${f.children.length}`);
+    console.log(`  ${f.id} isBand=${f.isBand} gridRow=${f.gridRow} gridCol=${f.gridCol} gridH=${f.gridH} gridW=${f.gridW} lineCount=${f.lineCount} docOffset=${f.docOffset} children=${f.children.length}`);
     for (const c of f.children) {
-      console.log(`    └ ${c.id} isBand=${c.isBand} gridRow=${c.gridRow} gridH=${c.gridH} content=${c.content?.type ?? "wireframe"}`);
+      console.log(`    └ ${c.id} isBand=${c.isBand} gridRow=${c.gridRow} gridCol=${c.gridCol} gridH=${c.gridH} gridW=${c.gridW} content=${c.content?.type ?? "wireframe"}`);
       for (const cc of c.children) {
-        console.log(`        └ ${cc.id} isBand=${cc.isBand} gridRow=${cc.gridRow} gridH=${cc.gridH} content=${cc.content?.type ?? "wireframe"}`);
+        console.log(`        └ ${cc.id} isBand=${cc.isBand} gridRow=${cc.gridRow} gridCol=${cc.gridCol} gridH=${cc.gridH} gridW=${cc.gridW} content=${cc.content?.type ?? "wireframe"}`);
       }
     }
   }
-}
-
-/** Returns true when no top-level frame contains a nested rect (modulo bands).
- *  Mirrors the harness assertion at e2e/harness.spec.ts:3721-3724. */
-function noNestedRect(node: Frame): boolean {
-  return node.children.every(c => c.content?.type !== "rect" && noNestedRect(c));
 }
 
 describe("undo a drag-into-frame reparent — model layer reproducer (Bug E candidate)", () => {
@@ -226,10 +250,9 @@ describe("undo a drag-into-frame reparent — model layer reproducer (Bug E cand
   it("step 1: demote small into big → tree has 1 top-level (big) with small as nested child", () => {
     const state0 = createEditorStateUnified(TWO_BOXES, CW, CH);
     const rects = findAllLeafRects(getFrames(state0));
-    const big_id = rects[0].id;
     const small_id = rects[1].id;
 
-    const big_abs = absRect(getFrames(state0), big_id)!;
+    const big_abs = absRect(getFrames(state0), rects[0].id)!;
     const small_abs = absRect(getFrames(state0), small_id)!;
     // Drag small's center to big's center (matches harness:3701-3703).
     const dx = (big_abs.x + big_abs.w / 2) - (small_abs.x + small_abs.w / 2);
@@ -238,13 +261,13 @@ describe("undo a drag-into-frame reparent — model layer reproducer (Bug E cand
     const state1 = simulateDragSelected(state0, small_id, dx, dy);
 
     const tree1 = getFrames(state1);
-    // After demote: small is now a child of big's band; total top-level
-    // frames may be 1 (only big's band) since small's source band cascade-pruned.
     const rectsAfter = findAllLeafRects(tree1);
     expect(rectsAfter.length).toBe(2);  // both rects still exist somewhere in tree
-    // big is still top-level; small is nested inside big.
-    expect(tree1.some(f => f.id === big_id || f.children.some(c => c.id === big_id))).toBe(true);
-    expect(noNestedRect(tree1[0])).toBe(false);  // big now contains small
+    // After demote: source band cascade-pruned, so only big's band remains
+    // top-level. The small rect is now a sibling of big's rect inside big's
+    // band.
+    expect(tree1.length, "after demote: source band pruned, only big's band remains").toBe(1);
+    expect(tree1[0].children.length, "big band now contains both rects").toBe(2);
   });
 
   it("step 1 + step 2 (undo): post-undo tree has 2 top-level frames, neither contains a nested rect", () => {
@@ -277,14 +300,15 @@ describe("undo a drag-into-frame reparent — model layer reproducer (Bug E cand
     const rects2 = findAllLeafRects(tree2);
     expect(rects2.length, "after undo: both rects still exist").toBe(2);
     expect(tree2.length, `after undo: should be 2 top-level frames, got ${tree2.length}`).toBe(2);
-    expect(noNestedRect(tree2[0]), "after undo: tree[0] should have no nested rect").toBe(true);
-    expect(noNestedRect(tree2[1]), "after undo: tree[1] should have no nested rect").toBe(true);
 
-    // Saved markdown should be restorable to a 2-top-level-rect shape.
+    // The real Bug E assertion: saved markdown round-trips to the original.
+    // Pre-fix, `restoreFramesEffect`'s snapshot is taken AFTER the per-tick
+    // moveFrameEffect already moved the small rect to gridCol=12 inside its
+    // source band (and shifted the band's gridRow). Undo restores to that
+    // intermediate state instead of the original. The saved markdown then has
+    // the small box at column 12 instead of column 0.
     const saved = serializeUnified(getDoc(state2), tree2);
-    expect(saved).toContain("Above");
-    expect(saved).toContain("between");
-    expect(saved).toContain("Below");
+    expect(saved, `Bug E: post-undo saved markdown should match original input.\n\nGot:\n${saved}`).toBe(TWO_BOXES);
   });
 
   it("DIAG: trace doc + frames at each step", () => {
@@ -310,7 +334,7 @@ describe("undo a drag-into-frame reparent — model layer reproducer (Bug E cand
     let state2 = state1;
     const target = {
       state: state1,
-      dispatch: (tr: { state: EditorState }) => { state2 = tr.state; },
+      dispatch: (tr: unknown) => { state2 = (tr as { state: EditorState }).state; },
     };
     const ok = undo(target as Parameters<typeof undo>[0]);
     console.log(`\nundo returned: ${ok}`);

@@ -3713,15 +3713,15 @@ End`;
     const saved = await save(page);
     writeArtifact("reparent-undo", "output.md", saved);
 
-    // After undo, two top-level frames remain; neither has a nested rect.
-    // (Text labels inside boxes count as children but aren't rect frames.)
-    await load(page, saved);
-    const treeAfter = await getFrameTree(page);
-    expect(treeAfter.length).toBe(2);
-    const noNestedRect = (n: any): boolean =>
-      n.children.every((c: any) => c.contentType !== "rect" && noNestedRect(c));
-    expect(noNestedRect(treeAfter[0])).toBe(true);
-    expect(noNestedRect(treeAfter[1])).toBe(true);
+    // Bug E (2026-05-04): the post-undo saved markdown must round-trip to
+    // the original input. Pre-fix, the cumulative-drag commit and the
+    // reparent were two separate history entries; a single undo only
+    // reversed the reparent, leaving the dragged frame at its mid-drag
+    // column (12) inside its (restored) source band → saved markdown had
+    // small box at column 12 instead of 0. Fix: fold cumulative drag into
+    // the reparent transaction (single history entry, single undo
+    // reverses the whole gesture).
+    expect(saved.trim(), "post-undo saved markdown should match input").toBe(TWO_BOXES.trim());
   });
 });
 

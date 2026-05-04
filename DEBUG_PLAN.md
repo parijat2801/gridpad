@@ -1,8 +1,8 @@
 # Debug plan — gridpad harness recovery
 
 **Worktree:** `.claude/worktrees/unified-document`
-**Current status:** vitest 607/2 (both fails are diag tests that pin deferred apply-layer bugs B + C), harness **139/6**.
-**Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 139/6 (today). Target: 144/0.
+**Current status:** vitest 617/2 (both fails are diag tests that pin deferred apply-layer bugs B + C), harness **140/5**.
+**Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 140/5 (today). Target: 144/0.
 
 This is the **live working doc**. The "Shipped fixes" table summarizes what's already landed; "Current open failures" lists what's still failing; the bottom section keeps the latest investigation narrative for handoff.
 
@@ -28,19 +28,19 @@ This is the **live working doc**. The "Shipped fixes" table summarizes what's al
 | **Bug B — landingGridFromCursor (grab-offset)** | eb74556 | **0 net (correctness fix; 1 test rewritten)** |
 | **Bug C — decideReparent prose-row guard** | 8fb4593 | **+5 (134/11 → 138/7); reclassified one Group A test as a Bug D demote-side sibling** |
 | **Bug D — decideReparent demote-overlap guard** | 02e8bf7 | **+1 (138/7 → 139/6); cleared `shared walls › move two separate boxes toward each other`** |
+| **Bug E — fold cumulative drag into reparent transaction** | _pending_ | **+1 (139/6 → 140/5); cleared `undo a drag-into-frame reparent restores original tree`. Pre-fix, drag and reparent were two history entries; single undo only reversed the reparent → small box stuck at mid-drag column. Fix: applyReparentFrame accepts extraEffects; onMouseUp dispatches against mouseDownState with cumulative-drag effects prepended.** |
 
 ---
 
-## Current open failures (6 tests, harness 139/6)
+## Current open failures (5 tests, harness 140/5)
 
 | # | Test | Class | Hypothesis |
 |---|------|-------|------------|
 | 1 | reparent › equal-size frames passed through each other do not nest | Test outdated | Output is now clean (no ghost). Test asserts `tree[0].children` has no rect, but `getFrameTree` returns band-wrapped frames so `tree[0]=band-A → [rect-A,…]`. Assertion needs to walk past the band wrapper. |
-| 2 | reparent › undo a drag-into-frame reparent restores original tree | **Bug E (real apply-layer bug)** | Confirmed via `src/groupB-undoReparent.diag.test.ts`. Undo restores doc text and produces 2 top-level frames, but tree[0] still contains a nested rect — source band's "extracted small rect" mutation isn't fully reversed by `frameInversion`'s snapshot-restore. |
-| 3 | drag independence › promote then drag old parent: promoted frame stays put | Test outdated (post-Bug-A) | Confirmed via `src/groupB-promoteThenDragOldParent.diag.test.ts`. Drop is past doc end; Bug A's docExtentPy guard correctly refuses promote. Test was written pre-Bug-A. |
-| 4 | drag independence › promote then drag the promoted frame: old parent stays put | Test outdated (post-Bug-C) | Confirmed via `src/groupB-promoteThenDragPromotedFrame.diag.test.ts`. Drop lands on "Bottom prose" row; Bug C's prose-row guard correctly refuses promote. Test was written pre-Bug-C. |
-| 5 | eager-band UX regressions › dragging a rect up inside its band clamps at band top edge | Group C | In-band clamp bug; unrelated to reparent. |
-| 6 | eager-band UX regressions › Fix 14: drag does not cross non-blank prose line | Test outdated (post-Bug-D) | Test pins legacy "A reorders past Middle" behavior. Bug C refused the promote and Bug D refused the demote-into-B; together A correctly stays in place — but the test's `idxMiddle < idxA` assertion still expects the legacy reorder. Re-derive expectation. |
+| 2 | drag independence › promote then drag old parent: promoted frame stays put | Test outdated (post-Bug-A) | Confirmed via `src/groupB-promoteThenDragOldParent.diag.test.ts`. Drop is past doc end; Bug A's docExtentPy guard correctly refuses promote. Test was written pre-Bug-A. |
+| 3 | drag independence › promote then drag the promoted frame: old parent stays put | Test outdated (post-Bug-C) | Confirmed via `src/groupB-promoteThenDragPromotedFrame.diag.test.ts`. Drop lands on "Bottom prose" row; Bug C's prose-row guard correctly refuses promote. Test was written pre-Bug-C. |
+| 4 | eager-band UX regressions › dragging a rect up inside its band clamps at band top edge | Group C | In-band clamp bug; unrelated to reparent. |
+| 5 | eager-band UX regressions › Fix 14: drag does not cross non-blank prose line | Test outdated (post-Bug-D) | Test pins legacy "A reorders past Middle" behavior. Bug C refused the promote and Bug D refused the demote-into-B; together A correctly stays in place — but the test's `idxMiddle < idxA` assertion still expects the legacy reorder. Re-derive expectation. |
 
 **Triage outcome (2026-05-04, Day 1 of the surgical plan).** Three model-layer reproducers were written to bisect each Group B failure to its mechanism:
 

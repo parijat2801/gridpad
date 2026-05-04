@@ -18,6 +18,7 @@ import {
   resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, landingGridFromCursor, shouldEscalateResidual, findImmediateParent, findFrameInList,
   findContainingBandDeep, getBandRelativeRow, getBandRelativeCol,
   type CursorPos,
+  type ReparentDecision,
 } from "./editorState";
 import { serializeUnified } from "./serializeUnified";
 import { type Frame, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
@@ -718,14 +719,25 @@ export default function DemoV2() {
     doLayout(); paint();
   }
 
-  // Fix 9: apply one history-recorded transaction from mouseDownState to the
-  // current frame positions so undo reverts the full drag atomically.
-  function commitCumulativeDrag(frameId: string, snapshot: EditorState, isResize: boolean) {
+  // Fix 9 helper: compute the cumulative-drag effects from mouseDownState's
+  // snapshot vs the current per-tick state. Returns the effects so the caller
+  // can either dispatch them alone (commitCumulativeDrag, no-reparent path)
+  // OR fold them into the reparent transaction (Bug E fix, drag-and-reparent
+  // path). Doing both in one transaction keeps undo atomic — single Cmd+Z
+  // reverses the whole gesture. The returned effects are ALSO dispatched
+  // against `snapshot`, NOT against the post-tick state, so they don't
+  // double-apply if you re-dispatch them; the caller uses snapshot as the
+  // base state for whatever transaction it builds.
+  function computeCumulativeDragEffects(
+    frameId: string,
+    snapshot: EditorState,
+    isResize: boolean,
+  ): StateEffect<unknown>[] {
     const snapFrames = getFrames(snapshot);
     const curFrames = framesRef.current;
     const snapFound = findFrameById(snapFrames, frameId);
     const curFound = findFrameById(curFrames, frameId);
-    if (!snapFound || !curFound) return;
+    if (!snapFound || !curFound) return [];
     const cw = cwRef.current, ch = chRef.current;
     const effects: StateEffect<unknown>[] = [];
     const dCol = curFound.frame.gridCol - snapFound.frame.gridCol;
@@ -745,6 +757,13 @@ export default function DemoV2() {
         effects.push(moveFrameEffect.of({ id: snapBand.id, dCol: 0, dRow: bandDRow, charWidth: cw, charHeight: ch }));
       }
     }
+    return effects;
+  }
+
+  // Fix 9: commit cumulative drag as a single history entry, dispatched
+  // against the mouseDown snapshot so undo reverts the full gesture.
+  function commitCumulativeDrag(frameId: string, snapshot: EditorState, isResize: boolean) {
+    const effects = computeCumulativeDragEffects(frameId, snapshot, isResize);
     if (effects.length === 0) return;
     const committed = snapshot.update({
       effects,
@@ -777,17 +796,13 @@ export default function DemoV2() {
           paint();
         }
       }
-      // Fix 9: commit cumulative drag as a single history entry.
-      // All mousemove ticks use addToHistory=false; here we apply the net
-      // delta from mouseDownState so undo reverts the full gesture atomically.
-      if (dragRef.current.hasMoved && dragRef.current.mouseDownState) {
-        commitCumulativeDrag(dragRef.current.frameId, dragRef.current.mouseDownState, !!dragRef.current.resizeHandle);
-      }
-      // Reparent on drop: if mouseup cursor lands inside a different
-      // top-level frame than where the dragged frame's current parent is,
-      // demote into that frame (or promote out of one). Figma-style.
-      // Skip for resize gestures — a resize that ends with the cursor
-      // outside the resized frame must not be interpreted as a drag-out.
+      // Reparent decision: compute first so we know whether to fold the
+      // cumulative-drag commit into the reparent transaction (Bug E fix).
+      // Decision is computed against framesRef.current (post-tick state)
+      // because aRow/aCol come from the cursor position at mouseup, and the
+      // proseRows guard reads the doc as the user sees it.
+      let reparentDecision: ReparentDecision = { kind: "none" };
+      let reparentArgs: { aRow: number; aCol: number; cw: number; ch: number; draggedId: string } | null = null;
       if (dragRef.current.hasMoved && e && !dragRef.current.resizeHandle) {
         const canvasEl = canvasRef.current;
         if (canvasEl) {
@@ -796,15 +811,6 @@ export default function DemoV2() {
           const upPy = e.clientY - rect.top + (canvasEl.parentElement?.scrollTop ?? 0);
           const draggedId = dragRef.current.frameId;
           const docExtentPy = stateRef.current.doc.lines * chRef.current;
-          // Reparent decision: leaf-vs-leaf size guard (Fix 3). Pure helper
-          // in editorState.ts; see reparentDecision.test.ts for cases.
-          // Bug B fix: translate cursor at mouseup back to the dragged frame's
-          // top-left grid cell using the grab offset captured at mousedown.
-          // Pre-fix this used `round(upPx/cw), round(upPy/ch)` — placing the
-          // *cursor* at the target cell, not the *frame*. For a center-grab
-          // drag that shifted the frame by w/2 cols → ghost glyph after
-          // serialize. The dragRef stores both the cursor and frame positions
-          // at mousedown, so the offset is free.
           const cw = cwRef.current, ch = chRef.current;
           const docLines = stateRef.current.doc.lines;
           const grabOffsetPx = dragRef.current.startX - dragRef.current.startFrameX;
@@ -812,10 +818,6 @@ export default function DemoV2() {
           const { aRow, aCol } = landingGridFromCursor(
             upPx, upPy, grabOffsetPx, grabOffsetPy, cw, ch, docLines,
           );
-          // Bug C fix: refuse promote when target rows would overwrite prose.
-          // proseRows is the set of doc rows that contain non-blank prose.
-          // The dragged frame's gridH determines how many rows it'd claim if
-          // promoted — checked inside decideReparent.
           const draggedFrame = findFrameInList(framesRef.current, draggedId);
           const draggedGridH = draggedFrame?.gridH ?? 0;
           const proseRows = new Set<number>();
@@ -824,23 +826,56 @@ export default function DemoV2() {
             const ln = docText.line(i);
             if (ln.length > 0) proseRows.add(i - 1);
           }
-          // Bug D fix: demote-side analog of Bug C. When the cursor lands
-          // inside another band, refuse the demote if the dragged frame's
-          // landing rows would overlap an existing wireframe child of that
-          // band — the apply layer doesn't expand the band, and a row
-          // collision silently corrupts both rects' rendering.
-          const decision = decideReparent(
+          reparentDecision = decideReparent(
             framesRef.current, draggedId, upPx, upPy, docExtentPy,
             { aRow, gridH: draggedGridH, proseRows },
             { aRow, gridH: draggedGridH },
           );
-          if (decision.kind === "demote") {
-            stateRef.current = applyReparentFrame(stateRef.current, draggedId, decision.targetTopLevelId, aRow, aCol, cw, ch);
-            syncRefsFromState();
-          } else if (decision.kind === "promote") {
-            stateRef.current = applyReparentFrame(stateRef.current, draggedId, null, aRow, aCol, cw, ch);
-            syncRefsFromState();
+          if (reparentDecision.kind !== "none") {
+            reparentArgs = { aRow, aCol, cw, ch, draggedId };
           }
+        }
+      }
+
+      // Bug E fix: when reparent fires, fold the cumulative-drag commit
+      // INTO the reparent transaction. This produces ONE history entry for
+      // the whole drag-and-reparent gesture. Without this, the cumulative
+      // drag and the reparent are two separate transactions; a single user
+      // undo only reverses the second, leaving the dragged frame at its
+      // mid-drag column inside its (now-restored) source band → saved
+      // markdown corrupted.
+      //
+      // When no reparent fires, commit the cumulative drag alone (Fix 9
+      // unchanged behavior).
+      if (dragRef.current.hasMoved && dragRef.current.mouseDownState) {
+        if (reparentDecision.kind !== "none" && reparentArgs) {
+          // Drag-and-reparent: dispatch ONE transaction against mouseDownState.
+          // applyReparentFrame's `extraEffects` parameter prepends the drag
+          // effects so the transaction applies them BEFORE the reparent
+          // effects, and frameInversion captures mouseDownState's frames as
+          // the undo snapshot.
+          const dragEffects = computeCumulativeDragEffects(
+            dragRef.current.frameId,
+            dragRef.current.mouseDownState,
+            !!dragRef.current.resizeHandle,
+          );
+          const targetParentId = reparentDecision.kind === "demote"
+            ? reparentDecision.targetTopLevelId
+            : null;
+          stateRef.current = applyReparentFrame(
+            dragRef.current.mouseDownState,
+            reparentArgs.draggedId,
+            targetParentId,
+            reparentArgs.aRow,
+            reparentArgs.aCol,
+            reparentArgs.cw,
+            reparentArgs.ch,
+            dragEffects,
+          );
+          syncRefsFromState();
+        } else {
+          // Drag-without-reparent: Fix 9's original commit-on-mouseup.
+          commitCumulativeDrag(dragRef.current.frameId, dragRef.current.mouseDownState, !!dragRef.current.resizeHandle);
         }
       }
       dragRef.current = null; scheduleAutosave();
