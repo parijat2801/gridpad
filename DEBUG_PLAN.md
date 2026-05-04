@@ -1,8 +1,8 @@
 # Debug plan — gridpad harness recovery
 
 **Worktree:** `.claude/worktrees/unified-document`
-**Current status:** vitest 617/2 (both fails are diag tests that pin deferred apply-layer bugs B + C), harness **142/1**.
-**Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 142/1 (today). Target: 143/0.
+**Current status:** vitest 617/2 (both fails are diag tests that pin deferred apply-layer bugs B + C), harness **143/1**.
+**Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 143/1 (today). Target: 144/0.
 
 This is the **live working doc**. The "Shipped fixes" table summarizes what's already landed; "Current open failures" lists what's still failing; the bottom section keeps the latest investigation narrative for handoff.
 
@@ -28,56 +28,52 @@ This is the **live working doc**. The "Shipped fixes" table summarizes what's al
 | **Bug B — landingGridFromCursor (grab-offset)** | eb74556 | **0 net (correctness fix; 1 test rewritten)** |
 | **Bug C — decideReparent prose-row guard** | 8fb4593 | **+5 (134/11 → 138/7); reclassified one Group A test as a Bug D demote-side sibling** |
 | **Bug D — decideReparent demote-overlap guard** | 02e8bf7 | **+1 (138/7 → 139/6); cleared `shared walls › move two separate boxes toward each other`** |
-| **Bug E — fold cumulative drag into reparent transaction** | _pending_ | **+1 (139/6 → 140/5); cleared `undo a drag-into-frame reparent restores original tree`. Pre-fix, drag and reparent were two history entries; single undo only reversed the reparent → small box stuck at mid-drag column. Fix: applyReparentFrame accepts extraEffects; onMouseUp dispatches against mouseDownState with cumulative-drag effects prepended.** |
+| **Bug E — dispatch reparent against mouseDownState** | bcf678f | **+1 (139/6 → 140/5); cleared `undo a drag-into-frame reparent restores original tree`. Pre-fix, drag and reparent were two history entries; single undo only reversed the reparent → small box stuck at mid-drag column. Fix: dispatch the reparent transaction against mouseDownState (NOT post-tick state). The reparent itself positions the dragged frame at (aRow, aCol), so cumulative-drag effects are not folded in. frameInversion captures mouseDownState's frames as the undo snapshot. (Earlier attempt prepended cumulative-drag effects via an extraEffects param; that broke drag-onto-existing-frame because moveFrameEffect's handler runs mergeOverlappingBands before reparentFrameEffect. Fixed in 7c235be by removing the extraEffects path entirely.)** |
+| Test cleanup — retire/rewrite outdated harness tests | aaa78d9 | **+2 (140/5 → 142/3, then continued to 142/1 after dependency clears); 4 tests pre-dated Bug A/C/D guards or eager-bands tree shape. Two deleted (test-outdated post-Bug-A/C; same drag-independence invariant covered by simpler tests); two assertions rewritten to check round-trip / original-ordering instead of pre-revival reorder behavior.** |
+| **Bug F — drop-on-sibling-wireframe reparent** | 7c235be | **+1 (142/1 → 143/1); user-reported: drew a rect in the same band as an existing wireframe, dragged onto the wireframe → no nest. decideReparent's same-top-ancestor guard refused all same-band reparents. Fix: walk up from hit leaf to find smallest enclosing container (wireframe or band) that's not the dragged or its ancestor; demote into that. applyReparentFrame's demote handler also fixed to compute parent-relative coords correctly when newParent is a nested wireframe (sums gridRow along the parent path, mirroring applyAddChildFrame).** |
 
 ---
 
-## Current open failures (1 test, harness 142/1)
+## Current open failures (1 test, harness 143/1) — handoff for next agent
 
-| # | Test | Class | Hypothesis |
-|---|------|-------|------------|
-| 1 | eager-band UX regressions › dragging a rect up inside its band clamps at band top edge | Group C | In-band clamp bug; unrelated to reparent. The dragged rect's upward motion isn't clamped at the band's top edge — it crosses out, possibly altering the doc. Separate triage; not part of the reparent fix sequence. |
+| # | Test | File:line | Class |
+|---|------|-----------|-------|
+| 1 | `eager-band interactive UX regressions › dragging a rect up inside its band clamps at band top edge` | `e2e/harness.spec.ts:4207` | Group C — in-band clamp, unrelated to reparent |
 
-**Triage outcome (2026-05-04, Day 1 of the surgical plan).** Three model-layer reproducers were written to bisect each Group B failure to its mechanism:
+**What the test does:** loads a fixture with a wireframe that has rotation budget below it (blank rows), clicks the rect to select, drags it UP inside its band (band-relative motion only), then asserts:
+1. `expect(aAfter!.y).toBeGreaterThanOrEqual(before[0].y - 1)` — the rect should NOT have moved more than 1px above its starting position. Today it moves further up than expected.
+2. `expect(docAfter).toBe(docBefore)` — the doc text should be unchanged for in-band motion (no claim-line changes). Today the doc may be modified.
 
-- `src/groupB-undoReparent.diag.test.ts` — reproduces #2 (`undo a drag-into-frame reparent`). **Real apply-layer bug confirmed.** Undo restores the doc text correctly and produces 2 top-level frames, but tree[0] still contains a nested rect — i.e., the source band's "extracted small rect" mutation isn't fully reversed. Worth a Bug E fix on Day 2.
-- `src/groupB-promoteThenDragOldParent.diag.test.ts` — pins #3 (`promote then drag old parent`). **Not an apply-layer bug.** The test's drop coordinates land past doc end (`outer.y + outer.h + 80px = 227px` on a 184px doc); Bug A's docExtentPy guard correctly refuses the promote as a no-op. The harness assertion `expect(afterPromote.length).toBe(2)` was written at commit `69434ed` (2026-04-28), before Bug A landed (`537ee5e`). The test pins legacy behavior the kept-guards design no longer permits — same shape as Fix 14.
-- `src/groupB-promoteThenDragPromotedFrame.diag.test.ts` — pins #4 (mirror of #3). **Not an apply-layer bug.** Test drops at `outer.y + outer.h + 60px = 207px` on a 239px doc (in-bounds for Bug A), but the resulting target row range [10, 13) collides with "Bottom prose" at row 12; Bug C's prose-row guard correctly refuses. Same shape: pre-Bug-C test pinning legacy behavior.
+**What the next agent should do** (use `superpowers:systematic-debugging`):
 
-**Revised plan.** Two of the three "Group B apply-layer bugs" are actually outdated tests (same as Fix 14 in row 6). Only #2 (Bug E) needs a production fix. After Bug E ships:
+1. **Reproduce at the model layer.** Write `src/groupC-bandTopClamp.diag.test.ts` mirroring the pattern of `src/ghostOnConvergeDemote.diag.test.ts`. The reproducer should:
+   - Load the test fixture (read `e2e/harness.spec.ts:4207`+ for exact text and steps).
+   - Replay the per-tick `moveFrameEffect` ticks via `simulateDragSelected` (template in `ghostOnConvergeDemote.diag.test.ts:96+`).
+   - Assert the rect's post-drag absolute `gridRow` is ≥ pre-drag gridRow (didn't move above the band's top edge), and that the saved markdown matches the input (no doc edits).
 
-- harness goes from 139/6 to 140/5 (one real bug cleared).
-- Three remaining failures (#3, #4, #6) all need test rewrites or deletions, not production fixes. They pin legacy "promote past doc end / promote into prose should succeed somehow" behavior the kept-guards design refuses.
-- Final target shifts: it's not 144/0 unless those tests are explicitly retired or rewritten. Realistic post-Bug-E target: 140/5, with a subsequent test-cleanup PR taking the count to 143/2 (deletion of #3, #4, #6) or 144/1 if their assertions can be salvaged. The two remaining failures (#1 + #5) are unrelated to reparent.
+2. **Bisect to a single file:line.** Likely culprits to verify (don't anchor — verify):
+   - `clampBandMoveDelta` (`src/editorState.ts`, search for the function) — clamps a band's gridRow within doc bounds. Maybe doesn't clamp at the band's top edge for in-band rect motion.
+   - `framesField.update`'s `moveFrameEffect` handler (`editorState.ts:170+`) — applies moveFrame after computing `clampBandMoveDelta` and `computeRotationBudget`. The rotation budget is for CLAIMING frames (top-level bands); rect-in-band motion uses different math. Find the path for "rect inside band, dRow up".
+   - `shouldEscalateResidual` (`editorState.ts:1794+`) — decides when a clamped in-band move escalates to a band-level rotate. If escalation happens when it shouldn't, the rect's residual upward motion rotates the band's claim above doc start.
+   - `DemoV2.tsx` per-tick onMouseMove (around line 651-715) — computes `clampedDRow` against band bounds; check if `minDRow = -bandRow` correctly clamps at band top.
 
-**Day 2 (Bug E only).** Use `superpowers:systematic-debugging` to trace `src/groupB-undoReparent.diag.test.ts`'s failure. Likely root cause: `frameInversion` (`editorState.ts:563-586`) snapshots `tr.startState.field(framesField)` for the FORWARD transaction, but the forward reparent dispatches multiple effects (`reparentFrameEffect` + optional `deleteFrameEffect` for cascade-prune). The inverted ChangeSet correctly reverses the doc edit; the snapshot correctly captures pre-transaction frames. Why does undo leave a nested rect? Possibilities:
+3. **Propose 2-3 fix-surface options before coding.** Same discipline as Bugs A-F.
 
-1. **`recomputeWireframeBounds` runs after `restoreFramesEffect` and rewrites the restored tree.** `editorState.ts:458-462` gates recompute on `!hasMoveOnlyEffects`; `restoreFramesEffect` is not in the move-only list, so recompute fires after the snapshot is restored. If recompute mutates the snapshotted tree (rebasing children), the result diverges from what was snapshotted.
-2. **The snapshot's docOffsets don't match the post-undo doc.** Although `restoreFramesEffect` early-returns from `framesField.update` (line 160), bypassing mapPos, the `gridRow sync` pass at lines 432-449 runs unconditionally and reads from `tr.newDoc`. If the snapshot's docOffsets point at lines that no longer exist (or shifted), gridRow sync may produce a different tree.
-3. **The forward transaction's effects (`reparentFrameEffect` + `deleteFrameEffect`) leave the source band's removed-from state recorded somewhere that undo doesn't reach.**
+4. **Ship one targeted fix.** Goal: harness 143/1 → 144/0. After ship, also confirm the saved-doc round-trip is unaltered (assertion 2).
 
-Day 2's first action: add `console.log` instrumentation inside the diag test's "step 1 + step 2 (undo)" assertion, dumping `state2`'s frames. Compare to `state0`'s frames. The diff localizes the bug.
-
-**Day 3 (ship Bug E + retire/rewrite outdated tests).**
-
-- Commit 1: Bug E production fix (likely &lt;30 lines).
-- Commit 2: Either delete or rewrite the three outdated tests (#3, #4, #6 from "Current open failures"; aka harness lines 3831, 3886, 4256). Use the diag-test pin files as documentation of why each is outdated.
-- After both: harness should reach 142/3 or 143/2 depending on whether those three tests are retired.
+**Files the next agent will touch (most likely):**
+- `src/editorState.ts` — `framesField.update` effect handlers, possibly `clampBandMoveDelta` or `shouldEscalateResidual`.
+- `src/DemoV2.tsx:651-715` — per-tick onMouseMove math (less likely; existing logic is well-tested by Bugs A-F).
+- New `src/groupC-bandTopClamp.diag.test.ts` — model-layer reproducer.
+- Existing `e2e/harness.spec.ts:4207` — should turn green after fix; no rewrite needed (the assertion is correct, just the implementation is wrong).
 
 **Stop conditions:**
-- After Day 2: if Bug E fix can't be expressed in &lt;30 lines, escalate. Re-evaluate whether the architectural rewrite at `docs/plans/2026-05-04-reparent-step-rewrite.md` is justified for this single bug (probably not — the cost is still 4-PR migration for one fix).
-- If a Bug E fix introduces new failures, revert and re-think.
+- If the fix can't be expressed in <30 lines, escalate. Reparent saw an architectural-rewrite plan deferred at `docs/plans/2026-05-04-reparent-step-rewrite.md`; the same kind of caution applies here.
+- If a fix introduces new failures, revert and re-think.
 
-**Files to consult during this work:**
-- `src/groupB-undoReparent.diag.test.ts` — the live reproducer for Bug E.
-- `src/groupB-promoteThenDragOldParent.diag.test.ts`, `src/groupB-promoteThenDragPromotedFrame.diag.test.ts` — pins for the two outdated tests (read these to understand what's outdated and why).
-- `src/ghostOnConvergeDemote.diag.test.ts` — template for how diag tests are written (drives the same effects DemoV2 emits).
-- `src/editorState.ts:563-586` — `frameInversion` (undo/redo snapshot mechanism; likely Bug E lives here).
-- `src/editorState.ts:139-200` — `framesField.update` (Phase 1 restoreFramesEffect + Phase 2 mapPos + Phase 3 effects + gridRow sync).
-- `src/editorState.ts:1440-1535` — `applyReparentFrame` (today's split-across-branches apply layer).
-- `e2e/harness.spec.ts:3689,3831,3886` — the three Group B harness tests (for context on what each was supposed to verify before guards landed).
+After this clears: harness 144/0, vitest 617/2 (the 2 fails are still the deferred apply-layer pins from Bug B/C — those are intentional pins, not bugs to fix in this round; documented as known compromises).
 
-**Why surgical, not architectural.** A reparent rewrite plan was drafted at `docs/plans/2026-05-04-reparent-step-rewrite.md` and went through multiple reviewer rounds. Each round surfaced new issues; net diff was ~400 lines + a 4-PR migration. The user's call: that's expensive for +3 harness tests on a working 139/6 baseline. The same surgical pattern that took the harness from 112/32 to 139/6 (write a model-layer diag reproducer, bisect to a single line, propose 2-3 fix-surface options before coding, ship one targeted fix) should clear #2 too. The plan doc is kept for reference if Bug E triage reveals genuinely structural rot — but start surgical.
+**Why surgical, not architectural.** A reparent rewrite plan was drafted at `docs/plans/2026-05-04-reparent-step-rewrite.md` and went through multiple reviewer rounds. Each round surfaced new issues; net diff was ~400 lines + a 4-PR migration. The decision: that's expensive when the surgical pattern (write a model-layer diag reproducer, bisect to a single line, propose 2-3 fix-surface options before coding, ship one targeted fix) has cleared Bugs A-F cleanly. The plan doc is kept for reference if a future bug reveals genuinely structural rot — but start surgical.
 
 ---
 
@@ -120,9 +116,9 @@ After horizontally dragging a child wireframe OUT of its parent dashboard (promo
 
 ---
 
-## 2026-05-02 → 2026-05-03 sessions — Bug A/B/C/D investigation summary
+## Bug A/B/C/D/E/F investigation summary
 
-Each Bug below was found via systematic-debugging: write a model-layer reproducer (`src/*.diag.test.ts`), bisect to a single file:line, decide between fix surfaces, prefer the decision-oracle (`decideReparent`) over apply-layer rewrites. All four added an optional parameter to `decideReparent` so callers can refuse operations whose geometry would corrupt prose or sibling claims.
+Each Bug below was found via systematic-debugging: write a model-layer reproducer (`src/*.diag.test.ts`), bisect to a single file:line, decide between fix surfaces, prefer the decision-oracle (`decideReparent`) over apply-layer rewrites. Bugs A-D added optional parameters to `decideReparent` so callers can refuse operations whose geometry would corrupt prose or sibling claims. Bug E fixed the drag/reparent atomicity at the dispatch layer. Bug F relaxed the same-band-sibling guard and made the demote handler walk the parent path for nested-wireframe targets.
 
 ### Bug A — promote past doc end
 
@@ -138,6 +134,14 @@ A promote whose `[aRow, aRow + gridH)` row range landed on prose silently overwr
 
 ### Bug D — demote-into-band where landing rows overlap a sibling
 
-`applyReparentFrame`'s raw-demote branch (line 1524-1535) inserts the dragged rect into the destination band as a sibling without expanding the band or offsetting existing children. When the dragged frame's claim rows overlap a sibling's, both rects share band cells and the serializer renders junctions (`├────┤`) — visible content rows like `│ A │` and `│ B │` disappear from the saved markdown. Fix: pass `demoteLanding: { aRow, gridH }`; refuse demote when the landing range overlaps a sibling AND the dragged frame is at least as large as the colliding sibling (the size check preserves legitimate Figma-style nesting where dragged is strictly smaller). See `src/ghostOnConvergeDemote.diag.test.ts` for the reproducer.
+`applyReparentFrame`'s raw-demote branch (line 1524-1535) inserts the dragged rect into the destination band as a sibling without expanding the band or offsetting existing children. When the dragged frame's claim rows overlap a sibling's, both rects share band cells and the serializer renders junctions (`├────┤`) — visible content rows like `│ A │` and `│ B │` disappear from the saved markdown. Fix: pass `demoteLanding: { aRow, gridH }`; refuse demote when the landing range overlaps a sibling AND the dragged frame is at least as large as the colliding sibling (the size check preserves legitimate Figma-style nesting where dragged is strictly smaller). See `src/ghostOnConvergeDemote.diag.test.ts` for the reproducer. See commit 02e8bf7.
 
-**Pattern across all four bugs.** The decision oracle is the right surface — callers compute landing geometry from cursor + doc + frames, the oracle says yes/no. The apply layer (`applyReparentFrame` + `unifiedDocSync`) has known edge cases that produce silent corruption when the oracle gives the green light on bad geometry; the deferred apply-layer pins in `ghostOnDragPastEnd.diag.test.ts` and `ghostOnEqualSizePromote.diag.test.ts` document those. A unified rewrite of the apply path would also clear those pins and the three remaining Group B failures.
+### Bug E — drag-and-reparent produced two history entries
+
+A drag-and-reparent gesture fired two transactions: the cumulative-drag commit (Fix 9) and the reparent. A single Cmd+Z only reversed the second — the cumulative drag stayed applied, leaving the dragged frame at its mid-drag column inside its (now-restored) source band. Saved markdown after undo had the rect at the wrong column. Fix: dispatch the reparent transaction against `mouseDownState` (the pre-drag snapshot). The reparent itself positions the dragged frame at `(aRow, aCol)` from the cursor at mouseup — so the cumulative-drag delta is redundant for final position. `frameInversion` snapshots `mouseDownState`'s frames, so undo restores the entire pre-drag state. (An earlier attempt prepended cumulative-drag effects via an `extraEffects` parameter; that broke drag-onto-existing-frame because `moveFrameEffect`'s handler runs `mergeOverlappingBands` before `reparentFrameEffect` in the same transaction. Fixed by dropping the extraEffects path entirely in commit 7c235be.) See `src/groupB-undoReparent.diag.test.ts` for the reproducer. Commits: bcf678f (initial), 7c235be (cleanup).
+
+### Bug F — drop-on-sibling-wireframe did not reparent
+
+`decideReparent` had a guard `if (hitTopLevel.id === draggedTopAncestor.id) return { kind: "none" };` that refused ALL same-band reparents. When two rects shared a top-level band (siblings — e.g., a freshly-drawn rect next to an existing wireframe), dropping one onto the other returned no-op. Fix (two parts): (1) `decideReparent` walks UP from the hit leaf to find the smallest enclosing container (wireframe with `content === null && !isBand`, OR a top-level band) that's not the dragged itself, not an ancestor of the dragged, and not the dragged's immediate parent. Returns that container's id. (2) `applyReparentFrame`'s demote handler now walks the parent path to compute absolute coords (mirroring `applyAddChildFrame`'s logic at line 1392-1395) — required because the new target may be a nested wireframe whose `gridRow` is parent-relative, not absolute. See `e2e/harness.spec.ts:3741` for the harness test. See commit 7c235be.
+
+**Pattern across all six bugs.** The decision oracle is the right surface for geometry guards (Bugs A-D, F): callers compute landing geometry from cursor + doc + frames, the oracle says yes/no. Atomicity is the right surface for history concerns (Bug E): one logical user-gesture = one CodeMirror transaction = one history entry. The apply layer (`applyReparentFrame` + `unifiedDocSync`) has known edge cases that produce silent corruption when the oracle gives the green light on bad geometry; the deferred apply-layer pins in `ghostOnDragPastEnd.diag.test.ts` and `ghostOnEqualSizePromote.diag.test.ts` document those. A unified rewrite of the apply path would also clear those pins; the architectural-rewrite plan at `docs/plans/2026-05-04-reparent-step-rewrite.md` is kept for that future work but is not on the current path.
