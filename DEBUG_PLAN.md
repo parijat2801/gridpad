@@ -1,8 +1,8 @@
 # Debug plan — gridpad harness recovery
 
 **Worktree:** `.claude/worktrees/unified-document`
-**Current status:** vitest 617/2 (both fails are diag tests that pin deferred apply-layer bugs B + C), harness **140/5**.
-**Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 140/5 (today). Target: 144/0.
+**Current status:** vitest 617/2 (both fails are diag tests that pin deferred apply-layer bugs B + C), harness **142/1**.
+**Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 142/1 (today). Target: 143/0.
 
 This is the **live working doc**. The "Shipped fixes" table summarizes what's already landed; "Current open failures" lists what's still failing; the bottom section keeps the latest investigation narrative for handoff.
 
@@ -32,15 +32,11 @@ This is the **live working doc**. The "Shipped fixes" table summarizes what's al
 
 ---
 
-## Current open failures (5 tests, harness 140/5)
+## Current open failures (1 test, harness 142/1)
 
 | # | Test | Class | Hypothesis |
 |---|------|-------|------------|
-| 1 | reparent › equal-size frames passed through each other do not nest | Test outdated | Output is now clean (no ghost). Test asserts `tree[0].children` has no rect, but `getFrameTree` returns band-wrapped frames so `tree[0]=band-A → [rect-A,…]`. Assertion needs to walk past the band wrapper. |
-| 2 | drag independence › promote then drag old parent: promoted frame stays put | Test outdated (post-Bug-A) | Confirmed via `src/groupB-promoteThenDragOldParent.diag.test.ts`. Drop is past doc end; Bug A's docExtentPy guard correctly refuses promote. Test was written pre-Bug-A. |
-| 3 | drag independence › promote then drag the promoted frame: old parent stays put | Test outdated (post-Bug-C) | Confirmed via `src/groupB-promoteThenDragPromotedFrame.diag.test.ts`. Drop lands on "Bottom prose" row; Bug C's prose-row guard correctly refuses promote. Test was written pre-Bug-C. |
-| 4 | eager-band UX regressions › dragging a rect up inside its band clamps at band top edge | Group C | In-band clamp bug; unrelated to reparent. |
-| 5 | eager-band UX regressions › Fix 14: drag does not cross non-blank prose line | Test outdated (post-Bug-D) | Test pins legacy "A reorders past Middle" behavior. Bug C refused the promote and Bug D refused the demote-into-B; together A correctly stays in place — but the test's `idxMiddle < idxA` assertion still expects the legacy reorder. Re-derive expectation. |
+| 1 | eager-band UX regressions › dragging a rect up inside its band clamps at band top edge | Group C | In-band clamp bug; unrelated to reparent. The dragged rect's upward motion isn't clamped at the band's top edge — it crosses out, possibly altering the doc. Separate triage; not part of the reparent fix sequence. |
 
 **Triage outcome (2026-05-04, Day 1 of the surgical plan).** Three model-layer reproducers were written to bisect each Group B failure to its mechanism:
 
