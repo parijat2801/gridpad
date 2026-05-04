@@ -837,28 +837,28 @@ export default function DemoV2() {
         }
       }
 
-      // Bug E fix: when reparent fires, fold the cumulative-drag commit
-      // INTO the reparent transaction. This produces ONE history entry for
-      // the whole drag-and-reparent gesture. Without this, the cumulative
-      // drag and the reparent are two separate transactions; a single user
-      // undo only reverses the second, leaving the dragged frame at its
-      // mid-drag column inside its (now-restored) source band → saved
-      // markdown corrupted.
+      // Bug E fix: when reparent fires, dispatch ONE transaction against
+      // mouseDownState containing only the reparent effects (NO cumulative
+      // drag effects). The reparent itself positions the dragged frame at
+      // (aRow, aCol) — exactly where the user's cursor lands — so the
+      // cumulative-drag delta is redundant for the final position.
+      // frameInversion captures mouseDownState's frames as the undo
+      // snapshot, so a single Cmd+Z reverses the whole gesture atomically.
+      //
+      // Earlier versions of this fix prepended cumulative-drag effects via
+      // applyReparentFrame's `extraEffects` parameter. That broke
+      // drag-onto-existing-frame because moveFrameEffect's handler runs
+      // mergeOverlappingBands (editorState.ts:206), which collapsed the
+      // dragged frame's band into the destination band BEFORE the reparent
+      // effect ran — leaving reparent with nothing to do. Skipping the
+      // cumulative-drag effects entirely avoids that ordering issue while
+      // preserving undo atomicity (single transaction, single history
+      // entry, frameInversion captures pre-drag state).
       //
       // When no reparent fires, commit the cumulative drag alone (Fix 9
       // unchanged behavior).
       if (dragRef.current.hasMoved && dragRef.current.mouseDownState) {
         if (reparentDecision.kind !== "none" && reparentArgs) {
-          // Drag-and-reparent: dispatch ONE transaction against mouseDownState.
-          // applyReparentFrame's `extraEffects` parameter prepends the drag
-          // effects so the transaction applies them BEFORE the reparent
-          // effects, and frameInversion captures mouseDownState's frames as
-          // the undo snapshot.
-          const dragEffects = computeCumulativeDragEffects(
-            dragRef.current.frameId,
-            dragRef.current.mouseDownState,
-            !!dragRef.current.resizeHandle,
-          );
           const targetParentId = reparentDecision.kind === "demote"
             ? reparentDecision.targetTopLevelId
             : null;
@@ -870,7 +870,6 @@ export default function DemoV2() {
             reparentArgs.aCol,
             reparentArgs.cw,
             reparentArgs.ch,
-            dragEffects,
           );
           syncRefsFromState();
         } else {

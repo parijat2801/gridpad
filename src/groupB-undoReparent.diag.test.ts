@@ -187,28 +187,27 @@ function simulateDragSelected(
     { aRow, gridH: draggedGridH },
   );
 
-  // Compute cumulative-drag delta: workingState - mouseDownState.
+  // Mouseup commit. If reparent fires, dispatch ONE transaction against
+  // mouseDownState — the reparent itself positions the dragged frame at
+  // (aRow, aCol), so cumulative-drag effects are NOT folded in (doing so
+  // would trigger mergeOverlappingBands inside the transaction and corrupt
+  // drag-onto-existing-frame). frameInversion captures mouseDownState's
+  // frames as the undo snapshot regardless. If no reparent fires, commit
+  // the cumulative drag alone (Fix 9).
+  if (decision.kind === "demote") {
+    return applyReparentFrame(mouseDownState, leafId, decision.targetTopLevelId, aRow, aCol, CW, CH);
+  }
+  if (decision.kind === "promote") {
+    return applyReparentFrame(mouseDownState, leafId, null, aRow, aCol, CW, CH);
+  }
+  // No reparent: commit cumulative drag alone.
   const mdFrame = findFrameInList(getFrames(mouseDownState), leafId);
   const wsFrame = findFrameInList(getFrames(workingState), leafId);
   const dragDCol = mdFrame && wsFrame ? wsFrame.gridCol - mdFrame.gridCol : 0;
   const dragDRow = mdFrame && wsFrame ? wsFrame.gridRow - mdFrame.gridRow : 0;
-  const dragEffects: StateEffect<unknown>[] = [];
   if (dragDCol !== 0 || dragDRow !== 0) {
-    dragEffects.push(moveFrameEffect.of({ id: leafId, dCol: dragDCol, dRow: dragDRow, charWidth: CW, charHeight: CH }));
-  }
-
-  // Mouseup commit. If reparent fires, fold drag effects into the reparent
-  // transaction via extraEffects. If not, commit drag alone against
-  // mouseDownState.
-  if (decision.kind === "demote") {
-    return applyReparentFrame(mouseDownState, leafId, decision.targetTopLevelId, aRow, aCol, CW, CH, dragEffects);
-  }
-  if (decision.kind === "promote") {
-    return applyReparentFrame(mouseDownState, leafId, null, aRow, aCol, CW, CH, dragEffects);
-  }
-  if (dragEffects.length > 0) {
     return mouseDownState.update({
-      effects: dragEffects,
+      effects: moveFrameEffect.of({ id: leafId, dCol: dragDCol, dRow: dragDRow, charWidth: CW, charHeight: CH }),
       annotations: [Transaction.addToHistory.of(true)],
     }).state;
   }

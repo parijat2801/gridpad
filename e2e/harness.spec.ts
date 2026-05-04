@@ -3726,6 +3726,109 @@ End`;
     // reverses the whole gesture).
     expect(saved.trim(), "post-undo saved markdown should match input").toBe(TWO_BOXES.trim());
   });
+
+  // Test 8 (Bug F, 2026-05-04): drop a rect onto a sibling wireframe (same
+  // band). User-reported: drew a new rect in the same band as the existing
+  // wireframe, then dragged it onto the wireframe — the rect did not become
+  // a child of the wireframe. decideReparent's same-top-ancestor guard
+  // (editorState.ts:1959) refuses any reparent when source and target
+  // share a top-level band, even when the target is a different sibling
+  // wireframe within that band.
+  //
+  // Expected (Figma-style): drop on a sibling wireframe should demote the
+  // dragged rect into that wireframe (or into the band's wireframe wrapper
+  // containing the hit leaf).
+  test("drag rect onto sibling wireframe in same band: rect nests into target", async ({ page }) => {
+    // Big empty container on the left; we'll draw a small rect to its right
+    // (same band — the gridW is wide enough to fit both at the same row range)
+    // and drag the small rect onto the container.
+    const fixture = `Above
+
+┌────────────────────────────┐
+│                            │
+│                            │
+│                            │
+│                            │
+│                            │
+└────────────────────────────┘
+
+Below`;
+    await load(page, fixture);
+    writeArtifact("reparent-sibling-into-wireframe", "input.md", fixture);
+
+    const before = await getFrames(page);
+    expect(before.length).toBe(1);
+    const container = before[0];
+
+    // Step 1: draw a new rect to the RIGHT of the container, on the same row
+    // band (same vertical range, different column). The eager-bands scanner
+    // packs these into one band when there's no prose row between them.
+    await page.keyboard.press("r");
+    await page.waitForTimeout(200);
+    const canvas = page.locator("canvas");
+    const cbox = await canvas.boundingBox();
+    const drawSx = cbox!.x + container.x + container.w + 50; // right of container
+    const drawSy = cbox!.y + container.y + 20; // same row range as container
+    await page.mouse.move(drawSx, drawSy);
+    await page.mouse.down();
+    await page.mouse.move(drawSx + 60, drawSy + 30, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    await screenshot(page, "reparent-sibling-into-wireframe", "1-after-draw");
+
+    const afterDraw = await getFrames(page);
+    expect(afterDraw.length, "drew a new rect").toBeGreaterThanOrEqual(1);
+    // Find the freshly-drawn rect (the one whose id is NOT the original
+    // container's id).
+    const drawnId = afterDraw.find(f => f.id !== container.id)?.id
+      ?? (await getFrameTree(page))[0].children.find((c: any) => c.id !== container.id)?.id;
+    expect(drawnId, "freshly-drawn rect should exist").toBeTruthy();
+
+    // Switch back to select mode so the drag selects rather than draws.
+    await page.keyboard.press("v");
+    await page.waitForTimeout(100);
+
+    // Step 2: drag the freshly-drawn rect onto the container's interior.
+    const drawnNode = await findFrameInTree(page, drawnId!);
+    expect(drawnNode, "drawn rect resolves in tree").toBeTruthy();
+    const dragStartX = cbox!.x + drawnNode!.absX + drawnNode!.w / 2;
+    const dragStartY = cbox!.y + drawnNode!.absY + drawnNode!.h / 2;
+    const dropX = cbox!.x + container.x + container.w / 2;
+    const dropY = cbox!.y + container.y + container.h / 2;
+    await page.mouse.move(dragStartX, dragStartY);
+    await page.mouse.down();
+    await page.mouse.move(dropX, dropY, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    await clickProse(page, 5, 5);
+    await screenshot(page, "reparent-sibling-into-wireframe", "2-after-reparent");
+
+    const saved = await save(page);
+    writeArtifact("reparent-sibling-into-wireframe", "output.md", saved);
+
+    // Expected: saved markdown shows the drawn rect rendered INSIDE the
+    // container's interior — its ┌ and └ glyphs sit between the container's
+    // top-┌ and bottom-└ rows AND are indented past the container's left
+    // edge (column > 0). Pre-fix, decideReparent returns "none" so the
+    // drawn rect stays as a sibling and is serialized at its original
+    // (post-drag) position — possibly OUTSIDE the container's borders.
+    const lines = saved.split("\n");
+    const containerTopIdx = lines.findIndex(l => l.startsWith("┌"));
+    const containerBottomIdx = lines.findIndex((l, i) => i > containerTopIdx && l.startsWith("└"));
+    expect(containerTopIdx, "container's top border survives in saved md").toBeGreaterThanOrEqual(0);
+    expect(containerBottomIdx, "container's bottom border survives in saved md").toBeGreaterThan(containerTopIdx);
+    // The drawn rect's ┌ should appear BETWEEN the container's top and bottom
+    // (i.e., on a row strictly between them) AND inside the container's left
+    // pipe `│` — meaning the line starts with `│`, has interior whitespace,
+    // then the nested rect's `┌`. Pre-fix, the drawn rect was NOT nested:
+    // decideReparent's same-top-ancestor guard refused the demote, so the
+    // rect stayed flat in the band tree. Saved markdown might have the rect
+    // outside the container's border or as a separate top-level wireframe.
+    const innerLines = lines.slice(containerTopIdx + 1, containerBottomIdx);
+    const nestedRectOpens = innerLines.filter(l => /^│\s+┌/.test(l));
+    expect(nestedRectOpens.length, `drawn rect should appear nested inside container.\nSaved:\n${saved}`).toBeGreaterThanOrEqual(1);
+  });
+
 });
 
 // ── Drag independence: dragging one frame must not move another ──────────────

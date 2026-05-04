@@ -314,7 +314,15 @@ const framesField = StateField.define<Frame[]>({
             result = [...result, orig];
             continue;
           }
-          const p: Frame = parentRef;
+          // Compute parent's ABSOLUTE coords by walking the path. For a
+          // top-level band parent the path has length 1, so parentAbsRow ==
+          // parent.gridRow. For a nested wireframe parent (Bug F) we sum
+          // every gridRow on the path so the absolute → parent-relative
+          // conversion is correct (mirrors applyAddChildFrame:1392-1395).
+          const parentPath = findPath(result, e.value.newParentId);
+          let parentAbsRow = 0;
+          let parentAbsCol = 0;
+          for (const p of parentPath) { parentAbsRow += p.gridRow; parentAbsCol += p.gridCol; }
           // Use caller-supplied absolute coords if available — falling back
           // to orig.gridRow only works when orig was already top-level. For
           // a child being moved to a different parent, orig.gridRow is
@@ -322,8 +330,8 @@ const framesField = StateField.define<Frame[]>({
           // NEW parent's absolute gridRow produces garbage.
           const aRow = e.value.absoluteGridRow ?? orig.gridRow;
           const aCol = e.value.absoluteGridCol ?? orig.gridCol;
-          const childGridRow = aRow - p.gridRow;
-          const childGridCol = aCol - p.gridCol;
+          const childGridRow = aRow - parentAbsRow;
+          const childGridCol = aCol - parentAbsCol;
           const child: Frame = {
             ...orig,
             gridRow: childGridRow,
@@ -1437,13 +1445,20 @@ export function applyAddChildFrame(
  * newParentId === string → demote to child. unifiedDocSync releases the
  * frame's currently-claimed doc lines.
  */
-/** `extraEffects` (optional, Bug E fix) lets callers prepend additional
- * effects into the same transaction the reparent dispatches. The drag-and-
- * reparent path (DemoV2 onMouseUp) uses this to fold the cumulative-drag
- * commit and the reparent into a SINGLE history entry, so a single user undo
- * reverses both halves of the gesture. Without this, two history entries
- * are recorded, and a single undo only reverts the reparent — leaving the
- * dragged frame at its mid-drag column inside its now-restored source band. */
+/** Apply a reparent (promote, demote, or promote-redirect-to-existing-band).
+ *
+ * Bug E (commit bcf678f) atomicity invariant: the drag-and-reparent path in
+ * DemoV2 onMouseUp dispatches the reparent against the mouseDown snapshot
+ * (NOT the post-tick state). The reparent itself positions the dragged frame
+ * at (absoluteGridRow, absoluteGridCol), so the per-tick cumulative drag
+ * doesn't need to be re-emitted in this transaction. frameInversion captures
+ * mouseDownState's frames as the undo snapshot, so a single Cmd+Z reverses
+ * the whole drag-and-reparent gesture. (Earlier versions tried to fold the
+ * cumulative-drag effects into this transaction via an extraEffects param;
+ * that broke drag-onto-existing-frame because moveFrameEffect's handler
+ * calls mergeOverlappingBands before reparentFrameEffect runs, collapsing
+ * the source/target bands prematurely. Skipping the cumulative-drag effects
+ * entirely avoids the ordering issue while preserving undo atomicity.) */
 export function applyReparentFrame(
   state: EditorState,
   frameId: string,
@@ -1452,7 +1467,6 @@ export function applyReparentFrame(
   absoluteGridCol: number,
   charWidth: number,
   charHeight: number,
-  extraEffects: StateEffect<unknown>[] = [],
 ): EditorState {
   // Eager-band promote: if newParentId === null AND a band already claims
   // absoluteGridRow, redirect to demote-into-that-band. If the promoted
@@ -1490,7 +1504,7 @@ export function applyReparentFrame(
     const existingBand = findBandAtRow(getFrames(state), absoluteGridRow);
     if (existingBand && existingBand.id !== sourceBand?.id) {
       const promoted = findFrameInList(getFrames(state), frameId);
-      const effects: StateEffect<unknown>[] = [...extraEffects];
+      const effects: StateEffect<unknown>[] = [];
       if (promoted) {
         const childRowInBand = absoluteGridRow - existingBand.gridRow;
         const childBottom = childRowInBand + promoted.gridH;
@@ -1530,7 +1544,6 @@ export function applyReparentFrame(
     // a fresh band.
   }
   const effects: StateEffect<unknown>[] = [
-    ...extraEffects,
     reparentFrameEffect.of({
       frameId, newParentId, absoluteGridRow, absoluteGridCol, charWidth, charHeight,
     }),
@@ -1949,10 +1962,38 @@ export function decideReparent(
     return { kind: "none" };
   }
 
-  const hitTopLevel = frames.find(f => frameContains(f, targetLeaf.id)) ?? null;
-  if (!hitTopLevel) return { kind: "none" };
-  if (hitTopLevel.id === draggedTopAncestor.id) return { kind: "none" };
-  if (hitTopLevel.id === draggedId) return { kind: "none" };
+  // Bug F fix: walk up from the hit leaf to find the smallest enclosing
+  // CONTAINER frame that can accept the dragged frame as a child. A
+  // container is a wireframe (content === null && !isBand) or a top-level
+  // band. We walk from the leaf upward (closest container first) so the
+  // user's drop "into the smallest visible box" semantic holds — drop
+  // inside a nested wireframe demotes into that wireframe, not into its
+  // outer band.
+  //
+  // Skip the dragged frame itself and any ancestor of the dragged frame
+  // (the dragged can't become a child of itself or its own ancestors).
+  // Also skip the dragged frame's immediate parent (already there).
+  //
+  // Pre-fix this branch was a single check `hitTopLevel.id ===
+  // draggedTopAncestor.id → none` which refused ALL same-band reparents,
+  // including legitimate "drop on a sibling wireframe" gestures.
+  const hitPath = findPath(frames, targetLeaf.id); // root → ... → leaf
+  const draggedImmediateParent = findImmediateParent(frames, draggedId);
+  let target: Frame | null = null;
+  // Walk from the leaf upward. Closer (smaller-area) container wins.
+  for (let i = hitPath.length - 1; i >= 0; i--) {
+    const f = hitPath[i];
+    if (f.id === draggedId) continue; // can't nest into self
+    if (frameContains(f, draggedId)) continue; // can't nest into own ancestor
+    // Container check: wireframe or band.
+    const isContainer = f.isBand || (f.content === null && !f.isBand);
+    if (!isContainer) continue;
+    // Already-immediate-parent: no-op (don't reparent to current parent).
+    if (draggedImmediateParent && f.id === draggedImmediateParent.id) continue;
+    target = f;
+    break;
+  }
+  if (!target) return { kind: "none" };
 
   // Bug D fix: refuse demote when the dragged frame would collide with a
   // SIBLING of comparable size inside the destination band. The apply-
@@ -1968,14 +2009,15 @@ export function decideReparent(
   // sits "inside" — the layer compositor renders the dragged rect over
   // the larger frame's blank interior. Only refuse when dragged.gridH >=
   // colliding sibling's gridH (no room to fit inside the existing
-  // child's interior).
-  if (demoteLanding && hitTopLevel.isBand) {
+  // child's interior). Only applies when target is a band; nesting into
+  // a wireframe doesn't share the band's row-partition invariant.
+  if (demoteLanding && target.isBand) {
     const { aRow, gridH } = demoteLanding;
     const draggedBottom = aRow + gridH;
-    for (const child of hitTopLevel.children) {
+    for (const child of target.children) {
       if (child.id === draggedId) continue;
       if (child.content?.type === "text") continue; // text labels don't claim rows
-      const childTop = hitTopLevel.gridRow + child.gridRow;
+      const childTop = target.gridRow + child.gridRow;
       const childBottom = childTop + child.gridH;
       const overlaps = aRow < childBottom && draggedBottom > childTop;
       if (overlaps && gridH >= child.gridH) {
@@ -1984,12 +2026,7 @@ export function decideReparent(
     }
   }
 
-  // Mouseup-only decision: if the cursor lands inside another top-level
-  // frame, intent is to nest. No size guard — Figma allows nesting frames
-  // of any relative size, and "passing through" during drag is a
-  // non-issue because decideReparent only runs at mouseup (cursor is in
-  // FINAL position, not during traversal).
-  return { kind: "demote", targetTopLevelId: hitTopLevel.id };
+  return { kind: "demote", targetTopLevelId: target.id };
 }
 
 /** Walk the tree and recompute every wireframe (`content === null && !isBand`)
