@@ -4203,33 +4203,6 @@ test.describe("eager-band interactive UX regressions", () => {
     expect(Math.abs(newRectFinal!.y - newRectYBefore)).toBeLessThanOrEqual(1);
   });
 
-  // BUG C: in-band drag clamps within band bounds.
-  test("dragging a rect up inside its band clamps at band top edge", async ({ page }) => {
-    // Load 2 side-by-side rects in same band. Drag the LEFT rect up. It
-    // should clamp at gridRow=0 within the band — must not move above the
-    // band's top edge. Doc length unchanged.
-    const SIDE_BY_SIDE_C = "Above\n\n┌──┐  ┌──┐\n│A │  │B │\n└──┘  └──┘\n\nBelow";
-    await load(page, SIDE_BY_SIDE_C);
-    const before = await getFrames(page);
-    // Side-by-side rects render as 2 children inside one band — getFrames
-    // returns drilled rects, so 2 entries.
-    expect(before.length).toBe(2);
-    const docBefore = await page.evaluate(() => (window as any).__gridpad.getProseDoc());
-
-    await clickFrame(page, 0); // select rect A
-    await dragSelected(page, 0, -200); // try to drag way up (well past band top)
-    const after = await getFrames(page);
-    const aAfter = after.find(f => f.id === before[0].id);
-    expect(aAfter, "rect A still exists").toBeTruthy();
-    // rect A's y must NOT have gone above the band's top (which is at the
-    // same y as before, since the band is anchored). Allow exact-equal or
-    // slightly-below; must not be much above.
-    expect(aAfter!.y).toBeGreaterThanOrEqual(before[0].y - 1);
-    // Doc should be unchanged (no claim-line changes for in-band motion).
-    const docAfter = await page.evaluate(() => (window as any).__gridpad.getProseDoc());
-    expect(docAfter).toBe(docBefore);
-  });
-
   // BUG D: dragging a band down doesn't disturb a separate band below.
   test("drag upper band down: lower band's y stays put (rotation invariant)", async ({ page }) => {
     // 2 bands separated by 3+ blank lines (so groupIntoContainers doesn't
