@@ -58,6 +58,23 @@ function hitTestHandle(rects: HandleRect[], px: number, py: number): ResizeHandl
   return null;
 }
 
+// Top-level wireframes shrink-wrap around their internals — resizing the
+// outer box has no effect (the auto-layout pass overwrites any change).
+// Hide handles so the user resizes the children instead. A "top-level
+// wireframe" is a content-less, non-band frame whose immediate parent is
+// a band (i.e. depth 1 under the eager-band wrapper).
+function isTopLevelWireframe(frame: Frame, frames: Frame[]): boolean {
+  if (frame.isBand || frame.content !== null) return false;
+  const parent = findImmediateParent(frames, frame.id);
+  return parent?.isBand === true;
+}
+
+function shouldShowResizeHandles(frame: Frame, frames: Frame[]): boolean {
+  if (frame.content?.type === "text") return false;
+  if (isTopLevelWireframe(frame, frames)) return false;
+  return true;
+}
+
 const DEFAULT_TEXT = `# Gridpad
 
 Where ASCII wireframes come alive. Drag any box to see prose reflow around it. Resize from edges. Click anywhere to type. Press R to draw rectangles, L for lines, V to go back to select mode.
@@ -197,6 +214,9 @@ export default function DemoV2() {
   const sizeRef = useRef({ w: window.innerWidth, h: window.innerHeight });
   const activeToolRef = useRef<ToolName>("select");
   const [activeTool, setActiveTool] = useState<ToolName>("select");
+  // Debug overlay: tints synthetic eager-bands magenta. Off by default.
+  const showBandsRef = useRef<boolean>(false);
+  const [showBands, setShowBands] = useState<boolean>(false);
   const [canvasCursor, setCanvasCursor] = useState("default");
   const proseCursorRef = useRef<CursorPos | null>(null);
   const blinkRef = useRef(true);
@@ -319,12 +339,15 @@ export default function DemoV2() {
     }
     const cw = cwRef.current, ch = chRef.current;
     for (const frame of framesRef.current) {
-      if (frame.y + frame.h >= viewTop && frame.y <= viewBot) renderFrame(ctx, frame, 0, 0, cw, ch);
+      if (frame.y + frame.h >= viewTop && frame.y <= viewBot) renderFrame(ctx, frame, 0, 0, cw, ch, showBandsRef.current);
     }
     const selectedId = getSelectedId(stateRef.current);
     if (selectedId) {
       const sel = findFrameById(framesRef.current, selectedId);
-      if (sel) renderFrameSelection(ctx, sel.frame, sel.absX, sel.absY);
+      if (sel) {
+        const showHandles = shouldShowResizeHandles(sel.frame, framesRef.current);
+        renderFrameSelection(ctx, sel.frame, sel.absX, sel.absY, showHandles);
+      }
     }
     // Prose cursor (blinking)
     const cursor = proseCursorRef.current;
@@ -506,11 +529,10 @@ export default function DemoV2() {
     const currentSelectedId = getSelectedId(stateRef.current);
     if (currentSelectedId) {
       const sel = findFrameById(framesRef.current, currentSelectedId);
-      // Text-content frames are content-derived in size — they have no
-      // user-resizable dimensions. Skip the handle hit-test so a click on
-      // a small text label can reach the dblclick-to-edit path without
-      // being captured by 24×24 handle hit boxes that cover the label.
-      if (sel && sel.frame.content?.type !== "text") {
+      // Skip handle hit-test for frames that don't show handles: text-content
+      // frames (content-derived size, the 24×24 hit boxes would block the
+      // dblclick-to-edit path), and top-level wireframes (shrink-wrapped).
+      if (sel && shouldShowResizeHandles(sel.frame, framesRef.current)) {
         const handleHit = hitTestHandle(computeHandleRects(sel.absX, sel.absY, sel.frame.w, sel.frame.h), px, py);
         if (handleHit) {
           dragRef.current = { frameId: sel.frame.id, startX: px, startY: py, startFrameX: sel.absX, startFrameY: sel.absY, startFrameW: sel.frame.w, startFrameH: sel.frame.h, hasMoved: false, resizeHandle: handleHit, mouseDownState: stateRef.current };
@@ -592,7 +614,7 @@ export default function DemoV2() {
       const selectedId = getSelectedId(stateRef.current);
       if (selectedId) {
         const sel = findFrameById(framesRef.current, selectedId);
-        if (sel && sel.frame.content?.type !== "text") {
+        if (sel && shouldShowResizeHandles(sel.frame, framesRef.current)) {
           const handle = hitTestHandle(computeHandleRects(sel.absX, sel.absY, sel.frame.w, sel.frame.h), px, py);
           if (handle) {
             setCanvasCursor(RESIZE_CURSOR_MAP[handle]);
@@ -600,7 +622,7 @@ export default function DemoV2() {
             setCanvasCursor(hitTestFrames(framesRef.current, px, py) ? "grab" : "text");
           }
         } else if (sel) {
-          // Text-content frame selected: no handle cursor.
+          // Frame doesn't show handles (text label or top-level wireframe).
           setCanvasCursor(hitTestFrames(framesRef.current, px, py) ? "grab" : "text");
         } else { setCanvasCursor("text"); }
       } else {
@@ -1400,6 +1422,14 @@ export default function DemoV2() {
             {label}
           </button>
         ))}
+        <div style={{ width: 1, background: "#444", margin: "4px 4px" }} />
+        <button
+          onClick={() => { const next = !showBandsRef.current; showBandsRef.current = next; setShowBands(next); paint(); }}
+          title="Toggle band debug overlay"
+          style={{ background: showBands ? "rgb(255, 0, 200)" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: FONT_FAMILY, fontSize: 13, fontWeight: showBands ? 600 : 400 }}
+        >
+          ▦ Bands
+        </button>
       </div>
       <canvas
         ref={canvasRef}

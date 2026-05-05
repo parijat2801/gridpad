@@ -9,6 +9,8 @@ import { FONT_SIZE, FONT_FAMILY, FG_COLOR } from "./grid";
 /**
  * Recursively render a frame and its children onto ctx.
  * parentX/parentY are the accumulated pixel offsets from parent frames.
+ * showBandDebug=true tints synthetic bands magenta — useful while debugging
+ * eager-bands UX, off by default for normal viewing.
  */
 export function renderFrame(
   ctx: CanvasRenderingContext2D,
@@ -17,13 +19,12 @@ export function renderFrame(
   parentY: number,
   charWidth: number,
   charHeight: number,
+  showBandDebug: boolean = false,
 ): void {
   const x = parentX + frame.x;
   const y = parentY + frame.y;
 
-  // DEBUG: tint synthetic bands so they're visible while we debug
-  // eager-bands UX. Remove this block when done.
-  if (frame.isBand) {
+  if (showBandDebug && frame.isBand) {
     ctx.save();
     ctx.fillStyle = "rgba(255, 0, 200, 0.18)";
     ctx.fillRect(x, y, frame.w, frame.h);
@@ -60,7 +61,7 @@ export function renderFrame(
       const childY = y + child.y;
       renderTextFrame(ctx, child, childX, childY, charWidth, charHeight, parentInnerW);
     } else {
-      renderFrame(ctx, child, x, y, charWidth, charHeight);
+      renderFrame(ctx, child, x, y, charWidth, charHeight, showBandDebug);
     }
   }
 
@@ -151,20 +152,25 @@ const HANDLE_HALF = HANDLE_SIZE / 2;
 const SELECTION_COLOR = "#4a90d9";
 
 /**
- * Draw a blue selection outline and 8 resize handles around a frame.
- * absX/absY are the frame's absolute pixel position.
+ * Draw a blue selection outline and (optionally) 8 resize handles around a
+ * frame. absX/absY are the frame's absolute pixel position. Pass
+ * showHandles=false for frames that aren't user-resizable (text labels,
+ * top-level wireframes that shrink-wrap their contents).
  */
 export function renderFrameSelection(
   ctx: CanvasRenderingContext2D,
   frame: Frame,
   absX: number,
   absY: number,
+  showHandles: boolean = true,
 ): void {
   const { w, h } = frame;
 
   ctx.strokeStyle = SELECTION_COLOR;
   ctx.lineWidth = 1;
   ctx.strokeRect(absX, absY, w, h);
+
+  if (!showHandles) return;
 
   ctx.fillStyle = SELECTION_COLOR;
 
