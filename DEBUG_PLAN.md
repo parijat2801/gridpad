@@ -1,8 +1,10 @@
 # Debug plan — gridpad harness recovery
 
 **Worktree:** `.claude/worktrees/unified-document`
-**Current status:** vitest 617/2 (both fails are diag tests that pin deferred apply-layer bugs B + C), harness **143/1**.
+**Current status:** vitest **620/4** (4 fails: 2 deferred apply-layer pins from Bug B/C + 2 intentional Group C pins in `src/groupC-bandTopClamp.diag.test.ts`), harness **143/1**.
 **Trajectory:** 112/32 (regression baseline, ~6 weeks ago) → 143/1 (today). Target: 144/0.
+
+**Today's session edits (2026-05-04 → 2026-05-05, uncommitted at time of writing):** added `src/groupC-bandTopClamp.diag.test.ts` (model-layer Group C reproducer); 4 unused-var cleanups in pre-existing diag tests so `tsc -b` passes (`src/debugBucketA.test.ts` ×2, `src/debugBucketF.test.ts`, `src/ghostOnDragPastEnd.diag.test.ts`); UX changes — hide resize handles on top-level shrink-wrapped wireframes; toolbar toggle for the magenta band debug overlay (default OFF).
 
 This is the **live working doc**. The "Shipped fixes" table summarizes what's already landed; "Current open failures" lists what's still failing; the bottom section keeps the latest investigation narrative for handoff.
 
@@ -34,46 +36,57 @@ This is the **live working doc**. The "Shipped fixes" table summarizes what's al
 
 ---
 
-## Current open failures (1 test, harness 143/1) — handoff for next agent
+## Current open failures (1 test, harness 143/1)
 
-| # | Test | File:line | Class |
-|---|------|-----------|-------|
-| 1 | `eager-band interactive UX regressions › dragging a rect up inside its band clamps at band top edge` | `e2e/harness.spec.ts:4207` | Group C — in-band clamp, unrelated to reparent |
+| # | Test | File:line | Class | Status |
+|---|------|-----------|-------|--------|
+| 1 | `eager-band interactive UX regressions › dragging a rect up inside its band clamps at band top edge` | `e2e/harness.spec.ts:4207` | Group C — in-band clamp, unrelated to reparent | **TBD — investigation complete, fix decision pending** |
 
-**What the test does:** loads a fixture with a wireframe that has rotation budget below it (blank rows), clicks the rect to select, drags it UP inside its band (band-relative motion only), then asserts:
-1. `expect(aAfter!.y).toBeGreaterThanOrEqual(before[0].y - 1)` — the rect should NOT have moved more than 1px above its starting position. Today it moves further up than expected.
-2. `expect(docAfter).toBe(docBefore)` — the doc text should be unchanged for in-band motion (no claim-line changes). Today the doc may be modified.
+---
 
-**What the next agent should do** (use `superpowers:systematic-debugging`):
+## Group C — TBD (investigation complete, fix not yet shipped)
 
-1. **Reproduce at the model layer.** Write `src/groupC-bandTopClamp.diag.test.ts` mirroring the pattern of `src/ghostOnConvergeDemote.diag.test.ts`. The reproducer should:
-   - Load the test fixture (read `e2e/harness.spec.ts:4207`+ for exact text and steps).
-   - Replay the per-tick `moveFrameEffect` ticks via `simulateDragSelected` (template in `ghostOnConvergeDemote.diag.test.ts:96+`).
-   - Assert the rect's post-drag absolute `gridRow` is ≥ pre-drag gridRow (didn't move above the band's top edge), and that the saved markdown matches the input (no doc edits).
+**Reproducer landed:** `src/groupC-bandTopClamp.diag.test.ts` (4 tests; 2 pass as setup, 2 fail showing the bug at the model layer for both the multi-rect-wrapper case and a single-rect-band case).
 
-2. **Bisect to a single file:line.** Likely culprits to verify (don't anchor — verify):
-   - `clampBandMoveDelta` (`src/editorState.ts`, search for the function) — clamps a band's gridRow within doc bounds. Maybe doesn't clamp at the band's top edge for in-band rect motion.
-   - `framesField.update`'s `moveFrameEffect` handler (`editorState.ts:170+`) — applies moveFrame after computing `clampBandMoveDelta` and `computeRotationBudget`. The rotation budget is for CLAIMING frames (top-level bands); rect-in-band motion uses different math. Find the path for "rect inside band, dRow up".
-   - `shouldEscalateResidual` (`editorState.ts:1794+`) — decides when a clamped in-band move escalates to a band-level rotate. If escalation happens when it shouldn't, the rect's residual upward motion rotates the band's claim above doc start.
-   - `DemoV2.tsx` per-tick onMouseMove (around line 651-715) — computes `clampedDRow` against band bounds; check if `minDRow = -bandRow` correctly clamps at band top.
+**What the test does:** loads `SIDE_BY_SIDE_C` (2 rects A, B side-by-side in one band), clicks rect A, drags it UP -200px, then asserts:
+1. `aAfter.y >= before.y - 1` — the rect must NOT have moved more than 1px above its starting position.
+2. `docAfter === docBefore` — the doc text is unchanged for in-band motion (no claim-line changes).
 
-3. **Propose 2-3 fix-surface options before coding.** Same discipline as Bugs A-F.
+Today both assertions fail: rect A's visible y drops by ~1 row (the entire band rotates up by 1), and the prose surrounding the band rotates accordingly.
 
-4. **Ship one targeted fix.** Goal: harness 143/1 → 144/0. After ship, also confirm the saved-doc round-trip is unaltered (assertion 2).
+**Root cause** (verified at model layer):
 
-**Files the next agent will touch (most likely):**
-- `src/editorState.ts` — `framesField.update` effect handlers, possibly `clampBandMoveDelta` or `shouldEscalateResidual`.
-- `src/DemoV2.tsx:651-715` — per-tick onMouseMove math (less likely; existing logic is well-tested by Bugs A-F).
-- New `src/groupC-bandTopClamp.diag.test.ts` — model-layer reproducer.
-- Existing `e2e/harness.spec.ts:4207` — should turn green after fix; no rewrite needed (the assertion is correct, just the implementation is wrong).
+1. `clickFrame(0)` triggers `resolveSelectionTarget` (`editorState.ts:1651`) which on first click (`currentSelectedId=null`) returns `chain[0]` — the **wireframe wrapper** (`frame-15`), not leaf rect A. (Bands are filtered from the chain; the wrapper is the outermost non-band ancestor.)
+2. `dragSelected` then drags the wrapper, NOT the leaf. The wrapper sits at `bandRow=0` inside its band; `clampedDRow = max(0, min(0, -2)) = 0`. No in-band motion possible. `residualDRow = -2`.
+3. `dragParent = findImmediateParent(wrapper) = the band itself` (`DemoV2.tsx:700-703`). The band has 1 child (the wrapper), so `bandSiblings = 1`.
+4. `shouldEscalateResidual(0, -2, false, 0, 1)` returns `true` (because `bandSlackRows === 0`, single-sibling rule).
+5. The escalation dispatches a `moveFrameEffect` for the BAND with `dRow=-2`. `framesField.update`'s handler (`editorState.ts:189-194`) clamps via `computeRotationBudget` to `-1` (one blank row above). Band rotates up 1 row; `unifiedDocSync`'s rotation-only branch (`editorState.ts:702+`) edits the doc accordingly.
 
-**Stop conditions:**
-- If the fix can't be expressed in <30 lines, escalate. Reparent saw an architectural-rewrite plan deferred at `docs/plans/2026-05-04-reparent-step-rewrite.md`; the same kind of caution applies here.
-- If a fix introduces new failures, revert and re-think.
+**Surprising follow-up** (user observation 2026-05-04, confirmed in repro): the same upward-shift happens for a **single-rect band**, not just the multi-rect-wrapper case. So the bug isn't a multi-children edge case — it's the broader "single-sibling escalation when zero band slack" rule (`shouldEscalateResidual` line 1816+, `bandSlackRows === 0` returns true unconditionally).
 
-After this clears: harness 144/0, vitest 617/2 (the 2 fails are still the deferred apply-layer pins from Bug B/C — those are intentional pins, not bugs to fix in this round; documented as known compromises).
+This contradicts the design intent of Bug D's test (`drag upper band down: lower band's y stays put`), which explicitly relies on a single-rect band rotating when dragged DOWN. So a one-sided fix that disables UP-direction escalation may be needed, but it must preserve DOWN-direction rotation for repositioning.
 
-**Why surgical, not architectural.** A reparent rewrite plan was drafted at `docs/plans/2026-05-04-reparent-step-rewrite.md` and went through multiple reviewer rounds. Each round surfaced new issues; net diff was ~400 lines + a 4-PR migration. The decision: that's expensive when the surgical pattern (write a model-layer diag reproducer, bisect to a single line, propose 2-3 fix-surface options before coding, ship one targeted fix) has cleared Bugs A-F cleanly. The plan doc is kept for reference if a future bug reveals genuinely structural rot — but start surgical.
+**Three fix-surface options** (no decision shipped — pick one and verify with the diag tests):
+
+1. **Fix `shouldEscalateResidual` (`editorState.ts:1816`) — multi-children only.** Add a `draggedHasMultipleChildren: boolean` parameter; refuse escalation when the dragged frame is a wireframe wrapper with 2+ non-text descendants. Mirrors the existing `bandSiblings > 1` rule, just at the wrapper level. **Pro:** localised, ~5 lines. **Con:** doesn't cover the single-rect-band case the user observed.
+
+2. **Fix `shouldEscalateResidual` — directional asymmetry.** Refuse escalation for residuals whose direction is "out of doc" given the band's current claim — e.g., when `residualDRow < 0` AND the band is already at its `maxUp` rotation budget edge. **Pro:** covers both single-rect and multi-rect cases without a separate predicate. **Con:** changes the contract of "drag a band up to reposition it"; needs careful verification that Bug D's drag-down test still passes; risks breaking other rotation-based UX.
+
+3. **Fix `resolveSelectionTarget` (`editorState.ts:1651`) — drill on first click.** When `chain.length === 2` and `chain[0]` is a wireframe wrapper containing the leaf rect, return `chain[1]` (the leaf) on first click instead of the wrapper. Then dragging the rect uses `bandSiblings > 1` (multi-rect case) or stays inside the wrapper (single-rect case). **Pro:** doesn't change drag math at all. **Con:** changes Figma-style "outermost first" selection semantics broadly; would need to audit other selection-related tests; may affect dblclick-to-drill UX.
+
+**Stop conditions** (same as Bugs A-F):
+- If a fix can't be expressed in <30 lines, escalate; consider the deferred architectural-rewrite plan at `docs/plans/2026-05-04-reparent-step-rewrite.md`.
+- If a fix breaks Bug D's drag-down test, revert and re-think.
+
+**Files involved:**
+- `src/editorState.ts` — `shouldEscalateResidual` (1816), `resolveSelectionTarget` (1651), `framesField.update` move-effect handler (170+).
+- `src/DemoV2.tsx:651-715` — per-tick onMouseMove math (call site for `shouldEscalateResidual`).
+- `src/groupC-bandTopClamp.diag.test.ts` — model-layer reproducer (already landed).
+- `e2e/harness.spec.ts:4207` — the failing harness test (assertion is correct, no rewrite needed).
+
+After ship: harness 144/0, vitest **622/2** (the 2 Group C diag pins flip to passing once Group C ships, leaving the original 2 deferred apply-layer pins from Bug B/C — intentional, documented as known compromises).
+
+**Why surgical, not architectural.** A reparent rewrite plan was drafted at `docs/plans/2026-05-04-reparent-step-rewrite.md` and went through multiple reviewer rounds. Each round surfaced new issues; net diff was ~400 lines + a 4-PR migration. The decision: that's expensive when the surgical pattern (model-layer diag reproducer → bisect → fix-surface options → one targeted fix) has cleared Bugs A-F cleanly. The plan doc is kept for reference if a future bug reveals genuinely structural rot — but start surgical.
 
 ---
 
