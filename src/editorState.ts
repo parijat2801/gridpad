@@ -357,6 +357,16 @@ const framesField = StateField.define<Frame[]>({
             });
           result = addToParent(result);
         }
+        // Group D: after promote/demote, collapse any top-level bands whose
+        // ranges overlap OR touch. Promote can wrap the dragged frame in a
+        // fresh band that lands flush against its source band (horizontal
+        // drag-out keeps the drop row inside the source's range, so the
+        // eager-redirect at applyReparentFrame:1504 refuses "demote into
+        // self" and falls through to fresh-band promote here). The strict-
+        // overlap merge used by moveFrameEffect would miss the touching
+        // case; reparent never produces a legitimately-touching pair, so
+        // mergeTouching=true is safe on this path.
+        result = mergeOverlappingBands(result, true);
       } else if (e.is(deleteFrameEffect)) {
         // Mark parent container dirty before removing
         const markParentDirty = (frames: Frame[]): Frame[] =>
@@ -2097,7 +2107,7 @@ export function recomputeWireframeBounds(frames: Frame[]): Frame[] {
  * Idempotent — repeats until no overlap remains, in case three or more
  * bands collapse together.
  */
-function mergeOverlappingBands(frames: Frame[]): Frame[] {
+function mergeOverlappingBands(frames: Frame[], mergeTouching = false): Frame[] {
   let changed = true;
   let result = frames;
   while (changed) {
@@ -2111,7 +2121,16 @@ function mergeOverlappingBands(frames: Frame[]): Frame[] {
         const aStart = a.gridRow, aEnd = a.gridRow + a.lineCount;
         const bStart = b.gridRow, bEnd = b.gridRow + b.lineCount;
         // Overlap iff intervals [aStart, aEnd) and [bStart, bEnd) share any row.
-        if (aEnd <= bStart || bEnd <= aStart) continue;
+        // mergeTouching=true also collapses pairs that abut (aEnd === bStart):
+        // used after reparent to fix Group D, where promote can land a fresh
+        // band flush against its source band (no row separating them) — never
+        // an intentional state. Drag-clamp callers (moveFrameEffect) keep the
+        // strict-overlap default; Fix 14 deliberately leaves clamped-touching
+        // bands distinct.
+        const gapTest = mergeTouching
+          ? (aEnd < bStart || bEnd < aStart)
+          : (aEnd <= bStart || bEnd <= aStart);
+        if (gapTest) continue;
         const survivor = aStart <= bStart ? a : b;
         const other = survivor === a ? b : a;
         const newStart = Math.min(aStart, bStart);

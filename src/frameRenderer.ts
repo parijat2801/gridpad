@@ -11,6 +11,9 @@ import { FONT_SIZE, FONT_FAMILY, FG_COLOR } from "./grid";
  * parentX/parentY are the accumulated pixel offsets from parent frames.
  * showBandDebug=true tints synthetic bands magenta — useful while debugging
  * eager-bands UX, off by default for normal viewing.
+ * showWrapperDebug=true tints wireframe-wrappers (content===null, !isBand,
+ * children.length>0) cyan — surfaces the scanner-created shared parents that
+ * sibling rects share, which block decideReparent's drop-on-sibling demote.
  */
 export function renderFrame(
   ctx: CanvasRenderingContext2D,
@@ -20,6 +23,7 @@ export function renderFrame(
   charWidth: number,
   charHeight: number,
   showBandDebug: boolean = false,
+  showWrapperDebug: boolean = false,
 ): void {
   const x = parentX + frame.x;
   const y = parentY + frame.y;
@@ -30,6 +34,22 @@ export function renderFrame(
     ctx.fillRect(x, y, frame.w, frame.h);
     ctx.strokeStyle = "rgba(255, 0, 200, 0.6)";
     ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, frame.w - 1, frame.h - 1);
+    ctx.restore();
+  }
+
+  if (
+    showWrapperDebug
+    && !frame.isBand
+    && frame.content === null
+    && frame.children.length > 0
+  ) {
+    ctx.save();
+    ctx.fillStyle = "rgba(0, 220, 220, 0.14)";
+    ctx.fillRect(x, y, frame.w, frame.h);
+    ctx.strokeStyle = "rgba(0, 220, 220, 0.7)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
     ctx.strokeRect(x + 0.5, y + 0.5, frame.w - 1, frame.h - 1);
     ctx.restore();
   }
@@ -61,7 +81,7 @@ export function renderFrame(
       const childY = y + child.y;
       renderTextFrame(ctx, child, childX, childY, charWidth, charHeight, parentInnerW);
     } else {
-      renderFrame(ctx, child, x, y, charWidth, charHeight, showBandDebug);
+      renderFrame(ctx, child, x, y, charWidth, charHeight, showBandDebug, showWrapperDebug);
     }
   }
 

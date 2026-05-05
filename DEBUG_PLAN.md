@@ -126,17 +126,64 @@ These can be deleted before merge, or kept as regression-watch tests.
 
 ---
 
-## Group D — transient double-band after promote (visual UX, no harness coverage)
+## Group D — transient double-band after promote (RESOLVED 2026-05-06)
 
-**Reported by user 2026-05-02. Not in harness.**
+**Reported by user 2026-05-02. Originally not in harness; landed as `src/groupD-adjacentPromoteBand.diag.test.ts` model-layer reproducer.**
 
-After horizontally dragging a child wireframe OUT of its parent dashboard (promote → new top-level band), TWO BANDS visibly coexist for some time. The new band's selection bbox and the old band's selection bbox overlap vertically by 1-2 rows. Subsequent drags behave weirdly until the user moves either wireframe enough to actually overlap the other band's claim — `mergeOverlappingBands` collapses them and motion normalizes.
+After horizontally dragging a child wireframe OUT of its parent dashboard (promote → new top-level band), TWO BANDS visibly coexisted. Either touching (new band's `gridRow === sourceBand.gridRow + sourceBand.lineCount`) or overlapping (drop row inside source band's range; eager-redirect at `editorState.ts:1504` refused "demote into self" via `existingBand.id !== sourceBand.id`).
 
-**Root-cause hypothesis:** new promote band's claim is row-adjacent to the old parent band's, so `mergeOverlappingBands` sees no row-overlap → both survive. Visual selection bbox includes padding/handles → looks overlapping but isn't.
+**Root cause (verified by sonnet sub-agent):** `mergeOverlappingBands` was only called after `moveFrameEffect` (line 206), NOT after `reparentFrameEffect`. Even if it had been called, its strict-overlap test (`aEnd <= bStart || bEnd <= aStart` at line 2114) would have missed the touching case. Fix 14 (`editorState.test.ts:2915-2958`) explicitly relies on touching bands being a legitimate post-drag-clamp steady state, so loosening the global rule was a no-go.
 
-**Possible fixes:** eagerly merge adjacent bands after promote; OR shift promote-drop into empty space; OR relax `mergeOverlappingBands` to merge adjacent (risky — could fold intentionally distinct bands).
+**Fix (this session):** added an optional `mergeTouching = false` parameter to `mergeOverlappingBands`; called it with `true` at the end of `reparentFrameEffect`'s handler. Drag-clamp path keeps strict-overlap; reparent path collapses touching+overlapping pairs. Diag test went green; full vitest 622/4 (no regressions); harness 143/0 unchanged.
 
-**Severity:** UX papercut, not data corruption. Lower priority than apply-layer rewrite.
+---
+
+## Wrapper asymmetry — scanner wraps multi-rect bands, runtime add-rect doesn't (deferred)
+
+**Found 2026-05-06 while debugging drop-on-sibling reparent.**
+
+The scanner's `groupIntoContainers` (`frame.ts:439`) wraps top-level rects in a shared wireframe-wrapper when their pixel-y ranges overlap or are within 1 char-height. So a file-loaded band with 2+ vertically-adjacent rects has shape `band → wrapper → leaves`. The runtime add-rect path (`applyAddTopLevelFrame`, `editorState.ts:1303`) appends new rects as direct band children — no wrapper. Result: same visual layout has different frame trees depending on whether you opened from a file or built it click-by-click. Surfaced via the new `▢ Wrappers` debug toggle.
+
+**Decision (2026-05-06):** **Do not auto-wrap at runtime.** Wrapping should be a human-initiated gesture (multi-select + shrink-wrap), not implicit runtime behavior. The scanner does it on load only because that's the only way to recover groups from flat ASCII. Future work: build a multi-select group/ungroup UX, then audit whether the scanner's auto-grouping should also be revisited.
+
+**Side-effect on reparent:** scanner-created wrappers block drop-on-sibling reparent because `decideReparent`'s walk-up at `editorState.ts:2002` skips the dragged's immediate parent (the shared wrapper), then skips the band (ancestor of dragged), and returns `kind: "none"`. Tracked separately as "Bug G — drop-on-sibling reparent" below.
+
+---
+
+## Bug G — drop-on-sibling reparent fails when source and target share a wrapper (open)
+
+**Reported by user 2026-05-06.** Reproducer: `src/reparentSweep.diag.test.ts` (3 model-layer scenarios; SMALL_INTO_BIG case fails at `decideReparent` stage with `kind: "none"` for "drop tiny rect into big empty wireframe").
+
+In `document.md`, the dashboard band contains three top-level shapes scanner-wrapped under one wireframe. Dragging one onto another visually completes (per-tick drag works), but no reparent occurs — when the user later moves the drop target, the dragged frame doesn't follow.
+
+**Why:** `decideReparent` (`editorState.ts:1948`) walks leaf → root looking for the smallest container that's a band-or-wireframe AND not the dragged itself AND not an ancestor of the dragged AND not the dragged's immediate parent. When source and target share a wrapper:
+- innermost hit (target leaf): not a container → skip
+- shared wrapper: IS dragged's immediate parent → skip
+- band: IS dragged's ancestor → skip
+- → `none`
+
+**Chosen path (agreed 2026-05-06, not yet shipped):** Option 1 — **allow leaf-as-target** (rect frames count as containers in `decideReparent`'s walk-up). Sonnet sub-agent verified the four risk surfaces:
+
+1. **Serialization** — `serializeUnified` recurses into rect-children of rect-parents already (`serializeUnified.ts:112-115`); cell-write rule is "last non-space wins" (line 99) with no z-order. Safe when child fits strictly inside parent's interior; corrupts glyphs only when child border row coincides with parent border row.
+2. **Round-trip** — `reparentChildren` (`autoLayout.ts:164-248`) already nests rect-inside-rect at scan time. Save → reload preserves nesting in the clean interior case.
+3. **Hit-test** — `hitTestOne` (`frame.ts:227-251`) iterates ALL hit children and returns smallest-area; nested rect-in-rect resolves correctly. Earlier "first hit wins" framing was wrong.
+4. **Apply layer** — content-type-agnostic. `addToParent` (editorState.ts:348) appends regardless of parent.content. `layoutTextChildren` and `mergeAdjacentTexts` skip non-text children safely. One latent ergonomic bug: `frame.ts:294`'s `hasTextChildren` heuristic drops `minDim` to 2 when only rect-children present — could let a parent be resized smaller than its rect children need. Separate concern; pre-existing for empty wireframes too.
+
+**Implementation plan (2 changes):**
+1. Flip `editorState.ts:1999`: `const isContainer = f.isBand || (f.content === null && !f.isBand) || f.content?.type === "rect";`
+2. In `applyReparentFrame`'s `reparentFrameEffect` handler demote branch (~line 335), when the new parent is a rect (`parentRef.content?.type === "rect"`), clamp the child's parent-relative coords to leave ≥1 cell padding from each border. Makes claim 1's edge-collision impossible by construction.
+
+**Tests required before shipping:**
+- Fix the two fixture-finder bugs in `src/reparentSweep.diag.test.ts` (USER_FLOW + SIDE_BY_SIDE) — predicates picked the wrong leaves; the dump at `/tmp/reparent-sweep-dump.txt` shows the actual frame structure.
+- Add a test that drops a rect flush against the parent's edge and asserts the inset-on-demote keeps `child.gridRow >= 1` and `child.gridCol >= 1`.
+- Add a save → reload round-trip test using `serializeUnified` to confirm the nested rect survives.
+
+**Stop conditions:** if implementation exceeds 50 lines, escalate. Must keep harness 143/0 and the Group D diag passing.
+
+**Files involved:**
+- `src/editorState.ts` — `decideReparent` (1948), `applyReparentFrame` demote (302–358).
+- `src/reparentSweep.diag.test.ts` — model-layer reproducer (already landed; needs fixture-finder fixes).
+- `src/DemoV2.tsx:851` — call site for `decideReparent`.
 
 ---
 

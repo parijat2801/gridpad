@@ -217,6 +217,10 @@ export default function DemoV2() {
   // Debug overlay: tints synthetic eager-bands magenta. Off by default.
   const showBandsRef = useRef<boolean>(false);
   const [showBands, setShowBands] = useState<boolean>(false);
+  // Debug overlay: tints scanner-created wireframe-wrappers cyan so the
+  // shared parent that blocks drop-on-sibling reparent is visible.
+  const showWrappersRef = useRef<boolean>(false);
+  const [showWrappers, setShowWrappers] = useState<boolean>(false);
   const [canvasCursor, setCanvasCursor] = useState("default");
   const proseCursorRef = useRef<CursorPos | null>(null);
   const blinkRef = useRef(true);
@@ -339,7 +343,7 @@ export default function DemoV2() {
     }
     const cw = cwRef.current, ch = chRef.current;
     for (const frame of framesRef.current) {
-      if (frame.y + frame.h >= viewTop && frame.y <= viewBot) renderFrame(ctx, frame, 0, 0, cw, ch, showBandsRef.current);
+      if (frame.y + frame.h >= viewTop && frame.y <= viewBot) renderFrame(ctx, frame, 0, 0, cw, ch, showBandsRef.current, showWrappersRef.current);
     }
     const selectedId = getSelectedId(stateRef.current);
     if (selectedId) {
@@ -1429,6 +1433,13 @@ export default function DemoV2() {
           style={{ background: showBands ? "rgb(255, 0, 200)" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: FONT_FAMILY, fontSize: 13, fontWeight: showBands ? 600 : 400 }}
         >
           ▦ Bands
+        </button>
+        <button
+          onClick={() => { const next = !showWrappersRef.current; showWrappersRef.current = next; setShowWrappers(next); paint(); }}
+          title="Toggle wireframe-wrapper debug overlay"
+          style={{ background: showWrappers ? "rgb(0, 200, 200)" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: FONT_FAMILY, fontSize: 13, fontWeight: showWrappers ? 600 : 400 }}
+        >
+          ▢ Wrappers
         </button>
       </div>
       <canvas
