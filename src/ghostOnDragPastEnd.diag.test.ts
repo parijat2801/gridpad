@@ -20,7 +20,6 @@ import {
   createEditorStateUnified,
   getFrames,
   getDoc,
-  applyMoveFrame,
   applyReparentFrame,
   decideReparent,
 } from "./editorState";

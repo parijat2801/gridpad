@@ -120,7 +120,7 @@ describe("Bucket A diagnostic — what gets selected on clickFrame(0)?", () => {
       const maxDCol = containingBand.gridW - leaf.gridW - bandCol;
       console.log(`  drag-clamp: dRow ∈ [${minDRow}, ${maxDRow}], dCol ∈ [${minDCol}, ${maxDCol}]`);
       // Simulate drag of 100px down → ~5-6 rows
-      const desiredDRow = 6, desiredDCol = 0;
+      const desiredDRow = 6;
       const clampedDRow = Math.max(minDRow, Math.min(maxDRow, desiredDRow));
       const residualDRow = desiredDRow - clampedDRow;
       console.log(`  desired dRow=${desiredDRow} → clamped=${clampedDRow}, residual escalated to band=${residualDRow}`);
@@ -253,7 +253,6 @@ describe("Bucket A diagnostic — what gets selected on clickFrame(0)?", () => {
     }
     state = state.update({ effects }).state;
     const framesAfter = getFrames(state);
-    const leafAfter = findById(framesAfter, leaf0.id);
     const pathBefore = findPath(frames0, leaf0.id);
     const pathAfter = findPath(framesAfter, leaf0.id);
     let absXBefore = 0, absYBefore = 0;

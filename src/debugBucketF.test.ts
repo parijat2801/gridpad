@@ -36,15 +36,6 @@ function dump(frames: Frame[], depth = 0): string {
   return out.join("\n");
 }
 
-function findById(frames: Frame[], id: string): Frame | null {
-  for (const f of frames) {
-    if (f.id === id) return f;
-    const c = findById(f.children, id);
-    if (c) return c;
-  }
-  return null;
-}
-
 function firstTextChild(frames: Frame[]): Frame | null {
   for (const f of frames) {
     if (f.content?.type === "text") return f;
