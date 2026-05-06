@@ -330,8 +330,21 @@ const framesField = StateField.define<Frame[]>({
           // NEW parent's absolute gridRow produces garbage.
           const aRow = e.value.absoluteGridRow ?? orig.gridRow;
           const aCol = e.value.absoluteGridCol ?? orig.gridCol;
-          const childGridRow = aRow - parentAbsRow;
-          const childGridCol = aCol - parentAbsCol;
+          let childGridRow = aRow - parentAbsRow;
+          let childGridCol = aCol - parentAbsCol;
+          // Bug G: when parent is a labeled rect leaf, its borders occupy
+          // row 0, row gridH-1, col 0, col gridW-1. Clamp child to the
+          // interior with ≥1 cell padding so the inner frame can't sit
+          // on the parent's border glyphs. Skip clamp if parent is too
+          // small to host a child (interior <= 0 in either dim) — the
+          // upstream geometry guard should already refuse those drops.
+          const parentRect = parentRef as Frame;
+          if (parentRect.content?.type === "rect") {
+            const maxRow = parentRect.gridH - 1 - orig.gridH;
+            const maxCol = parentRect.gridW - 1 - orig.gridW;
+            if (maxRow >= 1) childGridRow = Math.min(Math.max(childGridRow, 1), maxRow);
+            if (maxCol >= 1) childGridCol = Math.min(Math.max(childGridCol, 1), maxCol);
+          }
           const child: Frame = {
             ...orig,
             gridRow: childGridRow,
@@ -357,6 +370,16 @@ const framesField = StateField.define<Frame[]>({
             });
           result = addToParent(result);
         }
+        // Group D: after promote/demote, collapse any top-level bands whose
+        // ranges overlap OR touch. Promote can wrap the dragged frame in a
+        // fresh band that lands flush against its source band (horizontal
+        // drag-out keeps the drop row inside the source's range, so the
+        // eager-redirect at applyReparentFrame:1504 refuses "demote into
+        // self" and falls through to fresh-band promote here). The strict-
+        // overlap merge used by moveFrameEffect would miss the touching
+        // case; reparent never produces a legitimately-touching pair, so
+        // mergeTouching=true is safe on this path.
+        result = mergeOverlappingBands(result, true);
       } else if (e.is(deleteFrameEffect)) {
         // Mark parent container dirty before removing
         const markParentDirty = (frames: Frame[]): Frame[] =>
@@ -1947,8 +1970,30 @@ export function decideReparent(
   const draggedTopAncestor = frames.find(f => frameContains(f, draggedId));
   if (!draggedTopAncestor) return { kind: "none" };
 
-  const targetLeaf = hitTestFrames(frames, dropPx, dropPy);
+  // Bug G: exclude the dragged subtree from hit-testing. During a drag,
+  // the dragged frame follows the cursor (cumulative-drag updates its
+  // bbox), so a mouseup with the cursor still over the dragged frame's
+  // current position would hitTestFrames → dragged itself → walk skips
+  // self and ancestors → no candidate → none. By stripping the dragged
+  // subtree we get whatever's underneath, which is what the user is
+  // visually targeting.
+  const stripDragged = (fs: Frame[]): Frame[] =>
+    fs.filter(f => f.id !== draggedId)
+      .map(f => f.children.length > 0 ? { ...f, children: stripDragged(f.children) } : f);
+  const framesForHit = stripDragged(frames);
+  const targetLeaf = hitTestFrames(framesForHit, dropPx, dropPy);
   if (!targetLeaf) {
+    // No-op when the cursor lies inside the dragged frame's own subtree.
+    // We stripped the dragged from hit-test above; re-hit against the
+    // unstripped frames — if the dragged (or its descendant) is what's
+    // there, this is "drop on yourself," not promote-eligible.
+    const unstrippedHit = hitTestFrames(frames, dropPx, dropPy);
+    if (unstrippedHit) {
+      const draggedFrameRef = findFrameInList(frames, draggedId);
+      const hitIsDraggedSubtree = unstrippedHit.id === draggedId
+        || (!!draggedFrameRef && frameContains(draggedFrameRef, unstrippedHit.id));
+      if (hitIsDraggedSubtree) return { kind: "none" };
+    }
     if (draggedTopAncestor.id !== draggedId) {
       if (dropPy < 0 || dropPy > docExtentPy) return { kind: "none" };
       if (promoteLanding) {
@@ -1980,16 +2025,62 @@ export function decideReparent(
   const hitPath = findPath(frames, targetLeaf.id); // root → ... → leaf
   const draggedImmediateParent = findImmediateParent(frames, draggedId);
   let target: Frame | null = null;
+  // Cumulative absolute pixel offset of each frame on hitPath (precomputed
+  // so the interior check below is O(1) per step).
+  const absX: number[] = new Array(hitPath.length);
+  const absY: number[] = new Array(hitPath.length);
+  let runX = 0, runY = 0;
+  for (let i = 0; i < hitPath.length; i++) {
+    runX += hitPath[i].x; runY += hitPath[i].y;
+    absX[i] = runX; absY[i] = runY;
+  }
   // Walk from the leaf upward. Closer (smaller-area) container wins.
+  // Bug G descendant guard: locate the dragged frame so we can reject any
+  // candidate that lives inside its subtree. Pre-Bug G this was implicit
+  // (rect leaves weren't containers, so a wireframe's child rects were
+  // never picked as targets). With rect-as-container, the walk could land
+  // on one of dragged's own rect children — nesting a frame into its
+  // descendant is illegal and corrupts the tree.
+  let draggedFrame: Frame | null = null;
+  const findDragged = (fs: Frame[]): void => {
+    for (const f of fs) {
+      if (f.id === draggedId) { draggedFrame = f; return; }
+      if (f.children.length > 0) findDragged(f.children);
+      if (draggedFrame) return;
+    }
+  };
+  findDragged(frames);
   for (let i = hitPath.length - 1; i >= 0; i--) {
     const f = hitPath[i];
     if (f.id === draggedId) continue; // can't nest into self
     if (frameContains(f, draggedId)) continue; // can't nest into own ancestor
-    // Container check: wireframe or band.
-    const isContainer = f.isBand || (f.content === null && !f.isBand);
+    if (draggedFrame && frameContains(draggedFrame, f.id)) continue; // can't nest into own descendant
+    // Container check: band, empty wireframe, or labeled rect leaf.
+    // Bug G: a rect leaf is a valid drop target — Figma-style nesting.
+    const isContainer = f.isBand
+      || (f.content === null && !f.isBand)
+      || f.content?.type === "rect";
     if (!isContainer) continue;
     // Already-immediate-parent: no-op (don't reparent to current parent).
     if (draggedImmediateParent && f.id === draggedImmediateParent.id) continue;
+    // Bug G interior-only guard: a rect leaf has a 1-cell border on every
+    // side. Demote ONLY when the cursor lies ≥1 cell inside each border —
+    // i.e. clearly in the rect's interior. A drop on/near the border is
+    // ambiguous (looks like a sibling-rearrange more than a nest), so let
+    // it fall through to the next outer container (band/wireframe wrapper).
+    // Bands and empty wireframes don't have load-bearing borders, so this
+    // guard only applies to content?.type === "rect".
+    if (f.content?.type === "rect" && f.gridH > 0 && f.gridW > 0) {
+      const cellH = f.h / f.gridH;
+      const cellW = f.w / f.gridW;
+      const interiorTop = absY[i] + cellH;
+      const interiorBottom = absY[i] + f.h - cellH;
+      const interiorLeft = absX[i] + cellW;
+      const interiorRight = absX[i] + f.w - cellW;
+      const inInterior = dropPy >= interiorTop && dropPy <= interiorBottom
+                       && dropPx >= interiorLeft && dropPx <= interiorRight;
+      if (!inInterior) continue;
+    }
     target = f;
     break;
   }
@@ -2097,7 +2188,7 @@ export function recomputeWireframeBounds(frames: Frame[]): Frame[] {
  * Idempotent — repeats until no overlap remains, in case three or more
  * bands collapse together.
  */
-function mergeOverlappingBands(frames: Frame[]): Frame[] {
+function mergeOverlappingBands(frames: Frame[], mergeTouching = false): Frame[] {
   let changed = true;
   let result = frames;
   while (changed) {
@@ -2111,7 +2202,16 @@ function mergeOverlappingBands(frames: Frame[]): Frame[] {
         const aStart = a.gridRow, aEnd = a.gridRow + a.lineCount;
         const bStart = b.gridRow, bEnd = b.gridRow + b.lineCount;
         // Overlap iff intervals [aStart, aEnd) and [bStart, bEnd) share any row.
-        if (aEnd <= bStart || bEnd <= aStart) continue;
+        // mergeTouching=true also collapses pairs that abut (aEnd === bStart):
+        // used after reparent to fix Group D, where promote can land a fresh
+        // band flush against its source band (no row separating them) — never
+        // an intentional state. Drag-clamp callers (moveFrameEffect) keep the
+        // strict-overlap default; Fix 14 deliberately leaves clamped-touching
+        // bands distinct.
+        const gapTest = mergeTouching
+          ? (aEnd < bStart || bEnd < aStart)
+          : (aEnd <= bStart || bEnd <= aStart);
+        if (gapTest) continue;
         const survivor = aStart <= bStart ? a : b;
         const other = survivor === a ? b : a;
         const newStart = Math.min(aStart, bStart);
