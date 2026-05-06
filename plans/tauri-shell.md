@@ -80,6 +80,13 @@ RunEvent::Opened{urls} → Rust stores path, emits "open-path-request"
   "app": {
     "windows": [{ "label": "main", "width": 1280, "height": 800, "title": "Gridpad" }],
     "security": { "csp": null }
+  },
+  "bundle": {
+    "macOS": {
+      "documentTypes": [
+        { "name": "Markdown Document", "extensions": ["md"], "role": "editor" }
+      ]
+    }
   }
 }
 ```
@@ -100,7 +107,10 @@ RunEvent::Opened{urls} → Rust stores path, emits "open-path-request"
     "fs:allow-write-text-file",
     { "identifier": "fs:allow-read-text-file",  "allow": [{ "path": "**" }] },
     { "identifier": "fs:allow-write-text-file", "allow": [{ "path": "**" }] },
-    "cli:default"
+    "cli:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save"
   ]
 }
 ```
@@ -123,6 +133,7 @@ tauri         = { version = "2", features = [] }
 tauri-plugin-fs              = "2"
 tauri-plugin-cli             = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-dialog          = "2"  # R4: required for dialog_open/save commands
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
 ```
@@ -135,8 +146,9 @@ Stays under 300 lines.
 
 ```rust
 struct AppState {
-    pending_path: Mutex<Option<String>>,   // argv[1], consumed once
+    pending_path: Mutex<Option<String>>,   // argv[1] OR Finder-opened path, consumed by get_initial_path
     current_path: Mutex<Option<String>>,   // updated by open, cleared by new-file
+    frontend_ready: Mutex<bool>,           // R2: set true by get_initial_path; gates RunEvent::Opened emission
 }
 ```
 
@@ -171,19 +183,19 @@ tauri_plugin_single_instance::init(|app, argv, _cwd| {
             .collect();
         if let Some(path) = paths.first() {
             let state = app.state::<AppState>();
-            let mut pending = state.pending_path.lock().unwrap();
-            if pending.is_some() { *pending = Some(path.clone()); }
-            else { let _ = app.emit("open-path-request", path.clone()); }
+            let ready = *state.frontend_ready.lock().unwrap();
+            if ready { let _ = app.emit("open-path-request", path.clone()); }
+            else { *state.pending_path.lock().unwrap() = Some(path.clone()); }
         }
     }
 });
 ```
 
-Cold/warm distinction: if `pending_path` is `Some`, replace it (frontend hasn't called `get_initial_path`); if `None`, emit warm-start event.
+Gate on `frontend_ready`, not on whether `pending_path` is occupied. Without the flag, a Finder-launched cold start can fire `RunEvent::Opened` before React has mounted and registered its `listen('open-path-request')` subscription — the event is lost. `get_initial_path` is the single point that flips `frontend_ready = true` after draining `pending_path`.
 
-### 4.5 CLI argument capture
+### 4.5 CLI argument capture + default menu
 
-In `setup()`:
+In `setup()` (requires `use tauri_plugin_cli::CliExt;`):
 
 ```rust
 let matches = app.cli().matches()?;
@@ -192,7 +204,12 @@ if let Some(ArgData { value: serde_json::Value::String(path), .. }) =
 {
     *app.state::<AppState>().pending_path.lock().unwrap() = Some(path.clone());
 }
+// Default macOS menu — Cmd+Q, Cmd+H, Edit menu (Cmd+C/V) etc.
+// Tauri does NOT auto-create one; without this, Cmd+Q doesn't quit the app.
+app.set_menu(tauri::menu::Menu::default(app.handle())?)?;
 ```
+
+The default menu does not interfere with our custom Cmd+O / Cmd+S keydown handlers — those continue to fire in the webview.
 
 `tauri.conf.json` declares:
 ```json
@@ -220,7 +237,7 @@ export interface FileBackend {
 
 `createFileBackend()` returns `import('./fileBackend.tauri')` when `'__TAURI_INTERNALS__' in window` is truthy, else `import('./fileBackend.browser')`. Dynamic imports keep each tree-shakable.
 
-**Why `__TAURI_INTERNALS__` not `__TAURI__`**: In v2, `__TAURI_INTERNALS__` is always injected; `__TAURI__` requires `withGlobalTauri` opt-in.
+**Why `__TAURI_INTERNALS__` not `__TAURI__`**: In v2, `__TAURI_INTERNALS__` is always injected; `__TAURI__` requires `withGlobalTauri` opt-in. Declare it in `src/file-system.d.ts` (`interface Window { __TAURI_INTERNALS__?: unknown }`) so the detection check compiles cleanly.
 
 ### 5.1 `fileBackend.browser.ts`
 
@@ -232,7 +249,7 @@ Uses `invoke` from `@tauri-apps/api/core` and `listen` from `@tauri-apps/api/eve
 
 - `openFile()`: `invoke('dialog_open_command')` — Rust calls `tauri_plugin_dialog`, returns `{ path, text }` or `null`.
 - `saveFile(text)`: `invoke('write_file_command', { text })`.
-- `saveFileAs(text)`: `invoke('dialog_save_command', { text })`.
+- `saveFileAs(text)`: `invoke<string | null>('dialog_save_command', { text })`. Returns the new path on success — caller updates React `currentPath` state.
 - `subscribeToOpenRequest(cb)`: `listen<string>('open-path-request', e => cb(e.payload))` — returns unlisten fn. **The one legitimate `useEffect` use** in `DemoV2.tsx`.
 - `readFileByPath(path)`: `invoke<string>('read_file_command', { path })`.
 
@@ -246,9 +263,11 @@ Minimal diff. Every change is in the file I/O surface only.
 - **D.** Cmd+Shift+S handler: `await backend.saveFileAs(serializeUnified(...))`.
 - **E.** Add a `useEffect` (justified: subscription lifecycle, not data flow) that subscribes to open-requests, calls `readFileByPath` on initial path, and returns unsubscribe fn.
 - **F.** `handleOpenRequest(path)`: if not dirty → load. If dirty → `setPendingPath(path); setShowUnsavedModal(true)`.
-- **G.** Title-bar sync: a single helper `updateTitle()` reads current filename + `isDirty()` and calls `backend.setTitle(...)`. Invoked at: file open, file save (clean transition), and on each edit that flips dirty state. Browser backend's `setTitle` is a no-op. Tauri backend invokes `set_window_title` Rust command.
+- **G.** Title-bar sync uses two pieces of React state: `currentPath: string | null` (set on open / Save As, cleared on new-file) and `docDirty: boolean`. `docDirty` is flipped to `true` by a CodeMirror `EditorState.update` listener that observes `tr.docChanged` for any user-originated transaction; reset to `false` on open and on successful save. A `useEffect([currentPath, docDirty])` calls `backend.setTitle(...)` exactly once per transition — no IPC spam from per-keystroke title rebuilds. Browser backend's `setTitle` is a no-op. Tauri backend invokes the `set_window_title` Rust command.
 
-`isDirty()` already exists in `__gridpad`; extract as `const isDirty = () => framesRef.current.some(f => f.dirty)`.
+The `isDirty` check elsewhere (unsaved-changes modal, etc.) reads `docDirty`, not `frames.some(f => f.dirty)`. The legacy frame-only check ignores prose edits in the unified-document architecture and would silently lose typed prose.
+
+`isDirty` is `docDirty` (component state, set by the CodeMirror transaction listener — see G). The legacy `__gridpad.isDirty` is frame-only and stale; do not reuse.
 
 **No other changes.** `__gridpad`, `loadDocument`, `syncRefsFromState`, painting pipeline untouched.
 
@@ -302,7 +321,10 @@ Recommendation: **detach** — `open -a` returns immediately. Agent use cases do
 
 ```sh
 npm install --save-dev @tauri-apps/cli@^2
-npm install @tauri-apps/api @tauri-apps/plugin-fs @tauri-apps/plugin-cli
+# These MUST be in `dependencies` (not devDependencies): Vite analyzes
+# fileBackend.tauri.ts even during browser-only builds, and unresolved
+# imports fail the build.
+npm install @tauri-apps/api @tauri-apps/plugin-fs @tauri-apps/plugin-cli @tauri-apps/plugin-dialog
 # add to package.json scripts: "tauri": "tauri"
 npm run tauri dev
 ```
@@ -346,7 +368,7 @@ Playwright is **not** retargeted to Tauri. Future effort.
 - **`__TAURI_INTERNALS__` timing.** Injected before page load. Synchronous detection is safe.
 - **Single-instance lock file.** May persist across crashes. Workaround: delete `$TMPDIR/gridpad-single-instance.lock`.
 - **`RunEvent::Opened` vs single-instance.** Finder uses Apple Events (`kAEOpenDocuments`); CLI `open --args` uses argv. Both must be implemented.
-- **Vite `base` change.** `process.env.TAURI_ENV_TARGET_TRIPLE` branch is the isolation mechanism; verify with CI before committing.
+- **Vite `base` change.** Flipping to `'/'` will silently 404 any hardcoded `/gridpad/...` path in `index.html` or asset references. Audit `index.html` and any CSS `url(...)` references; switch to relative or root-relative paths before the first Tauri build.
 
 ## 12. Out of Scope
 
@@ -366,11 +388,11 @@ Playwright is **not** retargeted to Tauri. Future effort.
 4. Wire `DemoV2.tsx` to `fileBackend.browser.ts` exclusively (no Tauri yet). Verify: `npm run dev` Cmd+O / Cmd+S still work.
 5. Write `fileBackend.tauri.ts` with mocked unit tests. Verify: tests pass.
 6. Write `UnsavedChangesModal.tsx` with unit test. Verify: `npm test`.
-7. Add state machine to `DemoV2.tsx` (`pendingPath`, `showUnsavedModal`, `handleOpenRequest`). Verify: trigger from console.
+7. Add state to `DemoV2.tsx`: `currentPath`, `docDirty` (driven by a CodeMirror transaction listener that observes `tr.docChanged`), `pendingPath`, `showUnsavedModal`, `handleOpenRequest`. Verify: type prose → `docDirty` flips true; save → flips false; trigger `handleOpenRequest` from console with dirty doc → modal appears.
 8. Implement Rust commands in `lib.rs` + Rust unit tests. Verify: `cargo test`.
 9. Wire single-instance plugin + `RunEvent::Opened`. Verify: second invocation focuses existing window.
 10. CLI argv capture in `setup()`. Verify: `npm run tauri dev -- -- /tmp/test.md` opens file on cold start.
-11. Flip `vite.config.ts` `base` to `'/'`. Verify: `npm run tauri build` produces a working `.app`. Note: gh-pages now requires `vite build --base=/gridpad/` (manual, when desired).
+11. Flip `vite.config.ts` `base` to `'/'` AND audit `index.html` / CSS for hardcoded `/gridpad/` paths. Verify: `npm run tauri build` produces a working `.app` with all assets loading. Note: gh-pages now requires `vite build --base=/gridpad/` (manual, when desired).
 12. Write `bin/gridpad`, `chmod +x`. Verify: `bin/gridpad /tmp/test.md`.
 13. Run full test suite: `npm test && npx playwright test e2e/`. No regressions.
 14. Manual smoke tests of all four scenarios.
