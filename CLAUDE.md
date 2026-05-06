@@ -38,7 +38,7 @@ wireframes render via glyph atlas on a single HTML5 Canvas.
 
 ## Stack
 
-Vite + React 19 + TypeScript + @chenglou/pretext + Mantine v9 + Vitest + Playwright
+Vite + React 19 + TypeScript + @chenglou/pretext + Vitest + Playwright
 
 ## Key files
 
