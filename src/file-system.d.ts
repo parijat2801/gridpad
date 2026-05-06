@@ -8,4 +8,5 @@ interface Window {
     types?: { description: string; accept: Record<string, string[]> }[];
     suggestedName?: string;
   }): Promise<FileSystemFileHandle>;
+  __TAURI_INTERNALS__?: unknown;
 }
