@@ -1,21 +1,58 @@
-// Stub — the full Tauri backend lands in Task 5.
-// This file exists so Vite's static analysis of `import("./fileBackend.tauri")`
-// in fileBackend.ts can resolve during browser-only dev/build. The runtime
-// branch that selects this module is gated on `window.__TAURI_INTERNALS__`,
-// which is never set under Vite/Vitest, so the throwing stubs below are
-// unreachable in non-Tauri contexts.
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { FileBackend } from "./fileBackend";
 
-function unimplemented(): never {
-  throw new Error("fileBackend.tauri: not implemented (placeholder pending Task 5)");
+export async function openFile(): Promise<{ path: string; text: string } | null> {
+  const r = await invoke<{ path: string; text: string } | null>("dialog_open_command");
+  return r ?? null;
 }
 
-export async function openFile(): Promise<{ path: string; text: string } | null> { return unimplemented(); }
-export async function saveFile(_text: string): Promise<void> { return unimplemented(); }
-export async function saveFileAs(_text: string): Promise<string | null> { return unimplemented(); }
-export function subscribeToOpenRequest(_cb: (path: string) => void): () => void { return unimplemented(); }
-export async function readFileByPath(_path: string): Promise<string | null> { return unimplemented(); }
-export function setTitle(_title: string): void { unimplemented(); }
+export async function saveFile(text: string): Promise<void> {
+  await invoke("write_file_command", { text });
+}
+
+export async function saveFileAs(text: string): Promise<string | null> {
+  const r = await invoke<string | null>("dialog_save_command", { text });
+  return r ?? null;
+}
+
+export function subscribeToOpenRequest(cb: (path: string) => void): () => void {
+  // The `cancelled` flag guards every async path that could deliver a value
+  // after unsubscribe: (a) the get_initial_path resolution; (b) any event
+  // already queued in the JS event loop when listen()'s handler runs;
+  // (c) the unlisten fn itself if the listen() promise hasn't resolved yet.
+  let cancelled = false;
+  let unlisten: (() => void) | null = null;
+
+  // Drain any cold-start initial path first.
+  void invoke<string | null>("get_initial_path").then(initial => {
+    if (initial && !cancelled) cb(initial);
+  }).catch(() => { /* swallow — frontend stays usable */ });
+
+  void listen<string>("open-path-request", e => {
+    if (!cancelled) cb(e.payload);
+  }).then(fn => {
+    if (cancelled) { fn(); return; }
+    unlisten = fn;
+  });
+
+  return () => {
+    cancelled = true;
+    unlisten?.();
+  };
+}
+
+export async function readFileByPath(path: string): Promise<string | null> {
+  try {
+    return await invoke<string>("read_file_command", { path });
+  } catch {
+    return null;
+  }
+}
+
+export function setTitle(title: string): void {
+  void invoke("set_window_title", { title });
+}
 
 const _backend: FileBackend = { openFile, saveFile, saveFileAs, subscribeToOpenRequest, readFileByPath, setTitle };
 export default _backend;
