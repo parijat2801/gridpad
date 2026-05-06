@@ -17,9 +17,11 @@ import {
   setTextEditEffect, editTextFrameEffect, getTextEdit,
   resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, landingGridFromCursor, shouldEscalateResidual, findImmediateParent, findFrameInList,
   findContainingBandDeep, getBandRelativeRow, getBandRelativeCol,
+  docDiffersFrom,
   type CursorPos,
   type ReparentDecision,
 } from "./editorState";
+import { UnsavedChangesModal } from "./UnsavedChangesModal";
 import { serializeUnified } from "./serializeUnified";
 import { createFileBackend, type FileBackend } from "./fileBackend";
 import { type Frame, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
@@ -238,6 +240,49 @@ export default function DemoV2() {
     return () => { cancelled = true; };
   }, []);
 
+  const [currentPath, setCurrentPath] = useState<string | null>(null);
+  const [docDirty, setDocDirty] = useState(false);
+  const [pendingPath, setPendingPath] = useState<string | null>(null);
+  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
+
+  function buildTitle(path: string | null, dirty: boolean): string {
+    if (!path) return "Gridpad";
+    const base = path.split(/[/\\]/).pop() ?? path;
+    return dirty ? `${base} ● Gridpad` : `${base} — Gridpad`;
+  }
+
+  function pushTitle(path: string | null, dirty: boolean): void {
+    document.title = buildTitle(path, dirty);
+    backend?.setTitle(buildTitle(path, dirty));
+  }
+
+  function markDirty(): void {
+    if (!docDirty) {
+      setDocDirty(true);
+      pushTitle(currentPath, true);
+    }
+  }
+
+  function markClean(): void {
+    if (docDirty) {
+      setDocDirty(false);
+      pushTitle(currentPath, false);
+    }
+  }
+
+  // Centralized seam — every doc-mutating helper (apply*/editorUndo/
+  // editorRedo/proseInsert/proseDeleteBefore) routes through this wrapper
+  // so dirty-tracking observes doc changes once. Selection-only and
+  // effect-only sites (selectFrameEffect, setTextEditEffect, proseMove*)
+  // can't change the doc and stay as direct .update() calls.
+  // See T7 of the tauri-shell plan for the rationale.
+  function applyAndTrack(producer: (prev: EditorState) => EditorState): void {
+    const prev = stateRef.current;
+    const next = producer(prev);
+    stateRef.current = next;
+    if (docDiffersFrom(prev, next)) markDirty();
+  }
+
   async function saveCurrent(): Promise<void> {
     if (!backend) return;
     const state = stateRef.current;
@@ -245,7 +290,41 @@ export default function DemoV2() {
     await backend.saveFile(md);
     stateRef.current = applyClearDirty(stateRef.current);
     syncRefsFromState();
+    markClean();
+    pushTitle(currentPath, false);
   }
+
+  async function loadFromPath(path: string): Promise<void> {
+    if (!backend) return;
+    const text = await backend.readFileByPath(path);
+    if (text === null) {
+      console.error("readFileByPath returned null for", path);
+      return;
+    }
+    loadDocument(text);
+    doLayout(); paint();
+    setCurrentPath(path);
+    markClean();
+    pushTitle(path, false);
+  }
+
+  function handleOpenRequest(path: string): void {
+    if (!docDirty) {
+      void loadFromPath(path);
+      return;
+    }
+    setPendingPath(path);
+    setShowUnsavedModal(true);
+  }
+
+  useEffect(() => {
+    if (!backend) return;
+    const unsub = backend.subscribeToOpenRequest(handleOpenRequest);
+    return unsub;
+    // handleOpenRequest closes over docDirty/backend — keep it in deps so the
+    // subscription's closure always sees the latest dirty state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backend, docDirty]);
   function setTool(t: ToolName) { activeToolRef.current = t; setActiveTool(t); drawPreviewRef.current = null; textPlacementRef.current = null; }
 
   function loadDocument(text: string) {
@@ -788,11 +867,13 @@ export default function DemoV2() {
   function commitCumulativeDrag(frameId: string, snapshot: EditorState, isResize: boolean) {
     const effects = computeCumulativeDragEffects(frameId, snapshot, isResize);
     if (effects.length === 0) return;
-    const committed = snapshot.update({
+    const prev = stateRef.current;
+    const tr = snapshot.update({
       effects,
       annotations: [Transaction.addToHistory.of(true)],
-    }).state;
-    stateRef.current = committed;
+    });
+    stateRef.current = tr.state;
+    if (docDiffersFrom(prev, tr.state)) markDirty();
     syncRefsFromState();
   }
 
@@ -881,19 +962,20 @@ export default function DemoV2() {
       // When no reparent fires, commit the cumulative drag alone (Fix 9
       // unchanged behavior).
       if (dragRef.current.hasMoved && dragRef.current.mouseDownState) {
+        const mouseDownState = dragRef.current.mouseDownState;
         if (reparentDecision.kind !== "none" && reparentArgs) {
           const targetParentId = reparentDecision.kind === "demote"
             ? reparentDecision.targetTopLevelId
             : null;
-          stateRef.current = applyReparentFrame(
-            dragRef.current.mouseDownState,
+          applyAndTrack(() => applyReparentFrame(
+            mouseDownState,
             reparentArgs.draggedId,
             targetParentId,
             reparentArgs.aRow,
             reparentArgs.aCol,
             reparentArgs.cw,
             reparentArgs.ch,
-          );
+          ));
           syncRefsFromState();
         } else {
           // Drag-without-reparent: Fix 9's original commit-on-mouseup.
@@ -917,17 +999,17 @@ export default function DemoV2() {
     if (tool === "rect" && x2 - x1 >= cw && y2 - y1 >= ch) {
       const f = createRectFrame({ gridW: Math.max(2, Math.round((x2 - x1) / cw)), gridH: Math.max(2, Math.round((y2 - y1) / ch)), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
       const gridR = Math.round(y1 / ch), gridC = Math.round(x1 / cw);
-      stateRef.current = preview.parentId
-        ? applyAddChildFrame(stateRef.current, f, preview.parentId, gridR, gridC)
-        : applyAddTopLevelFrame(stateRef.current, f, gridR, gridC);
+      applyAndTrack(prev => preview.parentId
+        ? applyAddChildFrame(prev, f, preview.parentId, gridR, gridC)
+        : applyAddTopLevelFrame(prev, f, gridR, gridC));
       syncRefsFromState();
     } else if (tool === "line") {
       const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
       if (r1 !== r2 || c1 !== c2) {
         const f = createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch });
-        stateRef.current = preview.parentId
-          ? applyAddChildFrame(stateRef.current, f, preview.parentId, f.gridRow, f.gridCol)
-          : applyAddTopLevelFrame(stateRef.current, f, f.gridRow, f.gridCol);
+        applyAndTrack(prev => preview.parentId
+          ? applyAddChildFrame(prev, f, preview.parentId, f.gridRow, f.gridCol)
+          : applyAddTopLevelFrame(prev, f, f.gridRow, f.gridCol));
         syncRefsFromState();
       }
     }
@@ -1088,7 +1170,7 @@ export default function DemoV2() {
       const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
       if (mod && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
-        stateRef.current = editorUndo(stateRef.current);
+        applyAndTrack(editorUndo);
         syncRefsFromState();
         proseRef.current = getDoc(stateRef.current);
         preparedRef.current = buildPreparedCache(proseRef.current);
@@ -1098,7 +1180,7 @@ export default function DemoV2() {
       }
       if (mod && e.key === "z" && e.shiftKey) {
         e.preventDefault();
-        stateRef.current = editorRedo(stateRef.current);
+        applyAndTrack(editorRedo);
         syncRefsFromState();
         proseRef.current = getDoc(stateRef.current);
         preparedRef.current = buildPreparedCache(proseRef.current);
@@ -1113,6 +1195,9 @@ export default function DemoV2() {
         if (r) {
           loadDocument(r.text);
           doLayout(); paint();
+          setCurrentPath(r.path);
+          markClean();
+          pushTitle(r.path, false);
         }
         return;
       }
@@ -1125,6 +1210,9 @@ export default function DemoV2() {
         if (newPath !== null) {
           stateRef.current = applyClearDirty(stateRef.current);
           syncRefsFromState();
+          setCurrentPath(newPath);
+          markClean();
+          pushTitle(newPath, false);
         }
         return;
       }
@@ -1142,9 +1230,9 @@ export default function DemoV2() {
           if (tp.chars.length > 0) {
             const cw = cwRef.current, ch = chRef.current;
             const tf = createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch });
-            stateRef.current = tp.parentId
-              ? applyAddChildFrame(stateRef.current, tf, tp.parentId, tf.gridRow, tf.gridCol)
-              : applyAddTopLevelFrame(stateRef.current, tf, tf.gridRow, tf.gridCol);
+            applyAndTrack(prev => tp.parentId
+              ? applyAddChildFrame(prev, tf, tp.parentId, tf.gridRow, tf.gridCol)
+              : applyAddTopLevelFrame(prev, tf, tf.gridRow, tf.gridCol));
             syncRefsFromState();
             doLayout();
           }
@@ -1332,7 +1420,7 @@ export default function DemoV2() {
         if (e.key === "Backspace") {
           e.preventDefault();
           const beforeCursor = getCursor(stateRef.current)!;
-          stateRef.current = proseDeleteBefore(stateRef.current, beforeCursor);
+          applyAndTrack(prev => proseDeleteBefore(prev, beforeCursor));
           // Unified-doc: proseDelete mutates the CM doc; mapPos in framesField
           // shifts every frame's docOffset automatically. No manual frame-shift
           // loop needed. syncRefsFromState rebuilds preparedRef from scratch.
@@ -1342,7 +1430,8 @@ export default function DemoV2() {
         }
         if (e.key === "Enter") {
           e.preventDefault();
-          stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, "\n");
+          const c = getCursor(stateRef.current)!;
+          applyAndTrack(prev => proseInsert(prev, c, "\n"));
           // Same as Backspace: unified pipeline handles both doc + frame shift.
           syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
@@ -1350,7 +1439,9 @@ export default function DemoV2() {
         }
         if (e.key.length === 1 && !mod) {
           e.preventDefault();
-          stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, e.key);
+          const c = getCursor(stateRef.current)!;
+          const key = e.key;
+          applyAndTrack(prev => proseInsert(prev, c, key));
           syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
           doLayout(); blinkRef.current = true; paint(); return;
@@ -1364,7 +1455,7 @@ export default function DemoV2() {
       }
       const deleteSelectedId = getSelectedId(stateRef.current);
       if ((e.key === "Delete" || e.key === "Backspace") && deleteSelectedId) {
-        stateRef.current = applyDeleteFrame(stateRef.current, deleteSelectedId);
+        applyAndTrack(prev => applyDeleteFrame(prev, deleteSelectedId));
         syncRefsFromState();
         doLayout(); paint();
       }
@@ -1405,7 +1496,7 @@ export default function DemoV2() {
     };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
-  }, [backend]);
+  }, [backend, currentPath, docDirty]);
 
   useEffect(() => { if (ready) { doLayout(); paint(); } }, [ready]);
 
@@ -1444,6 +1535,23 @@ export default function DemoV2() {
         onMouseUp={onMouseUp}
       />
       <div data-spacer="" style={{ pointerEvents: "none" }} />
+      {showUnsavedModal && pendingPath && (
+        <UnsavedChangesModal
+          pendingPath={pendingPath}
+          onCancel={() => { setShowUnsavedModal(false); setPendingPath(null); }}
+          onDiscard={() => {
+            const p = pendingPath;
+            setShowUnsavedModal(false); setPendingPath(null);
+            if (p) void loadFromPath(p);
+          }}
+          onSaveFirst={async () => {
+            const p = pendingPath;
+            setShowUnsavedModal(false); setPendingPath(null);
+            await saveCurrent();
+            if (p) void loadFromPath(p);
+          }}
+        />
+      )}
     </div>
   );
 }

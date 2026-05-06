@@ -49,6 +49,8 @@ import {
   resolveSelectionTarget,
   recomputeWireframeBounds,
   restoreFramesEffect,
+  dispatchTransaction,
+  docDiffersFrom,
 } from "./editorState";
 import { createFrame, createTextFrame, createRectFrame, createLineFrame, type Frame } from "./frame";
 
@@ -3830,3 +3832,36 @@ describe("applyAddChildFrame band-grow when nesting deep", () => {
     expect(after.gridH).toBeGreaterThan(oldBandH);
   });
 });
+
+// ── dispatchTransaction & docDiffersFrom (Task 7 of tauri-shell-impl) ──
+
+describe("dispatchTransaction", () => {
+  it("returns docChanged=true for an insertion transaction", () => {
+    const initial = createEditorStateUnified("hello\n", 8, 16);
+    const r = dispatchTransaction(initial, { changes: { from: 5, insert: " world" } });
+    expect(r.docChanged).toBe(true);
+    expect(r.state.doc.toString()).toBe("hello world\n");
+  });
+
+  it("returns docChanged=false for a no-op (effects only) transaction", () => {
+    const initial = createEditorStateUnified("hello\n", 8, 16);
+    const r = dispatchTransaction(initial, { effects: [] });
+    expect(r.docChanged).toBe(false);
+    expect(r.state.doc.toString()).toBe("hello\n");
+  });
+});
+
+describe("docDiffersFrom", () => {
+  it("detects a doc-string change (e.g. after editorRedo replays an edit)", () => {
+    const a = createEditorStateUnified("hello\n", 8, 16);
+    const b = a.update({ changes: { from: 5, insert: " world" } }).state;
+    expect(docDiffersFrom(a, b)).toBe(true);
+  });
+
+  it("returns false when the doc string is identical", () => {
+    const a = createEditorStateUnified("hello\n", 8, 16);
+    const b = a.update({ effects: [] }).state;
+    expect(docDiffersFrom(a, b)).toBe(false);
+  });
+});
+
