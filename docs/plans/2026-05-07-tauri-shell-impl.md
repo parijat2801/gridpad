@@ -233,12 +233,10 @@ pub fn run() {
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": [],
-    "macOS": {
-      "documentTypes": [
-        { "name": "Markdown Document", "extensions": ["md"], "role": "editor" }
-      ]
-    }
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"],
+    "fileAssociations": [
+      { "name": "Markdown Document", "ext": ["md"], "role": "Editor" }
+    ]
   },
   "plugins": {
     "cli": {
@@ -274,6 +272,27 @@ Note: do **not** include the `"$schema"` line yet — the schema file is generat
 ```
 target/
 gen/
+```
+
+**Step 7b: Create placeholder icons**
+
+`tauri::generate_context!()` resolves the `bundle.icon` paths at compile time and panics if they are missing. The plan ships transparent placeholder PNGs at the four required sizes — replace with real icons before any production release.
+
+```sh
+mkdir -p src-tauri/icons
+python3 - <<'PY'
+import struct, zlib
+def make_png(w, h):
+    sig = bytes.fromhex('89504E470D0A1A0A')
+    def chunk(t, d):
+        return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+    ihdr = struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)
+    raw = b''.join(b'\x00' + b'\x00\x00\x00\x00' * w for _ in range(h))
+    idat = zlib.compress(raw)
+    return sig + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat) + chunk(b'IEND', b'')
+for size, name in [(32,'32x32.png'),(128,'128x128.png'),(256,'128x128@2x.png'),(512,'icon.png')]:
+    open(f'src-tauri/icons/{name}','wb').write(make_png(size,size))
+PY
 ```
 
 **Step 8: Verify**
