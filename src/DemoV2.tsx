@@ -21,6 +21,7 @@ import {
   type ReparentDecision,
 } from "./editorState";
 import { serializeUnified } from "./serializeUnified";
+import { createFileBackend, type FileBackend } from "./fileBackend";
 import { type Frame, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { setTextAlignEffect } from "./editorState";
@@ -228,26 +229,22 @@ export default function DemoV2() {
   const lastClickRef = useRef<{ time: number; px: number; py: number } | null>(null);
   const drawPreviewRef = useRef<{ startX: number; startY: number; curX: number; curY: number; parentId: string | null } | null>(null);
   const textPlacementRef = useRef<{ x: number; y: number; chars: string; parentId: string | null } | null>(null);
-  const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
-  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [backend, setBackend] = useState<FileBackend | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void createFileBackend().then(b => {
+      if (!cancelled) setBackend(b);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
-  type WritableHandle = FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> };
-  async function saveToHandle(h: FileSystemFileHandle) {
-    console.log("saveToHandle called, handle:", h.name);
-    try {
-      const state = stateRef.current;
-      const md = serializeUnified(getDoc(state), getFrames(state));
-      const w = await (h as WritableHandle).createWritable();
-      await w.write(md);
-      await w.close();
-      stateRef.current = applyClearDirty(stateRef.current);
-      syncRefsFromState();
-    } catch (err) { console.error("saveToHandle failed:", err); }
-  }
-  function scheduleAutosave() {
-    if (!fileHandleRef.current) return;
-    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-    autosaveTimerRef.current = setTimeout(() => { if (fileHandleRef.current) void saveToHandle(fileHandleRef.current); }, 500);
+  async function saveCurrent(): Promise<void> {
+    if (!backend) return;
+    const state = stateRef.current;
+    const md = serializeUnified(getDoc(state), getFrames(state));
+    await backend.saveFile(md);
+    stateRef.current = applyClearDirty(stateRef.current);
+    syncRefsFromState();
   }
   function setTool(t: ToolName) { activeToolRef.current = t; setActiveTool(t); drawPreviewRef.current = null; textPlacementRef.current = null; }
 
@@ -903,7 +900,7 @@ export default function DemoV2() {
           commitCumulativeDrag(dragRef.current.frameId, dragRef.current.mouseDownState, !!dragRef.current.resizeHandle);
         }
       }
-      dragRef.current = null; scheduleAutosave();
+      dragRef.current = null;
       // Repaint after commit-on-mouseup + reparent — these only sync refs,
       // not the canvas. Without this, the post-drag layout shows up only on
       // the next interaction (any click triggers a paint somewhere down its
@@ -923,7 +920,7 @@ export default function DemoV2() {
       stateRef.current = preview.parentId
         ? applyAddChildFrame(stateRef.current, f, preview.parentId, gridR, gridC)
         : applyAddTopLevelFrame(stateRef.current, f, gridR, gridC);
-      syncRefsFromState(); scheduleAutosave();
+      syncRefsFromState();
     } else if (tool === "line") {
       const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
       if (r1 !== r2 || c1 !== c2) {
@@ -931,7 +928,7 @@ export default function DemoV2() {
         stateRef.current = preview.parentId
           ? applyAddChildFrame(stateRef.current, f, preview.parentId, f.gridRow, f.gridCol)
           : applyAddTopLevelFrame(stateRef.current, f, f.gridRow, f.gridCol);
-        syncRefsFromState(); scheduleAutosave();
+        syncRefsFromState();
       }
     }
     setTool("select"); // one-shot: revert to Select after drawing
@@ -967,7 +964,7 @@ export default function DemoV2() {
           const state = stateRef.current;
           return serializeUnified(getDoc(state), getFrames(state));
         },
-        /** Serialize + update all refs (mirrors real saveToHandle minus file I/O) */
+        /** Serialize + update all refs (mirrors backend.saveFile minus file I/O) */
         saveDocument: () => {
           const state = stateRef.current;
           const md = serializeUnified(getDoc(state), getFrames(state));
@@ -1111,33 +1108,30 @@ export default function DemoV2() {
       }
       if (mod && e.key === "o") {
         e.preventDefault();
-        try {
-          const [handle] = await window.showOpenFilePicker({ types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }] });
-          fileHandleRef.current = handle;
-          const file = await handle.getFile();
-          loadDocument(await file.text()); doLayout(); paint();
-        } catch (err) { if (err instanceof DOMException && err.name === "AbortError") { /* cancelled */ } else { console.error("File open failed:", err); throw err; } }
+        if (!backend) return;
+        const r = await backend.openFile();
+        if (r) {
+          loadDocument(r.text);
+          doLayout(); paint();
+        }
+        return;
       }
       if (mod && e.shiftKey && e.key === "s") {
         e.preventDefault();
-        if (!("showSaveFilePicker" in window)) return;
-        try {
-          const handle = await window.showSaveFilePicker({
-            types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
-            suggestedName: "document.md",
-          });
-          fileHandleRef.current = handle;
-          await saveToHandle(handle);
-        } catch (err) {
-          if (err instanceof DOMException && err.name === "AbortError") { /* cancelled */ }
-          else { console.error("Save As failed:", err); }
+        if (!backend) return;
+        const state = stateRef.current;
+        const md = serializeUnified(getDoc(state), getFrames(state));
+        const newPath = await backend.saveFileAs(md);
+        if (newPath !== null) {
+          stateRef.current = applyClearDirty(stateRef.current);
+          syncRefsFromState();
         }
         return;
       }
       if (mod && e.key === "s") {
         e.preventDefault();
-        if (autosaveTimerRef.current) { clearTimeout(autosaveTimerRef.current); autosaveTimerRef.current = null; }
-        if (fileHandleRef.current) await saveToHandle(fileHandleRef.current);
+        await saveCurrent();
+        return;
       }
       // Text placement tool — collect typed chars
       const tp = textPlacementRef.current;
@@ -1152,7 +1146,7 @@ export default function DemoV2() {
               ? applyAddChildFrame(stateRef.current, tf, tp.parentId, tf.gridRow, tf.gridCol)
               : applyAddTopLevelFrame(stateRef.current, tf, tf.gridRow, tf.gridCol);
             syncRefsFromState();
-            scheduleAutosave(); doLayout();
+            doLayout();
           }
           setTool("select"); paint(); return; // one-shot: revert to Select
         }
@@ -1276,7 +1270,6 @@ export default function DemoV2() {
             }).state;
             syncRefsFromState();
             textEditRef.current = getTextEdit(stateRef.current);
-            scheduleAutosave();
           }
           blinkRef.current = true; paint(); return;
         }
@@ -1294,7 +1287,7 @@ export default function DemoV2() {
           }).state;
           syncRefsFromState();
           textEditRef.current = getTextEdit(stateRef.current);
-          scheduleAutosave(); blinkRef.current = true; paint(); return;
+          blinkRef.current = true; paint(); return;
         }
         return;
       }
@@ -1345,7 +1338,7 @@ export default function DemoV2() {
           // loop needed. syncRefsFromState rebuilds preparedRef from scratch.
           syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
-          scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
+          doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key === "Enter") {
           e.preventDefault();
@@ -1353,14 +1346,14 @@ export default function DemoV2() {
           // Same as Backspace: unified pipeline handles both doc + frame shift.
           syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
-          scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
+          doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key.length === 1 && !mod) {
           e.preventDefault();
           stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, e.key);
           syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
-          scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
+          doLayout(); blinkRef.current = true; paint(); return;
         }
         return;
       }
@@ -1412,7 +1405,7 @@ export default function DemoV2() {
     };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
-  }, []);
+  }, [backend]);
 
   useEffect(() => { if (ready) { doLayout(); paint(); } }, [ready]);
 

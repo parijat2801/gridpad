@@ -17,12 +17,15 @@
 **Commands:**
 - `npx vitest run --reporter=dot` — unit tests (jsdom; setup at `src/testSetup.ts`)
 - `npx vitest run src/<file>.test.ts -t "PATTERN"` — single test by name
+- `npx playwright test e2e/harness.spec.ts` — round-trip harness (~125 tests; the tripwire for serializer/scanner regressions)
 - `npm run build` — `tsc -b && vite build` (typecheck + browser build)
 - `cargo test --manifest-path src-tauri/Cargo.toml` — Rust unit tests (after src-tauri exists)
 - `npm run tauri dev` — Tauri dev shell (after Task 1)
 - `npm run tauri build` — production .app
 
 **Baseline before starting:** confirm `npx vitest run --reporter=dot 2>&1 | tail -3` is green on `feature/tauri-shell`. Existing TypeScript-diagnostic noise on `main` (e.g., `harness.spec.ts` `node` types) is **pre-existing** and not introduced by this plan — do not attempt to fix it inside this plan.
+
+**Per-task verification rule (added 2026-05-07):** every task that touches gridpad code under `src/` (TS/React) MUST run **both** `npx vitest run --reporter=dot` AND `npx playwright test e2e/harness.spec.ts` before commit. Vitest catches unit-level regressions; harness catches round-trip serializer/scanner regressions that vitest does not see. Tasks that touch only `src-tauri/` (Rust), `package.json` deps, plan docs, or `vite.config.*` may skip the harness. If unsure, run both.
 
 ---
 
@@ -324,7 +327,10 @@ git commit -m "feat(tauri): scaffold src-tauri (Cargo.toml, conf, capabilities)"
 - Create: `src/fileBackend.ts` (interface + factory)
 - Create: `src/fileBackend.browser.ts` (File System Access impl)
 - Create: `src/fileBackend.browser.test.ts` (mocked-window unit tests)
+- Create: `src/fileBackend.tauri.ts` (throwing-stub placeholder — see Vite-defect patch below)
 - Modify: `src/file-system.d.ts` (append `__TAURI_INTERNALS__` declaration)
+
+**Vite-defect patch (2026-05-07):** Vite statically analyzes the `import("./fileBackend.tauri")` literal in `fileBackend.ts` even though it lives behind a `__TAURI_INTERNALS__` runtime gate. With the file absent the dev server returns 500 and the Playwright harness can't load. Workaround: T3 ships a throwing-stub `fileBackend.tauri.ts` (interface-conformant, every method throws "not implemented"). Branches are unreachable in browser mode. T5 replaces the stub with the real impl.
 
 **Symbols moving out of `DemoV2.tsx` (in Task 4, not this task):**
 - `fileHandleRef` (line 231) → module-level `fileHandle` in `fileBackend.browser.ts`
@@ -734,11 +740,13 @@ git commit -m "refactor(DemoV2): route file I/O through fileBackend.browser adap
 ## Task 5: `fileBackend.tauri.ts` + mocked tests
 
 **Files:**
-- Create: `src/fileBackend.tauri.ts`
+- Replace: `src/fileBackend.tauri.ts` (currently a throwing stub from the T3 patch — see below; this task replaces it with the real implementation)
 - Create: `src/fileBackend.tauri.test.ts`
 - Modify: `package.json` (deps — `@tauri-apps/api`)
 
 **Note on dependency placement:** `@tauri-apps/api` MUST be in `dependencies`, not `devDependencies` — Vite analyzes `fileBackend.tauri.ts` even during browser-only builds and would fail to resolve unresolved imports.
+
+**T3 stub context (defect patched mid-execution 2026-05-07):** Vite statically analyzes the literal `import("./fileBackend.tauri")` in `fileBackend.ts` and refused to compile when the file was missing — broke the dev server and harness even though the runtime branch is gated on `__TAURI_INTERNALS__`. T3 was patched to ship a throwing-stub `fileBackend.tauri.ts` so vitest, Vite dev, harness, and `npm run build` all stay green. T5 must `Write` the file (overwrite the stub), not `Edit` it.
 
 **Step 1: Install runtime dep**
 
