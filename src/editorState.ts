@@ -1970,8 +1970,30 @@ export function decideReparent(
   const draggedTopAncestor = frames.find(f => frameContains(f, draggedId));
   if (!draggedTopAncestor) return { kind: "none" };
 
-  const targetLeaf = hitTestFrames(frames, dropPx, dropPy);
+  // Bug G: exclude the dragged subtree from hit-testing. During a drag,
+  // the dragged frame follows the cursor (cumulative-drag updates its
+  // bbox), so a mouseup with the cursor still over the dragged frame's
+  // current position would hitTestFrames → dragged itself → walk skips
+  // self and ancestors → no candidate → none. By stripping the dragged
+  // subtree we get whatever's underneath, which is what the user is
+  // visually targeting.
+  const stripDragged = (fs: Frame[]): Frame[] =>
+    fs.filter(f => f.id !== draggedId)
+      .map(f => f.children.length > 0 ? { ...f, children: stripDragged(f.children) } : f);
+  const framesForHit = stripDragged(frames);
+  const targetLeaf = hitTestFrames(framesForHit, dropPx, dropPy);
   if (!targetLeaf) {
+    // No-op when the cursor lies inside the dragged frame's own subtree.
+    // We stripped the dragged from hit-test above; re-hit against the
+    // unstripped frames — if the dragged (or its descendant) is what's
+    // there, this is "drop on yourself," not promote-eligible.
+    const unstrippedHit = hitTestFrames(frames, dropPx, dropPy);
+    if (unstrippedHit) {
+      const draggedFrameRef = findFrameInList(frames, draggedId);
+      const hitIsDraggedSubtree = unstrippedHit.id === draggedId
+        || (!!draggedFrameRef && frameContains(draggedFrameRef, unstrippedHit.id));
+      if (hitIsDraggedSubtree) return { kind: "none" };
+    }
     if (draggedTopAncestor.id !== draggedId) {
       if (dropPy < 0 || dropPy > docExtentPy) return { kind: "none" };
       if (promoteLanding) {
