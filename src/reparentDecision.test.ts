@@ -75,22 +75,6 @@ function findWireframeByLabel(frames: Frame[], label: string): Frame | null {
   return null;
 }
 
-// Get the band wrapping a given frame id.
-function bandFor(frames: Frame[], id: string): Frame | null {
-  for (const band of frames) {
-    if (band.id === id) return band;
-    if (hasDescendant(band, id)) return band;
-  }
-  return null;
-}
-
-function hasDescendant(frame: Frame, id: string): boolean {
-  for (const c of frame.children) {
-    if (c.id === id) return true;
-    if (hasDescendant(c, id)) return true;
-  }
-  return false;
-}
 
 // Convert a child frame's relative x/y/w/h to absolute canvas px coords
 // by walking from the top-level band downward. Returns the center of the
@@ -127,13 +111,13 @@ describe("decideReparent (mouseup-only, no size guard)", () => {
     expect(wireA.gridH).toBe(wireB.gridH);
 
     // Drop point: middle of wireB's leaf in absolute canvas coords.
+    // Bug G: dropping inside a labeled rect's interior now demotes into
+    // the rect itself (Figma-style nesting), not its band wrapper.
     const drop = absCenter(frames, wireB.id)!;
     const decision = decideReparent(frames, wireA.id, drop.px, drop.py, Number.POSITIVE_INFINITY);
     expect(decision.kind).toBe("demote");
     if (decision.kind === "demote") {
-      const bBand = bandFor(frames, wireB.id);
-      expect(bBand).toBeTruthy();
-      expect(decision.targetTopLevelId).toBe(bBand!.id);
+      expect(decision.targetTopLevelId).toBe(wireB.id);
     }
   });
 
@@ -153,14 +137,13 @@ describe("decideReparent (mouseup-only, no size guard)", () => {
     expect(big.gridW).toBeGreaterThan(small.gridW);
     expect(big.gridH).toBeGreaterThan(small.gridH);
 
-    // Drop small onto big's center (absolute coords).
+    // Drop small onto big's center (absolute coords). Bug G: target is
+    // the big rect itself (Figma-style nest), not big's band wrapper.
     const drop = absCenter(frames, big.id)!;
     const decision = decideReparent(frames, small.id, drop.px, drop.py, Number.POSITIVE_INFINITY);
     expect(decision.kind).toBe("demote");
     if (decision.kind === "demote") {
-      const bigBand = bandFor(frames, big.id);
-      expect(bigBand).toBeTruthy();
-      expect(decision.targetTopLevelId).toBe(bigBand!.id);
+      expect(decision.targetTopLevelId).toBe(big.id);
     }
   });
 

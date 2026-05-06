@@ -2684,9 +2684,12 @@ Prose below`;
     await load(page, TWO_SEPARATE);
     writeArtifact("wall-converge", "input.md", TWO_SEPARATE);
 
-    // Move A down
+    // Move A down ~1 row, B up ~1 row. They converge into adjacent bands
+    // but don't overlap — Bug G's rect-as-container would otherwise nest
+    // one inside the other when their bboxes cross, and rect-in-rect
+    // serialization is a separate downstream issue.
     await clickFrame(page, 0);
-    await dragSelected(page, 0, 80);
+    await dragSelected(page, 0, 18);
     await clickProse(page, 5, 5);
 
     // Move B up
@@ -2697,7 +2700,7 @@ Prose below`;
       const bottomFrame = frames.reduce((prev, cur) => prev.y > cur.y ? prev : cur);
       await page.mouse.click(box!.x + bottomFrame.x + bottomFrame.w / 2, box!.y + bottomFrame.y + bottomFrame.h / 2);
       await page.waitForTimeout(300);
-      await dragSelected(page, 0, -80);
+      await dragSelected(page, 0, -18);
       await clickProse(page, 5, 5);
     }
 

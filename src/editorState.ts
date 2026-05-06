@@ -330,8 +330,21 @@ const framesField = StateField.define<Frame[]>({
           // NEW parent's absolute gridRow produces garbage.
           const aRow = e.value.absoluteGridRow ?? orig.gridRow;
           const aCol = e.value.absoluteGridCol ?? orig.gridCol;
-          const childGridRow = aRow - parentAbsRow;
-          const childGridCol = aCol - parentAbsCol;
+          let childGridRow = aRow - parentAbsRow;
+          let childGridCol = aCol - parentAbsCol;
+          // Bug G: when parent is a labeled rect leaf, its borders occupy
+          // row 0, row gridH-1, col 0, col gridW-1. Clamp child to the
+          // interior with ≥1 cell padding so the inner frame can't sit
+          // on the parent's border glyphs. Skip clamp if parent is too
+          // small to host a child (interior <= 0 in either dim) — the
+          // upstream geometry guard should already refuse those drops.
+          const parentRect = parentRef as Frame;
+          if (parentRect.content?.type === "rect") {
+            const maxRow = parentRect.gridH - 1 - orig.gridH;
+            const maxCol = parentRect.gridW - 1 - orig.gridW;
+            if (maxRow >= 1) childGridRow = Math.min(Math.max(childGridRow, 1), maxRow);
+            if (maxCol >= 1) childGridCol = Math.min(Math.max(childGridCol, 1), maxCol);
+          }
           const child: Frame = {
             ...orig,
             gridRow: childGridRow,
@@ -1990,16 +2003,62 @@ export function decideReparent(
   const hitPath = findPath(frames, targetLeaf.id); // root → ... → leaf
   const draggedImmediateParent = findImmediateParent(frames, draggedId);
   let target: Frame | null = null;
+  // Cumulative absolute pixel offset of each frame on hitPath (precomputed
+  // so the interior check below is O(1) per step).
+  const absX: number[] = new Array(hitPath.length);
+  const absY: number[] = new Array(hitPath.length);
+  let runX = 0, runY = 0;
+  for (let i = 0; i < hitPath.length; i++) {
+    runX += hitPath[i].x; runY += hitPath[i].y;
+    absX[i] = runX; absY[i] = runY;
+  }
   // Walk from the leaf upward. Closer (smaller-area) container wins.
+  // Bug G descendant guard: locate the dragged frame so we can reject any
+  // candidate that lives inside its subtree. Pre-Bug G this was implicit
+  // (rect leaves weren't containers, so a wireframe's child rects were
+  // never picked as targets). With rect-as-container, the walk could land
+  // on one of dragged's own rect children — nesting a frame into its
+  // descendant is illegal and corrupts the tree.
+  let draggedFrame: Frame | null = null;
+  const findDragged = (fs: Frame[]): void => {
+    for (const f of fs) {
+      if (f.id === draggedId) { draggedFrame = f; return; }
+      if (f.children.length > 0) findDragged(f.children);
+      if (draggedFrame) return;
+    }
+  };
+  findDragged(frames);
   for (let i = hitPath.length - 1; i >= 0; i--) {
     const f = hitPath[i];
     if (f.id === draggedId) continue; // can't nest into self
     if (frameContains(f, draggedId)) continue; // can't nest into own ancestor
-    // Container check: wireframe or band.
-    const isContainer = f.isBand || (f.content === null && !f.isBand);
+    if (draggedFrame && frameContains(draggedFrame, f.id)) continue; // can't nest into own descendant
+    // Container check: band, empty wireframe, or labeled rect leaf.
+    // Bug G: a rect leaf is a valid drop target — Figma-style nesting.
+    const isContainer = f.isBand
+      || (f.content === null && !f.isBand)
+      || f.content?.type === "rect";
     if (!isContainer) continue;
     // Already-immediate-parent: no-op (don't reparent to current parent).
     if (draggedImmediateParent && f.id === draggedImmediateParent.id) continue;
+    // Bug G interior-only guard: a rect leaf has a 1-cell border on every
+    // side. Demote ONLY when the cursor lies ≥1 cell inside each border —
+    // i.e. clearly in the rect's interior. A drop on/near the border is
+    // ambiguous (looks like a sibling-rearrange more than a nest), so let
+    // it fall through to the next outer container (band/wireframe wrapper).
+    // Bands and empty wireframes don't have load-bearing borders, so this
+    // guard only applies to content?.type === "rect".
+    if (f.content?.type === "rect" && f.gridH > 0 && f.gridW > 0) {
+      const cellH = f.h / f.gridH;
+      const cellW = f.w / f.gridW;
+      const interiorTop = absY[i] + cellH;
+      const interiorBottom = absY[i] + f.h - cellH;
+      const interiorLeft = absX[i] + cellW;
+      const interiorRight = absX[i] + f.w - cellW;
+      const inInterior = dropPy >= interiorTop && dropPy <= interiorBottom
+                       && dropPx >= interiorLeft && dropPx <= interiorRight;
+      if (!inInterior) continue;
+    }
     target = f;
     break;
   }

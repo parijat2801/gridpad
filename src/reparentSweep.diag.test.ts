@@ -59,9 +59,11 @@ beforeAll(() => {
   });
 });
 
-// Walk the tree and find the leaf rect whose grid-coord bbox best matches
-// the requested (rowMin, rowMax, colMin, colMax) — uses absolute coords by
-// summing parent gridRow/gridCol along the path.
+// Walk the tree and find the rect frame whose grid-coord bbox matches the
+// requested signature. A "rect frame" is any frame with content?.type ===
+// "rect" — including ones that carry text-label children (the scanner
+// emits Login-rect with a "Login" text child). Excluded: bands, empty
+// wireframes, text-only frames.
 function findLeafByGrid(
   frames: Frame[],
   pred: (absRow: number, absCol: number, gridH: number, gridW: number) => boolean,
@@ -74,32 +76,7 @@ function findLeafByGrid(
     for (const f of fs) {
       const absRow = parentRow + f.gridRow;
       const absCol = parentCol + f.gridCol;
-      if (f.children.length === 0 && f.content !== null && !f.isBand) {
-        if (pred(absRow, absCol, f.gridH, f.gridW)) return { frame: f, absRow, absCol };
-      }
-      const inChild = walk(f.children, absRow, absCol);
-      if (inChild) return inChild;
-    }
-    return null;
-  };
-  return walk(frames, 0, 0);
-}
-
-// Find a wireframe (content === null && !isBand) by its absolute coord
-// signature. Useful for picking the intended drop target.
-function findWireframeByGrid(
-  frames: Frame[],
-  pred: (absRow: number, absCol: number, gridH: number, gridW: number) => boolean,
-): { frame: Frame; absRow: number; absCol: number } | null {
-  const walk = (
-    fs: Frame[],
-    parentRow: number,
-    parentCol: number,
-  ): { frame: Frame; absRow: number; absCol: number } | null => {
-    for (const f of fs) {
-      const absRow = parentRow + f.gridRow;
-      const absCol = parentCol + f.gridCol;
-      if (f.content === null && !f.isBand) {
+      if (f.content?.type === "rect" && !f.isBand) {
         if (pred(absRow, absCol, f.gridH, f.gridW)) return { frame: f, absRow, absCol };
       }
       const inChild = walk(f.children, absRow, absCol);
@@ -284,18 +261,20 @@ describe("Reparent sweep: drag-based reparent across geometries", () => {
     expect(aParent?.id).toBe(decision.targetTopLevelId);
   });
 
-  it("SMALL_INTO_BIG: drag tiny rect into the big empty wireframe → tiny becomes child of big wireframe", () => {
+  it("SMALL_INTO_BIG: drag tiny rect into the big rect → tiny becomes child of big rect (Bug G)", () => {
     const state = createEditorStateUnified(SMALL_INTO_BIG, CW, CH);
     const frames = getFrames(state);
 
-    // Big empty wireframe: ~30 wide, ~7 tall, abs col 0.
-    const big = findWireframeByGrid(frames, (_r, c, h, w) => c < 5 && w >= 28 && h >= 6);
+    // Big labeled rect: ~30 wide, ~7 tall, abs col 0. The scanner emits
+    // this as a content?.type === "rect" leaf — Bug G's fix lets it act
+    // as a drop target for nested children.
+    const big = findLeafByGrid(frames, (_r, c, h, w) => c < 5 && w >= 28 && h >= 6);
     const tiny = findLeafByGrid(frames, (_r, c, _h, w) => c >= 30 && w <= 8);
-    expect(big, "big empty wireframe").not.toBeNull();
-    expect(tiny, "tiny leaf").not.toBeNull();
+    expect(big, "big rect").not.toBeNull();
+    expect(tiny, "tiny rect").not.toBeNull();
     if (!big || !tiny) return;
 
-    // Drop point: center of the big wireframe's interior.
+    // Drop point: center of the big rect's interior.
     const dropPx = (big.absCol + big.frame.gridW / 2) * CW;
     const dropPy = (big.absRow + big.frame.gridH / 2) * CH;
     const docExtentPy = state.doc.lines * CH;
@@ -314,7 +293,7 @@ describe("Reparent sweep: drag-based reparent across geometries", () => {
 
     expect(decision.kind).toBe("demote");
     if (decision.kind !== "demote") return;
-    expect(decision.targetTopLevelId, "target should be the big empty wireframe, not its outer band").toBe(big.frame.id);
+    expect(decision.targetTopLevelId, "target should be the big rect itself, not its outer wireframe wrapper").toBe(big.frame.id);
 
     const after = applyReparentFrame(
       state, tiny.frame.id, decision.targetTopLevelId, big.absRow + 1, big.absCol + 2, CW, CH,
@@ -339,5 +318,50 @@ describe("Reparent sweep: drag-based reparent across geometries", () => {
     if (!bigInAfter) return;
     const tinyIsInsideBig = findInTree(bigInAfter, tiny.frame.id);
     expect(tinyIsInsideBig, "tiny must end up inside big wireframe's subtree").toBe(true);
+  });
+
+  it("Bug G clamp: edge-flush drop into rect parent insets child by ≥1 cell from each border", () => {
+    // Drop tiny rect at the EXACT top-left corner of big rect's bbox. The
+    // clamp in applyReparentFrame's demote branch must inset the child so
+    // its top-left lands at parent-relative (1, 1), not (0, 0). Otherwise
+    // the inner rect's top-left ┌ glyph would overwrite the outer rect's
+    // border.
+    const state = createEditorStateUnified(SMALL_INTO_BIG, CW, CH);
+    const frames = getFrames(state);
+
+    const big = findLeafByGrid(frames, (_r, c, h, w) => c < 5 && w >= 28 && h >= 6);
+    const tiny = findLeafByGrid(frames, (_r, c, _h, w) => c >= 30 && w <= 8);
+    expect(big, "big rect").not.toBeNull();
+    expect(tiny, "tiny rect").not.toBeNull();
+    if (!big || !tiny) return;
+
+    // Drop coords requesting the top-left CORNER of big (flush against
+    // border).  Without the clamp, child would be placed at (0, 0).
+    const flushAbsRow = big.absRow;
+    const flushAbsCol = big.absCol;
+
+    const after = applyReparentFrame(
+      state, tiny.frame.id, big.frame.id, flushAbsRow, flushAbsCol, CW, CH,
+    );
+    const afterFrames = getFrames(after);
+    // eslint-disable-next-line no-console
+    console.log(`[Sweep DIAG] CLAMP post-apply:\n${dumpTree(afterFrames).join("\n")}`);
+
+    const bigAfter = findFrameInList(afterFrames, big.frame.id);
+    expect(bigAfter, "big rect should still exist").not.toBeNull();
+    if (!bigAfter) return;
+    const tinyChild = bigAfter.children.find(c => c.id === tiny.frame.id);
+    expect(tinyChild, "tiny must be a direct child of big after demote").not.toBeUndefined();
+    if (!tinyChild) return;
+
+    // Top-left padding ≥ 1 cell.
+    expect(tinyChild.gridRow, "child gridRow must be ≥ 1 (top border padding)").toBeGreaterThanOrEqual(1);
+    expect(tinyChild.gridCol, "child gridCol must be ≥ 1 (left border padding)").toBeGreaterThanOrEqual(1);
+    // Bottom-right padding ≥ 1 cell: child's far edge must leave the
+    // parent's border row/col untouched.
+    expect(tinyChild.gridRow + tinyChild.gridH, "child bottom must leave ≥1 cell before parent bottom border")
+      .toBeLessThanOrEqual(bigAfter.gridH - 1);
+    expect(tinyChild.gridCol + tinyChild.gridW, "child right must leave ≥1 cell before parent right border")
+      .toBeLessThanOrEqual(bigAfter.gridW - 1);
   });
 });

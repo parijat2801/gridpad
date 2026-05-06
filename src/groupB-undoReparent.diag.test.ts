@@ -262,11 +262,14 @@ describe("undo a drag-into-frame reparent — model layer reproducer (Bug E cand
     const tree1 = getFrames(state1);
     const rectsAfter = findAllLeafRects(tree1);
     expect(rectsAfter.length).toBe(2);  // both rects still exist somewhere in tree
-    // After demote: source band cascade-pruned, so only big's band remains
-    // top-level. The small rect is now a sibling of big's rect inside big's
-    // band.
+    // Bug G: dropping small into big's interior demotes small INTO big
+    // itself (Figma-style nesting), not into big's band wrapper. So
+    // post-demote: source band cascade-pruned, big's band has 1 child
+    // (big), and big has small as a nested child.
     expect(tree1.length, "after demote: source band pruned, only big's band remains").toBe(1);
-    expect(tree1[0].children.length, "big band now contains both rects").toBe(2);
+    expect(tree1[0].children.length, "big band has 1 direct child (big rect)").toBe(1);
+    const bigAfter = tree1[0].children[0];
+    expect(bigAfter.children.some(c => c.id === small_id), "big rect contains small as nested child").toBe(true);
   });
 
   it("step 1 + step 2 (undo): post-undo tree has 2 top-level frames, neither contains a nested rect", () => {
