@@ -6,7 +6,7 @@ export default defineConfig({
   workers: 4,
   fullyParallel: true,
   use: {
-    baseURL: process.env.GRIDPAD_URL ?? "http://localhost:5177/gridpad/",
+    baseURL: process.env.GRIDPAD_URL ?? "http://localhost:5177/",
     headless: true,
   },
 });
