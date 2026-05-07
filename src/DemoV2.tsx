@@ -17,10 +17,13 @@ import {
   setTextEditEffect, editTextFrameEffect, getTextEdit,
   resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, landingGridFromCursor, shouldEscalateResidual, findImmediateParent, findFrameInList,
   findContainingBandDeep, getBandRelativeRow, getBandRelativeCol,
+  docDiffersFrom,
   type CursorPos,
   type ReparentDecision,
 } from "./editorState";
+import { UnsavedChangesModal } from "./UnsavedChangesModal";
 import { serializeUnified } from "./serializeUnified";
+import { createFileBackend, type FileBackend } from "./fileBackend";
 import { type Frame, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { setTextAlignEffect } from "./editorState";
@@ -228,27 +231,108 @@ export default function DemoV2() {
   const lastClickRef = useRef<{ time: number; px: number; py: number } | null>(null);
   const drawPreviewRef = useRef<{ startX: number; startY: number; curX: number; curY: number; parentId: string | null } | null>(null);
   const textPlacementRef = useRef<{ x: number; y: number; chars: string; parentId: string | null } | null>(null);
-  const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
-  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [backend, setBackend] = useState<FileBackend | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void createFileBackend().then(b => {
+      if (!cancelled) setBackend(b);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
-  type WritableHandle = FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> };
-  async function saveToHandle(h: FileSystemFileHandle) {
-    console.log("saveToHandle called, handle:", h.name);
-    try {
-      const state = stateRef.current;
-      const md = serializeUnified(getDoc(state), getFrames(state));
-      const w = await (h as WritableHandle).createWritable();
-      await w.write(md);
-      await w.close();
-      stateRef.current = applyClearDirty(stateRef.current);
-      syncRefsFromState();
-    } catch (err) { console.error("saveToHandle failed:", err); }
+  const [currentPath, setCurrentPath] = useState<string | null>(null);
+  const [docDirty, setDocDirty] = useState(false);
+  const [pendingPath, setPendingPath] = useState<string | null>(null);
+  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
+
+  function buildTitle(path: string | null, dirty: boolean): string {
+    if (!path) return "Gridpad";
+    const base = path.split(/[/\\]/).pop() ?? path;
+    return dirty ? `${base} ● Gridpad` : `${base} — Gridpad`;
   }
-  function scheduleAutosave() {
-    if (!fileHandleRef.current) return;
-    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-    autosaveTimerRef.current = setTimeout(() => { if (fileHandleRef.current) void saveToHandle(fileHandleRef.current); }, 500);
+
+  function pushTitle(path: string | null, dirty: boolean): void {
+    document.title = buildTitle(path, dirty);
+    backend?.setTitle(buildTitle(path, dirty));
   }
+
+  function markDirty(): void {
+    if (!docDirty) {
+      setDocDirty(true);
+      pushTitle(currentPath, true);
+    }
+  }
+
+  // `pathOverride` is for callers that just resolved a new path mid-async
+  // (loadFromPath, Cmd+Shift+S) — the closure's `currentPath` is stale at
+  // that moment because setCurrentPath() hasn't flushed yet. Without it the
+  // titlebar briefly shows the previous file.
+  function markClean(pathOverride?: string | null): void {
+    setDocDirty(false);
+    pushTitle(pathOverride !== undefined ? pathOverride : currentPath, false);
+  }
+
+  // Centralized seam — every doc-mutating helper (apply*/editorUndo/
+  // editorRedo/proseInsert/proseDeleteBefore) routes through this wrapper
+  // so dirty-tracking observes doc changes once. Selection-only and
+  // effect-only sites (selectFrameEffect, setTextEditEffect, proseMove*)
+  // can't change the doc and stay as direct .update() calls.
+  // See T7 of the tauri-shell plan for the rationale.
+  function applyAndTrack(producer: (prev: EditorState) => EditorState): void {
+    const prev = stateRef.current;
+    const next = producer(prev);
+    stateRef.current = next;
+    if (docDiffersFrom(prev, next)) markDirty();
+  }
+
+  async function saveCurrent(): Promise<void> {
+    if (!backend) return;
+    // Snapshot the state-at-save-start. If the user edits between now and
+    // when backend.saveFile() resolves, those edits aren't on disk and we
+    // must keep the doc dirty.
+    const snapshot = stateRef.current;
+    const md = serializeUnified(getDoc(snapshot), getFrames(snapshot));
+    await backend.saveFile(md);
+    stateRef.current = applyClearDirty(stateRef.current);
+    syncRefsFromState();
+    if (!docDiffersFrom(snapshot, stateRef.current)) {
+      markClean();
+    }
+  }
+
+  async function loadFromPath(path: string): Promise<void> {
+    if (!backend) return;
+    const text = await backend.readFileByPath(path);
+    if (text === null) {
+      console.error("readFileByPath returned null for", path);
+      return;
+    }
+    loadDocument(text);
+    doLayout(); paint();
+    setCurrentPath(path);
+    // Pass explicit path: setCurrentPath hasn't flushed by the time
+    // markClean → pushTitle reads currentPath from this closure.
+    markClean(path);
+  }
+
+  function handleOpenRequest(path: string): void {
+    if (!docDirty) {
+      void loadFromPath(path);
+      return;
+    }
+    setPendingPath(path);
+    setShowUnsavedModal(true);
+  }
+
+  useEffect(() => {
+    if (!backend) return;
+    const unsub = backend.subscribeToOpenRequest(handleOpenRequest);
+    return unsub;
+    // handleOpenRequest closes over docDirty/backend/currentPath — all are
+    // dependencies because the closure's behavior changes when any of them
+    // does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backend, docDirty, currentPath]);
   function setTool(t: ToolName) { activeToolRef.current = t; setActiveTool(t); drawPreviewRef.current = null; textPlacementRef.current = null; }
 
   function loadDocument(text: string) {
@@ -791,11 +875,13 @@ export default function DemoV2() {
   function commitCumulativeDrag(frameId: string, snapshot: EditorState, isResize: boolean) {
     const effects = computeCumulativeDragEffects(frameId, snapshot, isResize);
     if (effects.length === 0) return;
-    const committed = snapshot.update({
+    const prev = stateRef.current;
+    const tr = snapshot.update({
       effects,
       annotations: [Transaction.addToHistory.of(true)],
-    }).state;
-    stateRef.current = committed;
+    });
+    stateRef.current = tr.state;
+    if (docDiffersFrom(prev, tr.state)) markDirty();
     syncRefsFromState();
   }
 
@@ -884,26 +970,27 @@ export default function DemoV2() {
       // When no reparent fires, commit the cumulative drag alone (Fix 9
       // unchanged behavior).
       if (dragRef.current.hasMoved && dragRef.current.mouseDownState) {
+        const mouseDownState = dragRef.current.mouseDownState;
         if (reparentDecision.kind !== "none" && reparentArgs) {
           const targetParentId = reparentDecision.kind === "demote"
             ? reparentDecision.targetTopLevelId
             : null;
-          stateRef.current = applyReparentFrame(
-            dragRef.current.mouseDownState,
+          applyAndTrack(() => applyReparentFrame(
+            mouseDownState,
             reparentArgs.draggedId,
             targetParentId,
             reparentArgs.aRow,
             reparentArgs.aCol,
             reparentArgs.cw,
             reparentArgs.ch,
-          );
+          ));
           syncRefsFromState();
         } else {
           // Drag-without-reparent: Fix 9's original commit-on-mouseup.
           commitCumulativeDrag(dragRef.current.frameId, dragRef.current.mouseDownState, !!dragRef.current.resizeHandle);
         }
       }
-      dragRef.current = null; scheduleAutosave();
+      dragRef.current = null;
       // Repaint after commit-on-mouseup + reparent — these only sync refs,
       // not the canvas. Without this, the post-drag layout shows up only on
       // the next interaction (any click triggers a paint somewhere down its
@@ -920,18 +1007,18 @@ export default function DemoV2() {
     if (tool === "rect" && x2 - x1 >= cw && y2 - y1 >= ch) {
       const f = createRectFrame({ gridW: Math.max(2, Math.round((x2 - x1) / cw)), gridH: Math.max(2, Math.round((y2 - y1) / ch)), style: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" }, charWidth: cw, charHeight: ch });
       const gridR = Math.round(y1 / ch), gridC = Math.round(x1 / cw);
-      stateRef.current = preview.parentId
-        ? applyAddChildFrame(stateRef.current, f, preview.parentId, gridR, gridC)
-        : applyAddTopLevelFrame(stateRef.current, f, gridR, gridC);
-      syncRefsFromState(); scheduleAutosave();
+      applyAndTrack(prev => preview.parentId
+        ? applyAddChildFrame(prev, f, preview.parentId, gridR, gridC)
+        : applyAddTopLevelFrame(prev, f, gridR, gridC));
+      syncRefsFromState();
     } else if (tool === "line") {
       const r1 = Math.round(preview.startY / ch), c1 = Math.round(preview.startX / cw), r2 = Math.round(preview.curY / ch), c2 = Math.round(preview.curX / cw);
       if (r1 !== r2 || c1 !== c2) {
         const f = createLineFrame({ r1, c1, r2, c2, charWidth: cw, charHeight: ch });
-        stateRef.current = preview.parentId
-          ? applyAddChildFrame(stateRef.current, f, preview.parentId, f.gridRow, f.gridCol)
-          : applyAddTopLevelFrame(stateRef.current, f, f.gridRow, f.gridCol);
-        syncRefsFromState(); scheduleAutosave();
+        applyAndTrack(prev => preview.parentId
+          ? applyAddChildFrame(prev, f, preview.parentId, f.gridRow, f.gridCol)
+          : applyAddTopLevelFrame(prev, f, f.gridRow, f.gridCol));
+        syncRefsFromState();
       }
     }
     setTool("select"); // one-shot: revert to Select after drawing
@@ -967,7 +1054,7 @@ export default function DemoV2() {
           const state = stateRef.current;
           return serializeUnified(getDoc(state), getFrames(state));
         },
-        /** Serialize + update all refs (mirrors real saveToHandle minus file I/O) */
+        /** Serialize + update all refs (mirrors backend.saveFile minus file I/O) */
         saveDocument: () => {
           const state = stateRef.current;
           const md = serializeUnified(getDoc(state), getFrames(state));
@@ -1091,7 +1178,7 @@ export default function DemoV2() {
       const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
       if (mod && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
-        stateRef.current = editorUndo(stateRef.current);
+        applyAndTrack(editorUndo);
         syncRefsFromState();
         proseRef.current = getDoc(stateRef.current);
         preparedRef.current = buildPreparedCache(proseRef.current);
@@ -1101,7 +1188,7 @@ export default function DemoV2() {
       }
       if (mod && e.key === "z" && e.shiftKey) {
         e.preventDefault();
-        stateRef.current = editorRedo(stateRef.current);
+        applyAndTrack(editorRedo);
         syncRefsFromState();
         proseRef.current = getDoc(stateRef.current);
         preparedRef.current = buildPreparedCache(proseRef.current);
@@ -1111,33 +1198,38 @@ export default function DemoV2() {
       }
       if (mod && e.key === "o") {
         e.preventDefault();
-        try {
-          const [handle] = await window.showOpenFilePicker({ types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }] });
-          fileHandleRef.current = handle;
-          const file = await handle.getFile();
-          loadDocument(await file.text()); doLayout(); paint();
-        } catch (err) { if (err instanceof DOMException && err.name === "AbortError") { /* cancelled */ } else { console.error("File open failed:", err); throw err; } }
+        if (!backend) return;
+        const r = await backend.openFile();
+        if (r) {
+          loadDocument(r.text);
+          doLayout(); paint();
+          setCurrentPath(r.path);
+          markClean(r.path);
+        }
+        return;
       }
       if (mod && e.shiftKey && e.key === "s") {
         e.preventDefault();
-        if (!("showSaveFilePicker" in window)) return;
-        try {
-          const handle = await window.showSaveFilePicker({
-            types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
-            suggestedName: "document.md",
-          });
-          fileHandleRef.current = handle;
-          await saveToHandle(handle);
-        } catch (err) {
-          if (err instanceof DOMException && err.name === "AbortError") { /* cancelled */ }
-          else { console.error("Save As failed:", err); }
+        if (!backend) return;
+        const snapshot = stateRef.current;
+        const md = serializeUnified(getDoc(snapshot), getFrames(snapshot));
+        const newPath = await backend.saveFileAs(md);
+        if (newPath !== null) {
+          stateRef.current = applyClearDirty(stateRef.current);
+          syncRefsFromState();
+          setCurrentPath(newPath);
+          if (!docDiffersFrom(snapshot, stateRef.current)) {
+            markClean(newPath);
+          } else {
+            pushTitle(newPath, true);
+          }
         }
         return;
       }
       if (mod && e.key === "s") {
         e.preventDefault();
-        if (autosaveTimerRef.current) { clearTimeout(autosaveTimerRef.current); autosaveTimerRef.current = null; }
-        if (fileHandleRef.current) await saveToHandle(fileHandleRef.current);
+        await saveCurrent();
+        return;
       }
       // Text placement tool — collect typed chars
       const tp = textPlacementRef.current;
@@ -1148,11 +1240,11 @@ export default function DemoV2() {
           if (tp.chars.length > 0) {
             const cw = cwRef.current, ch = chRef.current;
             const tf = createTextFrame({ text: tp.chars, row: Math.round(tp.y / ch), col: Math.round(tp.x / cw), charWidth: cw, charHeight: ch });
-            stateRef.current = tp.parentId
-              ? applyAddChildFrame(stateRef.current, tf, tp.parentId, tf.gridRow, tf.gridCol)
-              : applyAddTopLevelFrame(stateRef.current, tf, tf.gridRow, tf.gridCol);
+            applyAndTrack(prev => tp.parentId
+              ? applyAddChildFrame(prev, tf, tp.parentId, tf.gridRow, tf.gridCol)
+              : applyAddTopLevelFrame(prev, tf, tf.gridRow, tf.gridCol));
             syncRefsFromState();
-            scheduleAutosave(); doLayout();
+            doLayout();
           }
           setTool("select"); paint(); return; // one-shot: revert to Select
         }
@@ -1276,7 +1368,6 @@ export default function DemoV2() {
             }).state;
             syncRefsFromState();
             textEditRef.current = getTextEdit(stateRef.current);
-            scheduleAutosave();
           }
           blinkRef.current = true; paint(); return;
         }
@@ -1294,7 +1385,7 @@ export default function DemoV2() {
           }).state;
           syncRefsFromState();
           textEditRef.current = getTextEdit(stateRef.current);
-          scheduleAutosave(); blinkRef.current = true; paint(); return;
+          blinkRef.current = true; paint(); return;
         }
         return;
       }
@@ -1339,28 +1430,31 @@ export default function DemoV2() {
         if (e.key === "Backspace") {
           e.preventDefault();
           const beforeCursor = getCursor(stateRef.current)!;
-          stateRef.current = proseDeleteBefore(stateRef.current, beforeCursor);
+          applyAndTrack(prev => proseDeleteBefore(prev, beforeCursor));
           // Unified-doc: proseDelete mutates the CM doc; mapPos in framesField
           // shifts every frame's docOffset automatically. No manual frame-shift
           // loop needed. syncRefsFromState rebuilds preparedRef from scratch.
           syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
-          scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
+          doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key === "Enter") {
           e.preventDefault();
-          stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, "\n");
+          const c = getCursor(stateRef.current)!;
+          applyAndTrack(prev => proseInsert(prev, c, "\n"));
           // Same as Backspace: unified pipeline handles both doc + frame shift.
           syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
-          scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
+          doLayout(); blinkRef.current = true; paint(); return;
         }
         if (e.key.length === 1 && !mod) {
           e.preventDefault();
-          stateRef.current = proseInsert(stateRef.current, getCursor(stateRef.current)!, e.key);
+          const c = getCursor(stateRef.current)!;
+          const key = e.key;
+          applyAndTrack(prev => proseInsert(prev, c, key));
           syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
-          scheduleAutosave(); doLayout(); blinkRef.current = true; paint(); return;
+          doLayout(); blinkRef.current = true; paint(); return;
         }
         return;
       }
@@ -1371,7 +1465,7 @@ export default function DemoV2() {
       }
       const deleteSelectedId = getSelectedId(stateRef.current);
       if ((e.key === "Delete" || e.key === "Backspace") && deleteSelectedId) {
-        stateRef.current = applyDeleteFrame(stateRef.current, deleteSelectedId);
+        applyAndTrack(prev => applyDeleteFrame(prev, deleteSelectedId));
         syncRefsFromState();
         doLayout(); paint();
       }
@@ -1412,7 +1506,7 @@ export default function DemoV2() {
     };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
-  }, []);
+  }, [backend, currentPath, docDirty]);
 
   useEffect(() => { if (ready) { doLayout(); paint(); } }, [ready]);
 
@@ -1451,6 +1545,23 @@ export default function DemoV2() {
         onMouseUp={onMouseUp}
       />
       <div data-spacer="" style={{ pointerEvents: "none" }} />
+      {showUnsavedModal && pendingPath && (
+        <UnsavedChangesModal
+          pendingPath={pendingPath}
+          onCancel={() => { setShowUnsavedModal(false); setPendingPath(null); }}
+          onDiscard={() => {
+            const p = pendingPath;
+            setShowUnsavedModal(false); setPendingPath(null);
+            if (p) void loadFromPath(p);
+          }}
+          onSaveFirst={async () => {
+            const p = pendingPath;
+            setShowUnsavedModal(false); setPendingPath(null);
+            await saveCurrent();
+            if (p) void loadFromPath(p);
+          }}
+        />
+      )}
     </div>
   );
 }

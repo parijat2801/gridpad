@@ -1,5 +1,7 @@
 # Tauri v2 Desktop Shell for Gridpad
 
+> **Implementation plan:** `docs/plans/2026-05-07-tauri-shell-impl.md` is the bite-sized TDD plan that supersedes §13 below. This document remains the design summary (§1–§12 still authoritative).
+
 ## Resolved Decisions
 
 1. **Tauri is the primary target.** `vite.config.ts` `base` flips to `'/'`. For gh-pages deploys, run `vite build --base=/gridpad/` manually when desired. No env-var branching.

@@ -10,6 +10,7 @@ import {
   Transaction,
   type Extension,
   type Text,
+  type TransactionSpec,
 } from "@codemirror/state";
 import { history, undo, redo, undoDepth, redoDepth, invertedEffects } from "@codemirror/commands";
 import type { Frame } from "./frame";
@@ -19,6 +20,28 @@ import { scanToFrames } from "./scanToFrames";
 import type { ProseSegment } from "./proseSegments";
 
 export { undoDepth, redoDepth };
+
+// ── Centralized dispatch helpers (Task 7 of tauri-shell-impl) ──
+// These exist so DemoV2 can route every transaction through one seam and
+// observe whether the doc changed — required for dirty-flag tracking
+// without sprinkling markDirty() across ~48 mutation sites.
+
+export interface DispatchResult {
+  state: EditorState;
+  docChanged: boolean;
+}
+
+export function dispatchTransaction(state: EditorState, spec: TransactionSpec): DispatchResult {
+  const tr = state.update(spec);
+  return { state: tr.state, docChanged: tr.docChanged };
+}
+
+// For undo/redo paths where the new EditorState is already produced and the
+// caller cannot inspect the underlying Transaction. Uses CodeMirror's
+// optimized Text.eq(), which short-circuits on length and shared chunks.
+export function docDiffersFrom(prev: EditorState, next: EditorState): boolean {
+  return !prev.doc.eq(next.doc);
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

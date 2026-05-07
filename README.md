@@ -71,3 +71,9 @@ export default defineConfig([
   },
 ])
 ```
+
+## Deployment
+
+- Default `vite build` produces a Tauri-friendly bundle at `base: '/'`.
+- For the gh-pages site, build with the explicit base override:
+  `vite build --base=/gridpad/`
