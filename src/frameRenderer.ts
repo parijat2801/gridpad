@@ -2,7 +2,7 @@
 
 import type { Frame } from "./frame";
 import { buildSparseRows } from "./sparseRows";
-import { FONT_SIZE, FONT_FAMILY, FG_COLOR } from "./grid";
+import { theme, wireframeFont } from "./theme";
 
 // ── renderFrame ────────────────────────────────────────────
 
@@ -102,8 +102,8 @@ function renderContent(
 ): void {
   const rows = buildSparseRows(cells);
 
-  ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
-  ctx.fillStyle = FG_COLOR;
+  ctx.font = wireframeFont();
+  ctx.fillStyle = theme.wireframeColor;
   ctx.textBaseline = "top";
 
   for (const { row, startCol, text } of rows) {
@@ -133,8 +133,8 @@ export function renderTextFrame(
   const text = frame.content?.text;
   if (!text) return;
 
-  ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
-  ctx.fillStyle = FG_COLOR;
+  ctx.font = wireframeFont();
+  ctx.fillStyle = theme.wireframeColor;
   ctx.textBaseline = "top";
 
   if (parentInnerW === undefined || ctx.measureText(text).width <= parentInnerW) {

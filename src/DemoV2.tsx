@@ -29,11 +29,10 @@ import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { setTextAlignEffect } from "./editorState";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { findCursorLine } from "./cursorFind";
-import { FG_COLOR, measureCellSize, getCharWidth, getCharHeight, FONT_SIZE, FONT_FAMILY } from "./grid";
-import { PROSE_FONT_RENDER, PROSE_LINE_HEIGHT, ensureProseFontReady } from "./textFont";
-
-const FONT = `${FONT_SIZE}px ${FONT_FAMILY}`;
-const BG = "#1e1e2e";
+import { measureCellSize, getCharWidth, getCharHeight } from "./grid";
+import { ensureProseFontReady, proseFontRender } from "./textFont";
+import { theme, subscribe as subscribeTheme, loadTheme, wireframeFont, type ThemeUpdateKind } from "./theme";
+import { ThemePanel } from "./ThemePanel";
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 type ResizeHandle = "tl" | "tm" | "tr" | "ml" | "mr" | "bl" | "bm" | "br";
@@ -244,6 +243,7 @@ export default function DemoV2() {
   const [docDirty, setDocDirty] = useState(false);
   const [pendingPath, setPendingPath] = useState<string | null>(null);
   const [showUnsavedModal, setShowUnsavedModal] = useState(false);
+  const [themePanelOpen, setThemePanelOpen] = useState(false);
 
   function buildTitle(path: string | null, dirty: boolean): string {
     if (!path) return "Gridpad";
@@ -414,16 +414,16 @@ export default function DemoV2() {
     const ctx = canvas.getContext("2d")!;
     // Clear entire canvas in device space first (no transform)
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = BG; ctx.fillRect(0, 0, pw, ph);
+    ctx.fillStyle = theme.bgColor; ctx.fillRect(0, 0, pw, ph);
     // DPR scaling, then translate by scroll offset in CSS coords
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.translate(0, -scrollTop);
-    ctx.font = PROSE_FONT_RENDER; ctx.fillStyle = FG_COLOR; ctx.textBaseline = "top";
+    ctx.font = proseFontRender(); ctx.fillStyle = theme.proseColor; ctx.textBaseline = "top";
     // Viewport culling — only draw visible content
     const viewTop = scrollTop - chRef.current;
     const viewBot = scrollTop + viewH + chRef.current;
     for (const line of linesRef.current) {
-      if (line.y + PROSE_LINE_HEIGHT >= viewTop && line.y <= viewBot) ctx.fillText(line.text, line.x, line.y);
+      if (line.y + theme.proseLineHeight >= viewTop && line.y <= viewBot) ctx.fillText(line.text, line.x, line.y);
     }
     const cw = cwRef.current, ch = chRef.current;
     for (const frame of framesRef.current) {
@@ -440,10 +440,10 @@ export default function DemoV2() {
     // Prose cursor (blinking)
     const cursor = proseCursorRef.current;
     if (cursor && blinkRef.current) {
-      ctx.font = PROSE_FONT_RENDER;
+      ctx.font = proseFontRender();
       const pos = findCursorLine(cursor, linesRef.current, (s) => ctx.measureText(s).width, chRef.current);
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(pos.x, pos.y, 2, PROSE_LINE_HEIGHT);
+      ctx.fillRect(pos.x, pos.y, 2, theme.proseLineHeight);
     }
     // Text frame cursor (blinking)
     const te = textEditRef.current;
@@ -462,14 +462,14 @@ export default function DemoV2() {
       const found = findFrameById(framesRef.current, teGhost.frameId);
       if (found && found.frame.content?.type === "text" && found.frame.content.text) {
         // Measure with correct font before checking overflow
-        ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
+        ctx.font = wireframeFont();
         const textWidth = ctx.measureText(found.frame.content.text).width;
         // Check against frame width (parent clip handles the rest)
         if (textWidth > found.frame.w) {
           ctx.save();
           ctx.globalAlpha = 0.4;
-          ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
-          ctx.fillStyle = FG_COLOR;
+          ctx.font = wireframeFont();
+          ctx.fillStyle = theme.wireframeColor;
           ctx.textBaseline = "top";
           ctx.fillText(found.frame.content.text, found.absX, found.absY);
           ctx.restore();
@@ -491,7 +491,7 @@ export default function DemoV2() {
       const cw2 = cwRef.current, ch2 = chRef.current;
       ctx.save(); ctx.strokeStyle = "#4a90e2"; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
       ctx.strokeRect(tp.x, tp.y, Math.max(1, [...tp.chars].length) * cw2, ch2); ctx.setLineDash([]);
-      if (tp.chars.length > 0) { ctx.fillStyle = FG_COLOR; ctx.font = FONT; ctx.textBaseline = "top"; ctx.fillText(tp.chars, tp.x, tp.y); }
+      if (tp.chars.length > 0) { ctx.fillStyle = theme.wireframeColor; ctx.font = wireframeFont(); ctx.textBaseline = "top"; ctx.fillText(tp.chars, tp.x, tp.y); }
       ctx.restore();
     }
   }
@@ -516,12 +516,12 @@ export default function DemoV2() {
     let minVDist = Infinity;
 
     for (const pl of linesRef.current) {
-      const vDist = Math.abs(pl.y + PROSE_LINE_HEIGHT / 2 - py);
+      const vDist = Math.abs(pl.y + theme.proseLineHeight / 2 - py);
       if (vDist < minVDist) minVDist = vDist;
     }
     // Collect all lines within 1px of the best vertical distance (same y-band)
     for (const pl of linesRef.current) {
-      const vDist = Math.abs(pl.y + PROSE_LINE_HEIGHT / 2 - py);
+      const vDist = Math.abs(pl.y + theme.proseLineHeight / 2 - py);
       if (vDist <= minVDist + 1) candidates.push(pl);
     }
     if (candidates.length === 1) {
@@ -550,7 +550,7 @@ export default function DemoV2() {
     const canvas = canvasRef.current;
     if (canvas) {
       const ctx = canvas.getContext("2d")!;
-      ctx.font = PROSE_FONT_RENDER;
+      ctx.font = proseFontRender();
       const relX = px - best.x;
       for (let g = 0; g < graphemes.length; g++) {
         const prefix = graphemes.slice(0, g + 1).map(s => s.segment).join("");
@@ -943,6 +943,10 @@ export default function DemoV2() {
             { aRow, gridH: draggedGridH, proseRows },
             { aRow, gridH: draggedGridH },
           );
+          // eslint-disable-next-line no-console
+          console.log("[DRAG MOUSEUP]", JSON.stringify({
+            draggedId, upPx, upPy, aRow, aCol, decision: reparentDecision,
+          }));
           if (reparentDecision.kind !== "none") {
             reparentArgs = { aRow, aCol, cw, ch, draggedId };
           }
@@ -1026,7 +1030,10 @@ export default function DemoV2() {
   }
 
   useEffect(() => {
-    Promise.all([measureCellSize(), ensureProseFontReady()]).then(() => {
+    // Load persisted theme BEFORE measuring so we don't measure with defaults
+    // and then immediately remeasure when the persisted values arrive — that
+    // would flicker the layout on every Tauri launch with a customized theme.
+    loadTheme().then(() => Promise.all([measureCellSize(), ensureProseFontReady()])).then(() => {
       cwRef.current = getCharWidth(); chRef.current = getCharHeight();
       // Optional fixture loader — `?fixture=wall-stack-vert` swaps DEFAULT_TEXT
       // for a named harness fixture so manual reproduction matches the e2e
@@ -1176,6 +1183,12 @@ export default function DemoV2() {
     const fn = async (e: KeyboardEvent) => {
       if (!stateRef.current) return;
       const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
+      // Cmd+, toggles the theme panel — works in any mode (prose, text-edit, idle).
+      if (mod && e.key === ",") {
+        e.preventDefault();
+        setThemePanelOpen(v => !v);
+        return;
+      }
       if (mod && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         applyAndTrack(editorUndo);
@@ -1510,32 +1523,87 @@ export default function DemoV2() {
 
   useEffect(() => { if (ready) { doLayout(); paint(); } }, [ready]);
 
-  if (!ready) return <div style={{ background: BG, width: "100vw", height: "100vh" }} />;
+  // Theme subscription. Runs in its own effect (separate from keyboard) so the
+  // two unrelated lifecycles don't churn. Reflow work is debounced 100ms
+  // trailing-edge so dragging a multiplier slider at 60fps fires one reflow at
+  // the end, not 60. The synchronous half of updateTheme (mutate + snapshot +
+  // notify) already ran before this listener fires — the debounce only delays
+  // the expensive async side-effect.
+  useEffect(() => {
+    let reflowTimer: ReturnType<typeof setTimeout> | null = null;
+    const REFLOW_DEBOUNCE_MS = 100;
+
+    const runReflow = async () => {
+      // Await new font(s) before measuring so we don't pick up the system
+      // fallback. document.fonts.load is idempotent — already-loaded fonts
+      // resolve immediately.
+      try {
+        await Promise.all([
+          document.fonts.load(wireframeFont()),
+          ensureProseFontReady(),
+        ]);
+      } catch { /* tolerate missing fonts; clamps in measureCellSize handle it */ }
+      await measureCellSize();
+      cwRef.current = getCharWidth();
+      chRef.current = getCharHeight();
+      // Prepared cache holds word-wrap measurements against the OLD prose font.
+      // Skipping this rebuild makes text wrap at stale boundaries on prose
+      // font/size changes.
+      preparedRef.current = buildPreparedCache(proseRef.current);
+      doLayout();
+      paint();
+    };
+
+    const handle = (kind: ThemeUpdateKind) => {
+      if (kind === "css-vars-only") return; // browser handles via :root
+      if (kind === "paint") { paint(); return; }
+      // reflow — debounce
+      if (reflowTimer !== null) clearTimeout(reflowTimer);
+      reflowTimer = setTimeout(() => { reflowTimer = null; void runReflow(); }, REFLOW_DEBOUNCE_MS);
+    };
+
+    const unsub = subscribeTheme(handle);
+    return () => {
+      unsub();
+      if (reflowTimer !== null) clearTimeout(reflowTimer);
+    };
+  }, []);
+
+  if (!ready) return <div style={{ background: "var(--theme-bg, #1e1e2e)", width: "100vw", height: "100vh" }} />;
 
   return (
     <div style={{ position: "fixed", inset: 0, overflow: "auto", background: "#141420" }} onScroll={paint}>
       <div style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 100, background: "#2b2b33", borderRadius: 10, padding: "4px 8px", boxShadow: "0 2px 12px rgba(0,0,0,0.5)", display: "flex", gap: 4 }}>
         {TOOL_BUTTONS.map(({ tool, label }) => (
-          <button key={tool} onClick={() => setTool(tool)} style={{ background: activeTool === tool ? "#4a90e2" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: FONT_FAMILY, fontSize: 13, fontWeight: activeTool === tool ? 600 : 400 }}>
+          <button key={tool} onClick={() => setTool(tool)} style={{ background: activeTool === tool ? "var(--theme-selection, #4a90e2)" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: theme.wireframeFontFamily, fontSize: 13, fontWeight: activeTool === tool ? 600 : 400 }}>
             {label}
           </button>
         ))}
-        <div style={{ width: 1, background: "#444", margin: "4px 4px" }} />
+        <div style={{ width: 1, background: "var(--theme-grid-border, #444)", margin: "4px 4px" }} />
         <button
           onClick={() => { const next = !showBandsRef.current; showBandsRef.current = next; setShowBands(next); paint(); }}
           title="Toggle band debug overlay"
-          style={{ background: showBands ? "rgb(255, 0, 200)" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: FONT_FAMILY, fontSize: 13, fontWeight: showBands ? 600 : 400 }}
+          style={{ background: showBands ? "rgb(255, 0, 200)" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: theme.wireframeFontFamily, fontSize: 13, fontWeight: showBands ? 600 : 400 }}
         >
           ▦ Bands
         </button>
         <button
           onClick={() => { const next = !showWrappersRef.current; showWrappersRef.current = next; setShowWrappers(next); paint(); }}
           title="Toggle wireframe-wrapper debug overlay"
-          style={{ background: showWrappers ? "rgb(0, 200, 200)" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: FONT_FAMILY, fontSize: 13, fontWeight: showWrappers ? 600 : 400 }}
+          style={{ background: showWrappers ? "rgb(0, 200, 200)" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: theme.wireframeFontFamily, fontSize: 13, fontWeight: showWrappers ? 600 : 400 }}
         >
           ▢ Wrappers
         </button>
+        <button
+          onClick={() => setThemePanelOpen(v => !v)}
+          title="Theme (⌘,)"
+          aria-pressed={themePanelOpen}
+          style={{ background: themePanelOpen ? "var(--theme-selection, #4a90e2)" : "transparent", color: "#e0e0e0", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: theme.wireframeFontFamily, fontSize: 13, fontWeight: themePanelOpen ? 600 : 400 }}
+        >
+          ⚙
+        </button>
       </div>
+      <ThemePanel open={themePanelOpen} onClose={() => setThemePanelOpen(false)} />
       <canvas
         ref={canvasRef}
         tabIndex={0}

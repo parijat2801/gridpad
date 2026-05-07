@@ -1,5 +1,5 @@
 import { prepareWithSegments, type PreparedTextWithSegments } from "@chenglou/pretext";
-import { PROSE_FONT_MEASURE } from "./textFont";
+import { proseFontMeasure } from "./textFont";
 
 const PREPARE_OPTS = { whiteSpace: "pre-wrap" as const };
 
@@ -9,7 +9,7 @@ export type PreparedCache = (PreparedTextWithSegments | null)[];
 export function buildPreparedCache(text: string): PreparedCache {
   const lines = text.split("\n");
   return lines.map(line =>
-    line.length > 0 ? prepareWithSegments(line, PROSE_FONT_MEASURE, PREPARE_OPTS) : null
+    line.length > 0 ? prepareWithSegments(line, proseFontMeasure(), PREPARE_OPTS) : null
   );
 }
 
@@ -23,7 +23,7 @@ export function invalidateLine(
     throw new RangeError(`invalidateLine: lineNum ${lineNum} out of bounds [0, ${cache.length - 1}]`);
   }
   cache[lineNum] = newLineText.length > 0
-    ? prepareWithSegments(newLineText, PROSE_FONT_MEASURE, PREPARE_OPTS)
+    ? prepareWithSegments(newLineText, proseFontMeasure(), PREPARE_OPTS)
     : null;
 }
 
@@ -38,11 +38,11 @@ export function splitLine(
     throw new RangeError(`splitLine: row ${row} out of bounds [0, ${cache.length - 1}]`);
   }
   cache[row] = firstLineText.length > 0
-    ? prepareWithSegments(firstLineText, PROSE_FONT_MEASURE, PREPARE_OPTS)
+    ? prepareWithSegments(firstLineText, proseFontMeasure(), PREPARE_OPTS)
     : null;
   cache.splice(row + 1, 0,
     secondLineText.length > 0
-      ? prepareWithSegments(secondLineText, PROSE_FONT_MEASURE, PREPARE_OPTS)
+      ? prepareWithSegments(secondLineText, proseFontMeasure(), PREPARE_OPTS)
       : null
   );
 }
@@ -58,6 +58,6 @@ export function mergeLines(
   }
   cache.splice(row, 1);
   cache[row - 1] = mergedLineText.length > 0
-    ? prepareWithSegments(mergedLineText, PROSE_FONT_MEASURE, PREPARE_OPTS)
+    ? prepareWithSegments(mergedLineText, proseFontMeasure(), PREPARE_OPTS)
     : null;
 }
