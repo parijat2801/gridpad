@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "usage: gridpad <path>" >&2
+  exit 1
+fi
+
+if [[ ! -f "$1" ]]; then
+  echo "gridpad: file not found: $1" >&2
+  exit 1
+fi
+
+# Resolve to absolute path (now that we know the file exists).
+TARGET="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+
+open -a "Gridpad" --args "$TARGET"
