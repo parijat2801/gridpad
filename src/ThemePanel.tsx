@@ -213,9 +213,6 @@ export function ThemePanel({ open, onClose }: ThemePanelProps) {
           <Slider min={8} max={32} step={1} value={t.proseFontSize} onChange={v => updateTheme({ proseFontSize: v })} />
           <NumberInput min={8} max={32} value={t.proseFontSize} onCommit={v => updateTheme({ proseFontSize: v })} />
         </Row>
-        <Row label="Line height">
-          <Slider min={12} max={48} step={1} value={t.proseLineHeight} onChange={v => updateTheme({ proseLineHeight: v })} />
-        </Row>
         <Row label="Color">
           <ColorPicker value={t.proseColor} onChange={v => updateTheme({ proseColor: v })} />
         </Row>
@@ -238,9 +235,12 @@ export function ThemePanel({ open, onClose }: ThemePanelProps) {
         <Row label="Char width">
           <Slider min={0.8} max={1.5} step={0.01} value={t.charWidthMultiplier} onChange={v => updateTheme({ charWidthMultiplier: v })} />
         </Row>
-        <Row label="Char height">
+        <Row label="Row height">
           <Slider min={1.0} max={2.0} step={0.01} value={t.charHeightMultiplier} onChange={v => updateTheme({ charHeightMultiplier: v })} />
         </Row>
+        <div style={{ fontSize: 10, color: "#808088", lineHeight: 1.4 }}>
+          Row height scales prose lines and wireframe rows together so frames stay aligned with the prose around them.
+        </div>
       </Section>
 
       <Section title="Color">

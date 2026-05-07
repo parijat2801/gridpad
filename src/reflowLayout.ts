@@ -66,6 +66,12 @@ export function reflowLayout(
   canvasWidth: number,
   lineHeight: number,
   obstacles: Obstacle[],
+  /** Height to advance for null (claimed / wireframe) lines. Defaults to
+   * `lineHeight` so existing callers keep their behavior. The unified
+   * document passes the wireframe cell height here so prose-line spacing
+   * (`lineHeight`) and frame-row spacing differ without misaligning the
+   * `line.y` produced for prose lines that follow a band. */
+  claimedLineHeight: number = lineHeight,
 ): ReflowResult {
   const lines: PositionedLine[] = [];
   let lineTop = 0;
@@ -73,8 +79,9 @@ export function reflowLayout(
   for (let i = 0; i < preparedLines.length; i++) {
     const prepared = preparedLines[i];
     if (prepared === null) {
-      // Empty source line — advance then skip past any overlapping obstacle
-      lineTop += lineHeight;
+      // Claimed / empty source line — advance by claimedLineHeight then skip
+      // past any overlapping obstacle.
+      lineTop += claimedLineHeight;
       for (const obs of obstacles) {
         if (lineTop + lineHeight > obs.y && lineTop < obs.y + obs.h) {
           lineTop = obs.y + obs.h;

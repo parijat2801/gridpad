@@ -24,7 +24,7 @@ import {
 import { UnsavedChangesModal } from "./UnsavedChangesModal";
 import { serializeUnified } from "./serializeUnified";
 import { createFileBackend, type FileBackend } from "./fileBackend";
-import { type Frame, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame } from "./frame";
+import { type Frame, hitTestFrames, resizeFrame, createRectFrame, createLineFrame, createTextFrame, recomputePixelFields } from "./frame";
 import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { setTextAlignEffect } from "./editorState";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
@@ -353,9 +353,22 @@ export default function DemoV2() {
     preparedRef.current = buildPreparedCache(proseText);
   }
 
+  // The unified document advances prose and wireframe rows at the same rate
+  // so frames sit cleanly between prose blocks at any zoom level. That rate
+  // is `ch` (the wireframe cell height — see `measureCellSize` in grid.ts),
+  // which already responds to the `charHeightMultiplier` knob in the theme
+  // panel. The legacy `theme.proseLineHeight` field is preserved for
+  // forward-compat with persisted theme.json files but is no longer driven
+  // by the UI; it's kept here only so the canvas-side cursor blink rect can
+  // pick a sensible glyph height if the wireframe ch ever drifts below it.
+  function effectiveProseLineHeight(): number {
+    return chRef.current;
+  }
+
   function doLayout() {
     if (!stateRef.current) { linesRef.current = []; return; }
     const ch = chRef.current;
+    const plh = effectiveProseLineHeight();
     const frames = getFrames(stateRef.current);
 
     // Build set of claimed line numbers (0-based)
@@ -370,8 +383,11 @@ export default function DemoV2() {
     const prepared = preparedRef.current;
     const adjusted = prepared.map((p, i) => claimedLines.has(i) ? null : p);
 
-    // No obstacles in unified mode
-    linesRef.current = reflowLayout(adjusted, sizeRef.current.w, ch, []).lines;
+    // Prose lines and wireframe rows advance at the same rate (`ch`) — the
+    // unified-document invariant. plh === ch by construction, so the prose
+    // line.y values produced by reflow line up exactly with the f.y values
+    // assigned in the second pass below.
+    linesRef.current = reflowLayout(adjusted, sizeRef.current.w, plh, []).lines;
 
     // Set frame pixel Y from lineTop accumulator
     let lineTop = 0;
@@ -389,7 +405,7 @@ export default function DemoV2() {
         lineTop += ch;
       } else {
         const visualLines = linesRef.current.filter(l => l.sourceLine === i);
-        lineTop += Math.max(visualLines.length, 1) * ch;
+        lineTop += Math.max(visualLines.length, 1) * plh;
       }
     }
   }
@@ -400,7 +416,8 @@ export default function DemoV2() {
     if (!stateRef.current) return;
     const { w, h: viewH } = sizeRef.current;
     let contentH = 100;
-    for (const line of linesRef.current) contentH = Math.max(contentH, line.y + chRef.current);
+    const plh = effectiveProseLineHeight();
+    for (const line of linesRef.current) contentH = Math.max(contentH, line.y + plh);
     for (const f of framesRef.current) contentH = Math.max(contentH, f.y + f.h);
     contentH = Math.max(contentH + 40, viewH);
     // Update scroll spacer to enable scrolling over full content
@@ -419,11 +436,13 @@ export default function DemoV2() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.translate(0, -scrollTop);
     ctx.font = proseFontRender(); ctx.fillStyle = theme.proseColor; ctx.textBaseline = "top";
-    // Viewport culling — only draw visible content
-    const viewTop = scrollTop - chRef.current;
-    const viewBot = scrollTop + viewH + chRef.current;
+    // Viewport culling — only draw visible content. Pad by max(ch, plh) so
+    // both prose and wireframe rows partially-on-screen still render.
+    const cullPad = Math.max(chRef.current, plh);
+    const viewTop = scrollTop - cullPad;
+    const viewBot = scrollTop + viewH + cullPad;
     for (const line of linesRef.current) {
-      if (line.y + theme.proseLineHeight >= viewTop && line.y <= viewBot) ctx.fillText(line.text, line.x, line.y);
+      if (line.y + plh >= viewTop && line.y <= viewBot) ctx.fillText(line.text, line.x, line.y);
     }
     const cw = cwRef.current, ch = chRef.current;
     for (const frame of framesRef.current) {
@@ -437,13 +456,13 @@ export default function DemoV2() {
         renderFrameSelection(ctx, sel.frame, sel.absX, sel.absY, showHandles);
       }
     }
-    // Prose cursor (blinking)
+    // Prose cursor (blinking) — uses prose line-height, not wireframe ch.
     const cursor = proseCursorRef.current;
     if (cursor && blinkRef.current) {
       ctx.font = proseFontRender();
-      const pos = findCursorLine(cursor, linesRef.current, (s) => ctx.measureText(s).width, chRef.current);
+      const pos = findCursorLine(cursor, linesRef.current, (s) => ctx.measureText(s).width, plh);
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(pos.x, pos.y, 2, theme.proseLineHeight);
+      ctx.fillRect(pos.x, pos.y, 2, plh);
     }
     // Text frame cursor (blinking)
     const te = textEditRef.current;
@@ -509,19 +528,23 @@ export default function DemoV2() {
 
   function proseCursorFromClick(px: number, py: number): CursorPos | null {
     if (linesRef.current.length === 0) return null;
-    // Find closest visual line — vertical distance first, horizontal tie-break
+    // Find closest visual line — vertical distance first, horizontal tie-break.
+    // Vertical centre uses the same floored line-height that reflow used to
+    // position lines, so the click→line mapping doesn't drift when the user
+    // sets proseLineHeight below proseFontSize.
+    const plh = effectiveProseLineHeight();
     let best: PositionedLine | null = null;
     let bestDist = Infinity;
     const candidates: PositionedLine[] = [];
     let minVDist = Infinity;
 
     for (const pl of linesRef.current) {
-      const vDist = Math.abs(pl.y + theme.proseLineHeight / 2 - py);
+      const vDist = Math.abs(pl.y + plh / 2 - py);
       if (vDist < minVDist) minVDist = vDist;
     }
     // Collect all lines within 1px of the best vertical distance (same y-band)
     for (const pl of linesRef.current) {
-      const vDist = Math.abs(pl.y + theme.proseLineHeight / 2 - py);
+      const vDist = Math.abs(pl.y + plh / 2 - py);
       if (vDist <= minVDist + 1) candidates.push(pl);
     }
     if (candidates.length === 1) {
@@ -1546,6 +1569,12 @@ export default function DemoV2() {
       await measureCellSize();
       cwRef.current = getCharWidth();
       chRef.current = getCharHeight();
+      // Frames cache pixel x/y/w/h derived from canonical grid coords + the
+      // cell size at the time they were created. When ch/cw change, those
+      // pixel fields are stale — bands/wireframes still render at the old
+      // size while doLayout positions them with the new lineTop. Walk the
+      // tree and rebuild pixels from grid coords.
+      recomputePixelFields(framesRef.current, cwRef.current, chRef.current);
       // Prepared cache holds word-wrap measurements against the OLD prose font.
       // Skipping this rebuild makes text wrap at stale boundaries on prose
       // font/size changes.
