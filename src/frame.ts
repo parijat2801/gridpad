@@ -222,6 +222,44 @@ export function framesToObstacles(frames: Frame[]): Obstacle[] {
   return frames.map((f) => ({ id: f.id, x: f.x, y: f.y, w: f.w, h: f.h }));
 }
 
+// ── recomputePixelFields ───────────────────────────────────
+
+/**
+ * Recompute every frame's pixel x/y/w/h from its canonical grid coords.
+ * Use this when cell size (cw / ch) changes — the grid coords are still the
+ * source of truth, but the cached pixel fields are now stale.
+ *
+ * Grid coords on band children are stored BAND-RELATIVE (see wrapAsBand),
+ * so the same `grid * cellSize` formula applies at every tree depth — there
+ * is no parent-offset accumulation to do here.
+ *
+ * Top-level frame y values are intentionally NOT touched: doLayout owns
+ * the absolute y of every top-level frame (it stitches prose blocks and
+ * frame rows together via lineTop). We only correct relative dimensions
+ * here; doLayout will overwrite top-level y on its next call.
+ */
+export function recomputePixelFields(frames: Frame[], cw: number, ch: number): void {
+  for (const f of frames) {
+    f.x = f.gridCol * cw;
+    f.w = f.gridW * cw;
+    f.h = f.gridH * ch;
+    // f.y left alone for top-level frames — doLayout sets it. For child
+    // frames it'll be overwritten by the recursive pass below using the
+    // child's band-relative gridRow.
+    if (f.children.length > 0) recomputeChildren(f.children, cw, ch);
+  }
+}
+
+function recomputeChildren(children: Frame[], cw: number, ch: number): void {
+  for (const c of children) {
+    c.x = c.gridCol * cw;
+    c.y = c.gridRow * ch;
+    c.w = c.gridW * cw;
+    c.h = c.gridH * ch;
+    if (c.children.length > 0) recomputeChildren(c.children, cw, ch);
+  }
+}
+
 // ── hitTestFrames ──────────────────────────────────────────
 
 function hitTestOne(frame: Frame, px: number, py: number): Frame | null {

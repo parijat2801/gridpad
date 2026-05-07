@@ -1,20 +1,19 @@
 /**
- * textFont.ts — Prose text font constants.
- * Separate from grid.ts which owns monospace cell measurement for wireframes.
+ * textFont.ts — Prose text font helpers.
+ *
+ * Font *strings* now live in ./theme (proseFontMeasure / proseFontRender) so
+ * they compose from the live theme at call time. This file owns the async
+ * font-load helper used to gate measurement on font availability.
+ *
+ * Re-exports preserve existing import sites.
  */
 
-/** Font string for Pretext measurement — bare Inter, no fallback stack.
- * Pretext warns that system-ui is unsafe for layout accuracy on macOS. */
-export const PROSE_FONT_MEASURE = "16px Inter";
+import { proseFontMeasure, proseFontRender } from "./theme";
 
-/** Font string for canvas ctx.font — includes fallback for missing glyphs. */
-export const PROSE_FONT_RENDER = "16px Inter, sans-serif";
+export { proseFontMeasure, proseFontRender };
 
-/** Line height for prose text in pixels. Inter at 16px reads best at ~22px. */
-export const PROSE_LINE_HEIGHT = 22;
-
-/** Wait for Inter to be loaded before measuring text.
- * Call once before first buildPreparedCache. */
+/** Wait for the prose font (current theme value) to be loaded before measuring.
+ * Call before first buildPreparedCache, and again after any prose-font change. */
 export async function ensureProseFontReady(): Promise<void> {
-  await document.fonts.load(PROSE_FONT_MEASURE);
+  await document.fonts.load(proseFontMeasure());
 }
