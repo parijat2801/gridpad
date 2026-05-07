@@ -263,11 +263,13 @@ export default function DemoV2() {
     }
   }
 
-  function markClean(): void {
-    if (docDirty) {
-      setDocDirty(false);
-      pushTitle(currentPath, false);
-    }
+  // `pathOverride` is for callers that just resolved a new path mid-async
+  // (loadFromPath, Cmd+Shift+S) — the closure's `currentPath` is stale at
+  // that moment because setCurrentPath() hasn't flushed yet. Without it the
+  // titlebar briefly shows the previous file.
+  function markClean(pathOverride?: string | null): void {
+    setDocDirty(false);
+    pushTitle(pathOverride !== undefined ? pathOverride : currentPath, false);
   }
 
   // Centralized seam — every doc-mutating helper (apply*/editorUndo/
@@ -285,13 +287,17 @@ export default function DemoV2() {
 
   async function saveCurrent(): Promise<void> {
     if (!backend) return;
-    const state = stateRef.current;
-    const md = serializeUnified(getDoc(state), getFrames(state));
+    // Snapshot the state-at-save-start. If the user edits between now and
+    // when backend.saveFile() resolves, those edits aren't on disk and we
+    // must keep the doc dirty.
+    const snapshot = stateRef.current;
+    const md = serializeUnified(getDoc(snapshot), getFrames(snapshot));
     await backend.saveFile(md);
     stateRef.current = applyClearDirty(stateRef.current);
     syncRefsFromState();
-    markClean();
-    pushTitle(currentPath, false);
+    if (!docDiffersFrom(snapshot, stateRef.current)) {
+      markClean();
+    }
   }
 
   async function loadFromPath(path: string): Promise<void> {
@@ -304,8 +310,9 @@ export default function DemoV2() {
     loadDocument(text);
     doLayout(); paint();
     setCurrentPath(path);
-    markClean();
-    pushTitle(path, false);
+    // Pass explicit path: setCurrentPath hasn't flushed by the time
+    // markClean → pushTitle reads currentPath from this closure.
+    markClean(path);
   }
 
   function handleOpenRequest(path: string): void {
@@ -321,10 +328,11 @@ export default function DemoV2() {
     if (!backend) return;
     const unsub = backend.subscribeToOpenRequest(handleOpenRequest);
     return unsub;
-    // handleOpenRequest closes over docDirty/backend — keep it in deps so the
-    // subscription's closure always sees the latest dirty state.
+    // handleOpenRequest closes over docDirty/backend/currentPath — all are
+    // dependencies because the closure's behavior changes when any of them
+    // does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backend, docDirty]);
+  }, [backend, docDirty, currentPath]);
   function setTool(t: ToolName) { activeToolRef.current = t; setActiveTool(t); drawPreviewRef.current = null; textPlacementRef.current = null; }
 
   function loadDocument(text: string) {
@@ -1196,23 +1204,25 @@ export default function DemoV2() {
           loadDocument(r.text);
           doLayout(); paint();
           setCurrentPath(r.path);
-          markClean();
-          pushTitle(r.path, false);
+          markClean(r.path);
         }
         return;
       }
       if (mod && e.shiftKey && e.key === "s") {
         e.preventDefault();
         if (!backend) return;
-        const state = stateRef.current;
-        const md = serializeUnified(getDoc(state), getFrames(state));
+        const snapshot = stateRef.current;
+        const md = serializeUnified(getDoc(snapshot), getFrames(snapshot));
         const newPath = await backend.saveFileAs(md);
         if (newPath !== null) {
           stateRef.current = applyClearDirty(stateRef.current);
           syncRefsFromState();
           setCurrentPath(newPath);
-          markClean();
-          pushTitle(newPath, false);
+          if (!docDiffersFrom(snapshot, stateRef.current)) {
+            markClean(newPath);
+          } else {
+            pushTitle(newPath, true);
+          }
         }
         return;
       }
