@@ -39,11 +39,22 @@ Vite · React 19 · TypeScript · [@chenglou/pretext](https://www.npmjs.com/pack
 
 ```bash
 npm install
-npm run dev      # dev server at localhost:5173
+npm run dev      # web dev server at localhost:5173
 npm test         # vitest unit tests
-npm run build    # production build
+npm run build    # production web build
 npx playwright test e2e/   # full e2e suite
 ```
+
+## Desktop app
+
+Gridpad ships as a native desktop app via [Tauri 2](https://tauri.app), with a `.md` file association so it can register as your system's markdown editor on macOS, Windows, and Linux.
+
+```bash
+npm run tauri dev      # run the desktop app in dev mode
+npm run tauri build    # produce a signed bundle for the host OS
+```
+
+On macOS, `tauri build` produces a `.app` (and `.dmg`) under `src-tauri/target/release/bundle/`.
 
 ## Deployment
 
