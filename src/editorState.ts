@@ -2024,6 +2024,19 @@ export function decideReparent(
         for (let r = aRow; r < aRow + gridH; r++) {
           if (proseRows.has(r)) return { kind: "none" };
         }
+        // A promote whose landing rows lie entirely within the source
+        // band's own claim is not a reparent — the per-tick cumulative
+        // drag already committed any within-band motion. Classifying it
+        // as promote routed it through extract→fresh-band→merge, and a
+        // self-promote near doc end emptied the band and destroyed the
+        // prose below it (apply-layer bug pinned in
+        // ghostOnDragPastEnd.diag.test.ts).
+        const sourceBand = findContainingBandDeep(frames, draggedId);
+        if (sourceBand && sourceBand.lineCount > 0
+            && aRow >= sourceBand.gridRow
+            && aRow + gridH <= sourceBand.gridRow + sourceBand.lineCount) {
+          return { kind: "none" };
+        }
       }
       return { kind: "promote" };
     }

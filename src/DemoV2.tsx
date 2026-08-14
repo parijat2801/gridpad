@@ -908,7 +908,7 @@ export default function DemoV2() {
     syncRefsFromState();
   }
 
-  function onMouseUp(e?: React.MouseEvent) {
+  function onMouseUp(e?: { clientX: number; clientY: number }) {
     if (dragRef.current) {
       // Strategy A (Fix 1): if onMouseDown deferred the drill (mouse-down
       // landed on the current selection or a descendant) AND the gesture
@@ -1193,6 +1193,21 @@ export default function DemoV2() {
     const fn = () => { if (!stateRef.current) return; sizeRef.current = { w: window.innerWidth, h: window.innerHeight }; doLayout(); paint(); };
     window.addEventListener("resize", fn);
     return () => window.removeEventListener("resize", fn);
+  }, []);
+
+  // A drag can end outside the canvas (release past the top edge, off-window,
+  // over the toolbar). The canvas-bound onMouseUp never fires there, leaving
+  // the gesture uncommitted: no reparent decision, no history entry (per-tick
+  // moves are addToHistory:false, so undo can't revert them), and a live
+  // dragRef that corrupts the next gesture. Catch the release at the window
+  // level. In-canvas releases fire both paths; onMouseUp is ref-guarded, so
+  // the second call no-ops.
+  const onMouseUpRef = useRef<(e?: { clientX: number; clientY: number }) => void>(onMouseUp);
+  onMouseUpRef.current = onMouseUp;
+  useEffect(() => {
+    const fn = (ev: MouseEvent) => onMouseUpRef.current(ev);
+    window.addEventListener("mouseup", fn);
+    return () => window.removeEventListener("mouseup", fn);
   }, []);
 
   useEffect(() => {

@@ -3714,13 +3714,18 @@ describe("reparent cascade-prunes empty wireframes and bands", () => {
     const wf1Survived = sourceBandAfter!.children.some(c => c.id === "test-wf1-id");
     expect(wf1Survived).toBe(false); // fails before fix: empty wireframe lingers
 
-    // The band's remaining child should be wf2 (still has rect2).
-    expect(sourceBandAfter!.children.length).toBe(1);
-    expect(sourceBandAfter!.children[0].id).toBe("test-wf2-id");
+    // Group D merge semantics (fbc7362): row 5 is flush against the band's
+    // rows [2..4], so the fresh band wrapping promoted rect1 merges back
+    // into the source band (bands have no identity; touching bands always
+    // merge after a reparent). The band therefore holds wf2 AND rect1 —
+    // what matters is that empty wf1 is gone and rect1 survived somewhere
+    // at top level.
+    expect(sourceBandAfter!.children.length).toBe(2);
+    expect(sourceBandAfter!.children.some(c => c.id === "test-wf2-id")).toBe(true);
 
-    // rect1 should now be top-level (in a band at row 5 or thereabouts).
+    // rect1 survived the promote: it lives in SOME top-level band.
     const rect1Band = finalFrames.find(
-      f => f.isBand && f.gridRow !== origBand.gridRow && f.children.some(c => c.id === rect1.id)
+      f => f.isBand && f.children.some(c => c.id === rect1.id)
     );
     expect(rect1Band).toBeDefined();
   });
