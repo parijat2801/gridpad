@@ -4,6 +4,7 @@
 
 import { regenerateCells, buildLineCells, buildLayersFromScan } from "./layers";
 import type { RectStyle, ScanResult } from "./scanner";
+import { isTL, isTR, isBL, isBR, isHEdge, isVEdge } from "./scanner";
 import type { Bbox } from "./types";
 import { layoutTextChildren, reparentChildren } from "./autoLayout";
 import type { AlignAnchor, VAlignAnchor } from "./autoLayout";
@@ -386,6 +387,44 @@ export function resizeFrame(
 
 // ── framesFromScan ─────────────────────────────────────────
 
+/** Rebuild a rect's cell map so its borders align exactly with the (0,0)…
+ * (h-1, w-1) bbox. Literal glyphs survive at border positions where they
+ * play the right role (edge chars and junctions); misplaced or missing
+ * border cells are regenerated from the style; out-of-bbox cells drop.
+ * Interior cells pass through untouched. */
+export function squareRectCells(
+  cells: Map<string, string>,
+  w: number,
+  h: number,
+  style: RectStyle,
+): Map<string, string> {
+  if (w < 2 || h < 2) return cells;
+  const out = new Map<string, string>();
+  // Interior cells (and border cells with role-compatible glyphs) first.
+  for (const [k, ch] of cells) {
+    const ci = k.indexOf(",");
+    const r = Number(k.slice(0, ci));
+    const c = Number(k.slice(ci + 1));
+    if (r < 0 || r >= h || c < 0 || c >= w) continue; // off-bbox (drift)
+    const isBorder = r === 0 || r === h - 1 || c === 0 || c === w - 1;
+    if (!isBorder) { out.set(k, ch); continue; }
+    const ok =
+      (r === 0 && c === 0 && isTL(ch)) ||
+      (r === 0 && c === w - 1 && isTR(ch)) ||
+      (r === h - 1 && c === 0 && isBL(ch)) ||
+      (r === h - 1 && c === w - 1 && isBR(ch)) ||
+      ((r === 0 || r === h - 1) && c > 0 && c < w - 1 && isHEdge(ch)) ||
+      ((c === 0 || c === w - 1) && r > 0 && r < h - 1 && isVEdge(ch));
+    if (ok) out.set(k, ch);
+  }
+  // Fill any border position still empty with the canonical style glyph.
+  const canonical = regenerateCells({ row: 0, col: 0, w, h }, style);
+  for (const [k, ch] of canonical) {
+    if (!out.has(k)) out.set(k, ch);
+  }
+  return out;
+}
+
 export function framesFromScan(
   scanResult: ScanResult,
   charWidth: number,
@@ -425,6 +464,20 @@ export function framesFromScan(
     return { id: nextId(), x, y, w, h, z: 0, children: [], content, clip: true, dirty: false, gridRow: layer.bbox.row, gridCol: layer.bbox.col, gridW: layer.bbox.w, gridH: layer.bbox.h, docOffset: 0, lineCount: 0 };
   });
 
+  // Square every rect's border cells to its bbox. The corner-seed tracer
+  // tolerates ±1 drift (hand-authored art where a border row is shifted a
+  // column), and the literal claimed cells then sit misaligned with the
+  // frame's grid geometry: corners land off-bbox, edge cells go missing, and
+  // every save renders a skewed box that degrades further on reload. Border
+  // positions keep their literal glyph when it plays the right role there
+  // (junctions like ┬ ┴ ├ ┤ ┼ survive); anything else is regenerated from
+  // the style. Interior cells (labels, separator rows) stay untouched.
+  for (const f of frames) {
+    if (f.content?.type === "rect" && f.content.style) {
+      f.content = { ...f.content, cells: squareRectCells(f.content.cells, f.gridW, f.gridH, f.content.style) };
+    }
+  }
+
   reparentChildren(frames, charWidth, charHeight);
 
   // Filter out text frames that are just wire/border characters.
@@ -442,15 +495,18 @@ export function framesFromScan(
   const cleaned = filterWireText(frames);
 
   // Absorb wall-stray line children — hand-authored raggedness where interior
-  // rows run one column past the box corner (a │ flush OUTSIDE the wall).
-  // Single-row strays already normalize away via the wire-text filter above;
-  // multi-row strays become 1-col line children that render a doubled wall
-  // (`…││`) on every save. Tight match so flowchart connectors survive:
-  // vertical 1-col line, flush against the parent rect's left or right wall,
-  // spanning interior rows only.
+  // rows run one column past the box corner (a │ flush OUTSIDE the wall) or
+  // stop one column short of it (a │ flush INSIDE the wall, leaving the
+  // corner-traced wall column blank on those rows). Single-row strays already
+  // normalize away via the wire-text filter above; multi-row strays become
+  // 1-col line children that render a doubled wall (`…││`) on every save.
+  // Tight match so flowchart connectors survive: vertical 1-col line,
+  // hugging the parent rect's left or right wall from either side, spanning
+  // interior rows only.
   const isWallStray = (parent: Frame, c: Frame): boolean =>
     c.content?.type === "line" && c.gridW === 1
-    && (c.gridCol === parent.gridW || c.gridCol === -1)
+    && (c.gridCol === parent.gridW || c.gridCol === -1
+      || c.gridCol === parent.gridW - 2 || c.gridCol === 1)
     && c.gridRow >= 1 && c.gridRow + c.gridH <= parent.gridH - 1;
   const absorbWallStrays = (fs: Frame[]): Frame[] =>
     fs.map(f => ({
