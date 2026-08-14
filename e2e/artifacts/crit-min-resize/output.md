@@ -1,6 +1,0 @@
-Prose above
-
-┌┐
-└┘
-
-Prose below

@@ -1,8 +1,0 @@
- FIRSTProse above
-
-     ┌──────────────┐
-     │              │
-     │              │
-     └──────────────┘
-
- SECONDProse below

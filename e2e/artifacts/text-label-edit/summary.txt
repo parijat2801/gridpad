@@ -1,3 +1,0 @@
-Input had "Hello": true
-Output has "Hello!": false
-Output has wireframe: true

@@ -1,8 +1,0 @@
-SWEEPProse above
-
-┌──────────────┐
-│              │
-│              │
-└──────────────┘
-
-Prose below

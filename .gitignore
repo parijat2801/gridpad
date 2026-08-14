@@ -24,3 +24,7 @@ dist-ssr
 *.sw?
 test-results/
 .claude/worktrees/
+
+# Playwright test-run outputs (regenerated on every run)
+e2e/artifacts/
+e2e/screenshots/

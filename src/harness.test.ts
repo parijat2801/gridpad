@@ -18,10 +18,6 @@ import {
 } from "./layers";
 import { buildSparseRows } from "./sparseRows";
 import { insertChar, deleteChar } from "./proseCursor";
-// @ts-expect-error vitest runs in node where fs/path exist
-import * as fs from "fs";
-// @ts-expect-error vitest runs in node where fs/path exist
-import * as path from "path";
 
 // ── Canvas mock for Pretext ──────────────────────────────
 beforeAll(() => {

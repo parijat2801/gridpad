@@ -966,10 +966,6 @@ export default function DemoV2() {
             { aRow, gridH: draggedGridH, proseRows },
             { aRow, gridH: draggedGridH },
           );
-          // eslint-disable-next-line no-console
-          console.log("[DRAG MOUSEUP]", JSON.stringify({
-            draggedId, upPx, upPy, aRow, aCol, decision: reparentDecision,
-          }));
           if (reparentDecision.kind !== "none") {
             reparentArgs = { aRow, aCol, cw, ch, draggedId };
           }
