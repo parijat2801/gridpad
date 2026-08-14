@@ -1205,7 +1205,10 @@ export default function DemoV2() {
   useEffect(() => {
     const fn = async (e: KeyboardEvent) => {
       if (!stateRef.current) return;
-      const mod = navigator.platform.includes("Mac") ? e.metaKey : e.ctrlKey;
+      // Accept either accelerator key: Cmd on Mac, Ctrl elsewhere. Checking
+      // both also keeps unhandled chords (e.g. Meta+z on Linux) out of the
+      // character-insert paths below, which gate on !mod.
+      const mod = e.metaKey || e.ctrlKey;
       // Cmd+, toggles the theme panel — works in any mode (prose, text-edit, idle).
       if (mod && e.key === ",") {
         e.preventDefault();
