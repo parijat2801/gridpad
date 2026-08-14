@@ -420,9 +420,12 @@ export default function DemoV2() {
     for (const line of linesRef.current) contentH = Math.max(contentH, line.y + plh);
     for (const f of framesRef.current) contentH = Math.max(contentH, f.y + f.h);
     contentH = Math.max(contentH + 40, viewH);
-    // Update scroll spacer to enable scrolling over full content
+    // Update scroll spacer to enable scrolling over full content. The sticky
+    // canvas already contributes one viewport-height (100%) to the scroll
+    // extent, so the spacer only adds the overflow beyond it — otherwise the
+    // user can scroll a full blank viewport past the end of the document.
     const spacer = canvas.parentElement?.querySelector("[data-spacer]") as HTMLElement | null;
-    if (spacer) spacer.style.height = `${contentH}px`;
+    if (spacer) spacer.style.height = `${Math.max(contentH - viewH, 0)}px`;
     const scrollTop = canvas.parentElement?.scrollTop ?? 0;
     // Canvas is viewport-sized (never exceeds GPU limits), drawing is offset by scrollTop
     const dpr = window.devicePixelRatio || 1;
@@ -632,6 +635,27 @@ export default function DemoV2() {
       paint(); return;
     }
     if (tool === "text") {
+      // Text-tool click on existing prose (outside any frame) reads as
+      // "edit this text", not "stack a label on top of it" — a label over
+      // prose renders as an illegible overlap and corrupts the row on
+      // save. Redirect to a prose cursor and disarm the tool.
+      if (!nestParent) {
+        const plh = effectiveProseLineHeight();
+        const overProse = linesRef.current.some(
+          pl => pl.text.trim().length > 0 && py >= pl.y && py < pl.y + plh,
+        );
+        if (overProse) {
+          const cursor = proseCursorFromClick(px, py);
+          if (cursor) {
+            stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
+            textEditRef.current = null;
+            proseCursorRef.current = cursor;
+            stateRef.current = moveCursorTo(stateRef.current, cursor);
+            setTool("select");
+            blinkRef.current = true; paint(); return;
+          }
+        }
+      }
       const cw = cwRef.current, ch = chRef.current;
       const snappedX = Math.floor(px / cw) * cw, snappedY = Math.floor(py / ch) * ch;
       textPlacementRef.current = { x: snappedX, y: snappedY, chars: "", parentId: nestParent?.id ?? null };
@@ -721,6 +745,12 @@ export default function DemoV2() {
     if (drawPreviewRef.current) { drawPreviewRef.current = { ...drawPreviewRef.current, curX: px, curY: py }; paint(); return; }
     const drag = dragRef.current;
     if (!drag) {
+      // Armed draw/text tool overrides hover cursors — the crosshair is the
+      // user's only always-on signal that the next click draws instead of
+      // selecting or placing a prose cursor.
+      const armedTool = activeToolRef.current;
+      if (armedTool === "rect" || armedTool === "line") { setCanvasCursor("crosshair"); return; }
+      if (armedTool === "text") { setCanvasCursor("text"); return; }
       // Dynamic cursor — hover detection when no drag active
       const selectedId = getSelectedId(stateRef.current);
       if (selectedId) {
@@ -1284,7 +1314,7 @@ export default function DemoV2() {
       // Text placement tool — collect typed chars
       const tp = textPlacementRef.current;
       if (tp) {
-        if (e.key === "Escape") { e.preventDefault(); textPlacementRef.current = null; paint(); return; }
+        if (e.key === "Escape") { e.preventDefault(); textPlacementRef.current = null; setTool("select"); paint(); return; }
         if (e.key === "Enter") {
           e.preventDefault();
           if (tp.chars.length > 0) {
@@ -1511,6 +1541,13 @@ export default function DemoV2() {
       // Global shortcuts (no prose cursor)
       if (e.key === "Escape") {
         stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
+        // Escape is the universal bail-out: also disarm any armed draw/text
+        // tool. Tools can get armed invisibly (r/l/t are bare hotkeys, so
+        // stray typing with a frame selected arms them), and an armed tool
+        // hijacks prose clicks — without this, "click text → no cursor"
+        // looks like the editor is broken.
+        drawPreviewRef.current = null;
+        setTool("select");
         paint();
       }
       const deleteSelectedId = getSelectedId(stateRef.current);
