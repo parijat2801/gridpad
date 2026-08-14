@@ -1,7 +1,0 @@
- RESIZEDProse above
-
-┌───────────┐
-│           │
-└───────────┘
-
-Prose below

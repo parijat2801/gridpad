@@ -162,6 +162,35 @@ describe("decideReparent (mouseup-only, no size guard)", () => {
     expect(decision.kind).toBe("promote");
   });
 
+  it("returns 'none' for a promote landing entirely inside the source band's own rows", () => {
+    // Repro for the multi-move corruption: drag B slightly left so the
+    // release point is off-canvas (or over empty band space) but the
+    // landing rows are exactly B's own band rows. hitTest misses (bands
+    // are transparent), the no-hit branch classified this as "promote",
+    // and the self-promote near doc end emptied the band and destroyed
+    // the prose below it. A promote that lands entirely within the source
+    // band's claimed rows is not a reparent — the per-tick cumulative drag
+    // already committed any within-band motion.
+    const state = createEditorStateUnified(TWO_SAME_SIZE, cw, ch);
+    const frames = getFrames(state);
+    const wireB = findWireframeByLabel(frames, "B")!;
+    expect(wireB).toBeTruthy();
+    const band = frames.find(f => f.isBand && f.children.some(c => c.id === wireB.id))!;
+    expect(band).toBeTruthy();
+
+    // Release just left of the canvas at B's vertical center.
+    const center = absCenter(frames, wireB.id)!;
+    const dropPx = -2;
+    const dropPy = center.py;
+    const aRow = band.gridRow + wireB.gridRow; // absolute landing row = B's own row
+    const decision = decideReparent(
+      frames, wireB.id, dropPx, dropPy, Number.POSITIVE_INFINITY,
+      { aRow, gridH: wireB.gridH, proseRows: new Set<number>() },
+      { aRow, gridH: wireB.gridH },
+    );
+    expect(decision.kind).toBe("none");
+  });
+
   it("returns 'none' when the drop point hits the same top-level the dragged frame is already in", () => {
     const state = createEditorStateUnified(TWO_SAME_SIZE, cw, ch);
     const frames = getFrames(state);

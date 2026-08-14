@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test("double-click text label and type changes it", async ({ page }) => {
-  await page.goto("http://localhost:5173");
+  await page.goto("/");
   await page.waitForTimeout(2000);
 
   const canvas = page.locator("canvas");

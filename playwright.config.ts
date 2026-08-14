@@ -8,5 +8,8 @@ export default defineConfig({
   use: {
     baseURL: process.env.GRIDPAD_URL ?? "http://localhost:5177/",
     headless: true,
+    ...(process.env.PW_CHROMIUM_PATH
+      ? { launchOptions: { executablePath: process.env.PW_CHROMIUM_PATH } }
+      : {}),
   },
 });

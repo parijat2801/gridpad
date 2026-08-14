@@ -1,9 +1,0 @@
-
-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAProse above
-
-┌──────────────┐
-│              │
-│              │
-└──────────────┘
-
-Prose below

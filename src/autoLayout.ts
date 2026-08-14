@@ -177,11 +177,20 @@ export function reparentChildren(
     let bestArea = Infinity;
     for (const rect of rects) {
       if (rect.id === child.id) continue; // self-exclusion
-      const inside =
+      const horizOk =
         child.x >= rect.x &&
+        child.x + child.w <= rect.x + rect.w + charWidth;
+      // The one-row vertical tolerance exists for labels sitting ON a shared
+      // border row (junction grids). A TEXT that starts fully below the
+      // rect's last row is the following prose paragraph, not a label —
+      // capturing it silently swallows the user's prose into the frame
+      // (drag a box down flush against a paragraph and save: the paragraph
+      // became a label). Text must start within the rect's rows.
+      const vertOk =
         child.y >= rect.y &&
-        child.x + child.w <= rect.x + rect.w + charWidth &&
-        child.y + child.h <= rect.y + rect.h + charHeight;
+        child.y + child.h <= rect.y + rect.h + charHeight &&
+        (child.content?.type !== "text" || child.y < rect.y + rect.h);
+      const inside = horizOk && vertOk;
       if (inside) {
         const area = rect.w * rect.h;
         if (area < bestArea) { bestArea = area; bestRect = rect; }

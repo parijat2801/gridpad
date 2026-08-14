@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test("click in prose area and type — text appears", async ({ page }) => {
-  await page.goto("http://localhost:5173");
+  await page.goto("/");
   await page.waitForTimeout(2000);
 
   // Screenshot before

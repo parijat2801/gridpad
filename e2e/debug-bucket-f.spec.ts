@@ -12,7 +12,7 @@ test("debug bucket F: trace each step of text-label edit", async ({ page }) => {
   page.on("console", msg => {
     if (msg.text().startsWith("[")) console.log("BROWSER:", msg.text());
   });
-  await page.goto("http://localhost:5173/");
+  await page.goto("/");
   await page.waitForFunction(() => (window as any).__gridpad !== undefined);
   await page.evaluate((md) => (window as any).__gridpad.loadDocument(md), LABELED_BOX);
   await page.waitForTimeout(300);

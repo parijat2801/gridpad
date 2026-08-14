@@ -219,7 +219,11 @@ test.describe("workflows", () => {
     await load(page, TWO_SEPARATE);
     await page.waitForTimeout(500);
 
-    // Frame 0 is box A (top). Drag it down 150px so it ends up below box B.
+    // Frame 0 is box A (top). Drag it down hard. Fix 14 semantics: a drag
+    // does not cross a non-blank prose line, so A clamps above "Middle"
+    // instead of passing B. (The pre-Fix-14 version of this test expected
+    // A to land below B; the owner retired the analogous harness test as
+    // obsolete when the clamp shipped.)
     await clickFrame(page, 0);
     await dragSelected(page, 0, 150);
     await clickProse(page, 5, 5);
@@ -227,16 +231,16 @@ test.describe("workflows", () => {
     const md = await save(page);
     writeArtifact(name, "output.md", md);
 
-    // Find row positions of "A" and "B" labels in the output
+    // Both boxes and every prose line survive, in the original order.
     const lines = md.split("\n");
     const rowA = lines.findIndex(l => l.includes("│ A"));
     const rowB = lines.findIndex(l => l.includes("│ B"));
-    writeArtifact(name, "rows.json", JSON.stringify({ rowA, rowB }, null, 2));
-
-    // A should now appear below B in the serialized output
+    const rowMiddle = lines.findIndex(l => l.includes("Middle"));
+    writeArtifact(name, "rows.json", JSON.stringify({ rowA, rowB, rowMiddle }, null, 2));
     expect(rowA).toBeGreaterThan(-1);
     expect(rowB).toBeGreaterThan(-1);
-    expect(rowA).toBeGreaterThan(rowB);
+    expect(rowMiddle).toBeGreaterThan(rowA); // A stays clamped above the prose wall
+    expect(rowB).toBeGreaterThan(rowMiddle);
 
     // No ghosts
     const ghosts = await findGhostsFromPage(page, md);
@@ -392,8 +396,9 @@ test.describe("workflows", () => {
     // Default doc already loaded
     await page.waitForTimeout(1000);
 
-    // Click in a prose area well away from wireframes (top of canvas)
-    await clickProse(page, 5, 300);
+    // Click in a prose area well away from wireframes (heading area at the
+    // very top — y=300 is inside the dashboard under the current layout)
+    await clickProse(page, 5, 10);
     await page.waitForTimeout(300);
 
     // Type a recognizable string

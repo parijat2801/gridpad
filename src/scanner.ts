@@ -76,22 +76,22 @@ const V_EDGE = new Set(["│", "║", "├", "┤", "┼", "╟", "╢", "╫", 
 const H_LINE_CHAR = new Set(["─", "━", "═"]);
 const V_LINE_CHAR = new Set(["│", "║"]);
 
-function isTL(ch: string): boolean {
+export function isTL(ch: string): boolean {
   return TL_CORNERS.has(ch);
 }
-function isTR(ch: string): boolean {
+export function isTR(ch: string): boolean {
   return TR_CORNERS.has(ch);
 }
-function isBL(ch: string): boolean {
+export function isBL(ch: string): boolean {
   return BL_CORNERS.has(ch);
 }
-function isBR(ch: string): boolean {
+export function isBR(ch: string): boolean {
   return BR_CORNERS.has(ch);
 }
-function isHEdge(ch: string): boolean {
+export function isHEdge(ch: string): boolean {
   return H_EDGE.has(ch);
 }
-function isVEdge(ch: string): boolean {
+export function isVEdge(ch: string): boolean {
   return V_EDGE.has(ch);
 }
 
@@ -278,6 +278,18 @@ function detectRectangles(
   return { rects, claimed };
 }
 
+// All box-drawing glyphs — used to decide whether a single stray line char
+// is structurally connected (a flowchart stem touching a border) or truly
+// isolated (a rogue │ typed into prose).
+const WIRE_GLYPHS = new Set([..."┌┐└┘│─├┤┬┴┼═║╔╗╚╝╠╣╦╩╬+|-"]);
+
+// A cell that is part of running text (printable, not wire, not blank).
+// Single line chars flanked by text stay with the text — "A│B" is a text
+// run with a divider glyph, not a connector.
+function isTextCell(ch: string): boolean {
+  return ch !== " " && ch !== "" && !WIRE_GLYPHS.has(ch);
+}
+
 function detectLines(
   grid: string[][],
   claimed: Set<string>,
@@ -286,9 +298,11 @@ function detectLines(
   const lineClaimed = new Set<string>();
 
   // Horizontal lines: scan each row for runs of H_LINE_CHAR not claimed by
-  // rects. ONLY multi-cell runs are promoted to line shapes — single isolated
-  // characters fall through to unclaimedCells so they remain authoritative
-  // user characters with no reinterpretation.
+  // rects. Multi-cell runs are always promoted to line shapes. A SINGLE
+  // character is promoted only when structurally connected — a wire glyph
+  // sits immediately before or after the run (e.g. a 1-cell tap between two
+  // borders). Isolated single characters fall through to detectTexts so a
+  // rogue ─ in prose is never reinterpreted as a shape.
   for (let row = 0; row < grid.length; row++) {
     const width = grid[row].length;
     let runStart = -1;
@@ -299,11 +313,18 @@ function detectLines(
       if (isLine) {
         if (runStart < 0) runStart = col;
       } else {
-        if (runStart >= 0 && col - 1 > runStart) {
-          // Multi-cell run only
-          lines.push({ r1: row, c1: runStart, r2: row, c2: col - 1 });
-          for (let c = runStart; c < col; c++) {
-            lineClaimed.add(key(row, c));
+        if (runStart >= 0) {
+          const runEnd = col - 1;
+          const connected =
+            (WIRE_GLYPHS.has(getCell(grid, row, runStart - 1)) ||
+              WIRE_GLYPHS.has(getCell(grid, row, runEnd + 1))) &&
+            !isTextCell(getCell(grid, row - 1, runStart)) &&
+            !isTextCell(getCell(grid, row + 1, runStart));
+          if (runEnd > runStart || connected) {
+            lines.push({ r1: row, c1: runStart, r2: row, c2: runEnd });
+            for (let c = runStart; c < col; c++) {
+              lineClaimed.add(key(row, c));
+            }
           }
         }
         runStart = -1;
@@ -311,7 +332,10 @@ function detectLines(
     }
   }
 
-  // Vertical lines: same rule — only multi-cell runs become line shapes.
+  // Vertical lines: same rule. The connected-single-cell case is the
+  // flowchart stem — `└──┬──┘ │ ┌──┴──┐` has a lone │ between two borders
+  // that used to be silently swallowed by the wire-only text filter,
+  // destroying the connector on save.
   const height = grid.length;
   const maxWidth = grid.reduce((m, r) => Math.max(m, r.length), 0);
   for (let col = 0; col < maxWidth; col++) {
@@ -326,10 +350,18 @@ function detectLines(
       if (isLine) {
         if (runStart < 0) runStart = row;
       } else {
-        if (runStart >= 0 && row - 1 > runStart) {
-          lines.push({ r1: runStart, c1: col, r2: row - 1, c2: col });
-          for (let r = runStart; r < row; r++) {
-            lineClaimed.add(key(r, col));
+        if (runStart >= 0) {
+          const runEnd = row - 1;
+          const connected =
+            (WIRE_GLYPHS.has(getCell(grid, runStart - 1, col)) ||
+              WIRE_GLYPHS.has(getCell(grid, runEnd + 1, col))) &&
+            !isTextCell(getCell(grid, runStart, col - 1)) &&
+            !isTextCell(getCell(grid, runStart, col + 1));
+          if (runEnd > runStart || connected) {
+            lines.push({ r1: runStart, c1: col, r2: runEnd, c2: col });
+            for (let r = runStart; r < row; r++) {
+              lineClaimed.add(key(r, col));
+            }
           }
         }
         runStart = -1;
@@ -461,11 +493,18 @@ export function extractRectStyle(grid: string[][], rect: ScannedRect): RectStyle
   const blChar = getCell(grid, row + h - 1, col);
   const brChar = getCell(grid, row + h - 1, col + w - 1);
 
-  // Step 2: Canonicalize corners
-  const tl = canonicalizeCorner(tlChar, "tl");
-  const tr = canonicalizeCorner(trChar, "tr");
-  const bl = canonicalizeCorner(blChar, "bl");
-  const br = canonicalizeCorner(brChar, "br");
+  // Step 2: Canonicalize corners. A ±1-drifted trace can leave a corner's
+  // bbox position holding a space or an edge char (the literal glyph sits
+  // one column over) — falling back to the primary corner keeps the style
+  // usable instead of baking the drift into every future render.
+  const tl0 = canonicalizeCorner(tlChar, "tl");
+  const tr0 = canonicalizeCorner(trChar, "tr");
+  const bl0 = canonicalizeCorner(blChar, "bl");
+  const br0 = canonicalizeCorner(brChar, "br");
+  const tl = isTL(tl0) ? tl0 : "┌";
+  const tr = isTR(tr0) ? tr0 : "┐";
+  const bl = isBL(bl0) ? bl0 : "└";
+  const br = isBR(br0) ? br0 : "┘";
 
   // Step 3: ASCII family special case — all four canonicalized corners are "+"
   if (tl === "+" && tr === "+" && bl === "+" && br === "+") {

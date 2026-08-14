@@ -1194,6 +1194,33 @@ export function proseDeleteBefore(
   }).state;
 }
 
+/** Forward delete (Delete key): remove the grapheme cluster after the
+ * cursor, or join with the next line when at line end. Mirror of
+ * proseDeleteBefore. */
+export function proseDeleteAfter(
+  state: EditorState,
+  cursor: CursorPos,
+): EditorState {
+  const pos = rowColToPos(state, cursor.row, cursor.col);
+  if (pos >= state.doc.length) return state;
+
+  const lineInfo = state.doc.lineAt(pos);
+  let nextClusterEnd: number;
+  if (pos === lineInfo.to) {
+    nextClusterEnd = pos + 1; // consume the newline — joins the next line
+  } else {
+    const textAfter = lineInfo.text.slice(pos - lineInfo.from);
+    const first = [...segmenter.segment(textAfter)][0];
+    nextClusterEnd = pos + first.segment.length;
+  }
+
+  return state.update({
+    changes: { from: pos, to: nextClusterEnd },
+    selection: { anchor: pos },
+    userEvent: "delete.forward",
+  }).state;
+}
+
 export function moveCursorTo(
   state: EditorState,
   cursor: CursorPos,
@@ -2023,6 +2050,19 @@ export function decideReparent(
         const { aRow, gridH, proseRows } = promoteLanding;
         for (let r = aRow; r < aRow + gridH; r++) {
           if (proseRows.has(r)) return { kind: "none" };
+        }
+        // A promote whose landing rows lie entirely within the source
+        // band's own claim is not a reparent — the per-tick cumulative
+        // drag already committed any within-band motion. Classifying it
+        // as promote routed it through extract→fresh-band→merge, and a
+        // self-promote near doc end emptied the band and destroyed the
+        // prose below it (apply-layer bug pinned in
+        // ghostOnDragPastEnd.diag.test.ts).
+        const sourceBand = findContainingBandDeep(frames, draggedId);
+        if (sourceBand && sourceBand.lineCount > 0
+            && aRow >= sourceBand.gridRow
+            && aRow + gridH <= sourceBand.gridRow + sourceBand.lineCount) {
+          return { kind: "none" };
         }
       }
       return { kind: "promote" };

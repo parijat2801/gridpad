@@ -26,7 +26,11 @@ test.describe("Gridpad Demo", () => {
   test("click selects wireframe (blue pixels appear)", async ({ page }) => {
     const canvas = page.locator("canvas");
     const box = await canvas.boundingBox();
-    await page.mouse.click(box!.x + 200, box!.y + 110);
+    // Click the center of the first wireframe wherever the current layout
+    // puts it — a fixed coordinate goes stale every time fonts or line
+    // heights change.
+    const f = (await page.evaluate(() => (window as any).__gridpad.getFrameRects()))[0];
+    await page.mouse.click(box!.x + f.x + f.w / 2, box!.y + f.y + f.h / 2);
     await page.waitForTimeout(300);
     const bluePixels = await page.evaluate(() => {
       const c = document.querySelector("canvas");
