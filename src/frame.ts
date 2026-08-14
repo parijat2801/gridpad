@@ -441,9 +441,29 @@ export function framesFromScan(
     );
   const cleaned = filterWireText(frames);
 
+  // Absorb wall-stray line children — hand-authored raggedness where interior
+  // rows run one column past the box corner (a │ flush OUTSIDE the wall).
+  // Single-row strays already normalize away via the wire-text filter above;
+  // multi-row strays become 1-col line children that render a doubled wall
+  // (`…││`) on every save. Tight match so flowchart connectors survive:
+  // vertical 1-col line, flush against the parent rect's left or right wall,
+  // spanning interior rows only.
+  const isWallStray = (parent: Frame, c: Frame): boolean =>
+    c.content?.type === "line" && c.gridW === 1
+    && (c.gridCol === parent.gridW || c.gridCol === -1)
+    && c.gridRow >= 1 && c.gridRow + c.gridH <= parent.gridH - 1;
+  const absorbWallStrays = (fs: Frame[]): Frame[] =>
+    fs.map(f => ({
+      ...f,
+      children: absorbWallStrays(
+        f.content?.type === "rect" ? f.children.filter(c => !isWallStray(f, c)) : f.children,
+      ),
+    }));
+  const absorbed = absorbWallStrays(cleaned);
+
   // After reparenting, top-level text frames are bare prose — discard them.
   // Text frames that belong inside rects have already been moved to children.
-  const shaped = cleaned.filter((f) => f.content?.type !== "text");
+  const shaped = absorbed.filter((f) => f.content?.type !== "text");
 
   // Filter out orphan line frames — single-cell lines (│ or ─) that aren't
   // adjacent to any rect. These come from misaligned ASCII art where a wire

@@ -4,7 +4,7 @@ test("resize rect changes wireframe rendering", async ({ page }) => {
   const logs: string[] = [];
   page.on("console", msg => { if (msg.text().startsWith("resize:")) logs.push(msg.text()); });
 
-  await page.goto("http://localhost:5173");
+  await page.goto("/");
   await page.waitForTimeout(2000);
   await page.screenshot({ path: "/tmp/gridpad-resize-before.png" });
 

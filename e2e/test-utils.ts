@@ -288,14 +288,41 @@ export async function clickFrame(page: Page, frameIndex: number) {
 /** Drag the currently-selected frame by (dx, dy) pixels.
  * Verifies a frame is selected before dragging and that it actually moved.
  * Throws if no frame is selected or the frame didn't move. */
+
+/** Find a frame by ID anywhere in the full frame tree. Under eager bands the
+ * selected frame may be nested (band → container → rect) and absent from the
+ * flat getFrames() list. */
+async function findFrameInTreeById(page: Page, id: string): Promise<{ absX: number; absY: number; w: number; h: number } | null> {
+  const tree = await getFrameTree(page);
+  const search = (nodes: any[]): any => {
+    for (const n of nodes) {
+      if (n.id === id) return n;
+      if (n.children?.length) {
+        const found = search(n.children);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  return search(tree);
+}
+
+/** Resolve a selected frame's bbox: flat list first, full tree fallback. */
+async function resolveFramePos(page: Page, selId: string): Promise<{ x: number; y: number; w: number; h: number }> {
+  const frames = await getFrames(page);
+  const f = frames.find(fr => fr.id === selId);
+  if (f) return { x: f.x, y: f.y, w: f.w, h: f.h };
+  const node = await findFrameInTreeById(page, selId);
+  if (node) return { x: node.absX, y: node.absY, w: node.w, h: node.h };
+  throw new Error(`resolveFramePos: frame ${selId} not found in getFrames or getFrameTree`);
+}
+
 export async function dragSelected(page: Page, dx: number, dy: number) {
   const canvas = page.locator("canvas");
   const box = await canvas.boundingBox();
   const selId = await getSelectedId(page);
   if (!selId) throw new Error(`dragSelected: no frame selected — call clickFrame first`);
-  const frames = await getFrames(page);
-  const f = frames.find(fr => fr.id === selId);
-  if (!f) throw new Error(`dragSelected: selected frame ${selId} not found in getFrames`);
+  const f = await resolveFramePos(page, selId);
   const beforeX = f.x, beforeY = f.y;
   // Account for scroll — frame.y is content coords, viewport needs scroll subtracted
   const scrollTop = await page.evaluate(() => document.querySelector("canvas")?.parentElement?.scrollTop ?? 0);
@@ -311,15 +338,14 @@ export async function dragSelected(page: Page, dx: number, dy: number) {
   await page.waitForTimeout(300);
   // Verify frame moved (skip check for sub-pixel drags or boundary clamps)
   if (Math.abs(dx) >= 5 || Math.abs(dy) >= 5) {
-    const framesAfter = await getFrames(page);
-    const fAfter = framesAfter.find(fr => fr.id === selId);
+    const fAfter = await findFrameInTreeById(page, selId);
     if (fAfter) {
-      const movedX = Math.abs(fAfter.x - beforeX);
-      const movedY = Math.abs(fAfter.y - beforeY);
+      const movedX = Math.abs(fAfter.absX - beforeX);
+      const movedY = Math.abs(fAfter.absY - beforeY);
       // Allow no-move if drag would push past boundary (e.g., negative clamp)
       const wouldClamp = (beforeX + dx < 0) || (beforeY + dy < 0);
       if (movedX < 1 && movedY < 1 && !wouldClamp) {
-        throw new Error(`dragSelected: frame ${selId} didn't move (before=${Math.round(beforeX)},${Math.round(beforeY)} after=${Math.round(fAfter.x)},${Math.round(fAfter.y)} dx=${dx} dy=${dy})`);
+        throw new Error(`dragSelected: frame ${selId} didn't move (before=${Math.round(beforeX)},${Math.round(beforeY)} after=${Math.round(fAfter.absX)},${Math.round(fAfter.absY)} dx=${dx} dy=${dy})`);
       }
     }
   }
@@ -330,8 +356,7 @@ export async function dragSelected(page: Page, dx: number, dy: number) {
 export async function resizeSelected(page: Page, dw: number, dh: number) {
   const selId = await getSelectedId(page);
   if (!selId) throw new Error(`resizeSelected: no frame selected — call clickFrame first`);
-  const frames = await getFrames(page);
-  const f = frames.find(fr => fr.id === selId) ?? frames[0];
+  const f = await resolveFramePos(page, selId);
   const beforeW = f.w, beforeH = f.h;
   // Bottom-right corner in viewport coords (scroll-aware)
   const { box: rbox, scrollTop: rscroll } = await getScrollState(page);

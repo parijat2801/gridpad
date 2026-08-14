@@ -53,7 +53,7 @@ This document describes the architecture. Here is a key diagram:
 ┌──────────────────────────────┐
 │        API Gateway           │
 ├──────────┬───────────────────┤
-│ Auth     │  Router            │
+│ Auth     │  Router           │
 │ Service  │                   │
 └──────────┴───────────────────┘
 
@@ -64,10 +64,10 @@ Below is the database schema:
 
 
 ┌────────────┐  ┌────────────┐
-│  Users     │  │  Posts      │
-│  id        │  │  id         │
-│  name      │  │  user_id    │
-│  email     │  │  title      │
+│  Users     │  │  Posts     │
+│  id        │  │  id        │
+│  name      │  │  user_id   │
+│  email     │  │  title     │
 └────────────┘  └────────────┘
 
 

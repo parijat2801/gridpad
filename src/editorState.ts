@@ -1194,6 +1194,33 @@ export function proseDeleteBefore(
   }).state;
 }
 
+/** Forward delete (Delete key): remove the grapheme cluster after the
+ * cursor, or join with the next line when at line end. Mirror of
+ * proseDeleteBefore. */
+export function proseDeleteAfter(
+  state: EditorState,
+  cursor: CursorPos,
+): EditorState {
+  const pos = rowColToPos(state, cursor.row, cursor.col);
+  if (pos >= state.doc.length) return state;
+
+  const lineInfo = state.doc.lineAt(pos);
+  let nextClusterEnd: number;
+  if (pos === lineInfo.to) {
+    nextClusterEnd = pos + 1; // consume the newline — joins the next line
+  } else {
+    const textAfter = lineInfo.text.slice(pos - lineInfo.from);
+    const first = [...segmenter.segment(textAfter)][0];
+    nextClusterEnd = pos + first.segment.length;
+  }
+
+  return state.update({
+    changes: { from: pos, to: nextClusterEnd },
+    selection: { anchor: pos },
+    userEvent: "delete.forward",
+  }).state;
+}
+
 export function moveCursorTo(
   state: EditorState,
   cursor: CursorPos,

@@ -10,9 +10,10 @@ import {
   selectFrameEffect, getSelectedId,
   moveFrameEffect, resizeFrameEffect, setZEffect,
   applyAddTopLevelFrame, applyAddChildFrame, applyReparentFrame, applyDeleteFrame, applyClearDirty,
-  proseInsert, proseDeleteBefore, moveCursorTo, getCursor,
+  proseInsert, proseDeleteBefore, proseDeleteAfter, moveCursorTo, getCursor,
   proseMoveLeft, proseMoveRight, proseMoveUp, proseMoveDown,
   proseMoveToLineStart, proseMoveToLineEnd,
+  posToRowCol,
   editorUndo, editorRedo,
   setTextEditEffect, editTextFrameEffect, getTextEdit,
   resolveSelectionTarget, decideSelectionForMouseDown, decideReparent, landingGridFromCursor, shouldEscalateResidual, findImmediateParent, findFrameInList,
@@ -29,6 +30,7 @@ import { renderFrame, renderFrameSelection } from "./frameRenderer";
 import { setTextAlignEffect } from "./editorState";
 import { reflowLayout, type PositionedLine } from "./reflowLayout";
 import { findCursorLine } from "./cursorFind";
+import { cmpPos, rangeTextSerialized, claimedRows, applyDeleteRange, selectionRects, wordRangeAt } from "./proseRange";
 import { measureCellSize, getCharWidth, getCharHeight } from "./grid";
 import { ensureProseFontReady, proseFontRender } from "./textFont";
 import { theme, subscribe as subscribeTheme, loadTheme, wireframeFont, type ThemeUpdateKind } from "./theme";
@@ -225,6 +227,11 @@ export default function DemoV2() {
   const [showWrappers, setShowWrappers] = useState<boolean>(false);
   const [canvasCursor, setCanvasCursor] = useState("default");
   const proseCursorRef = useRef<CursorPos | null>(null);
+  // Prose selection: anchor..proseCursorRef is the selected range (collapsed
+  // = no selection). proseSelectingRef is true while a drag-select gesture
+  // is in progress (mousedown on prose, button still held).
+  const selAnchorRef = useRef<CursorPos | null>(null);
+  const proseSelectingRef = useRef(false);
   const blinkRef = useRef(true);
   const textEditRef = useRef<{ frameId: string; col: number } | null>(null);
   const lastClickRef = useRef<{ time: number; px: number; py: number } | null>(null);
@@ -341,6 +348,7 @@ export default function DemoV2() {
     syncRefsFromState();
     dragRef.current = null;
     proseCursorRef.current = null;
+    selAnchorRef.current = null;
   }
 
   /** Refresh framesRef + proseRef + preparedRef from the current EditorState.
@@ -460,6 +468,18 @@ export default function DemoV2() {
       }
     }
     // Prose cursor (blinking) — uses prose line-height, not wireframe ch.
+    // Prose selection highlight — translucent fill under the caret layer.
+    const selAnchor = selAnchorRef.current;
+    const selHead = proseCursorRef.current;
+    if (selAnchor && selHead && cmpPos(selAnchor, selHead) !== 0) {
+      ctx.font = proseFontRender();
+      const rects = selectionRects(selAnchor, selHead, linesRef.current, (s) => ctx.measureText(s).width, plh);
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = theme.selectionColor;
+      for (const r of rects) ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.restore();
+    }
     const cursor = proseCursorRef.current;
     if (cursor && blinkRef.current) {
       ctx.font = proseFontRender();
@@ -650,6 +670,7 @@ export default function DemoV2() {
             stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
             textEditRef.current = null;
             proseCursorRef.current = cursor;
+            selAnchorRef.current = null;
             stateRef.current = moveCursorTo(stateRef.current, cursor);
             setTool("select");
             blinkRef.current = true; paint(); return;
@@ -701,7 +722,7 @@ export default function DemoV2() {
             effects: [selectFrameEffect.of(hit.id), setTextEditEffect.of({ frameId: hit.id, col: textLen })],
           }).state;
           textEditRef.current = getTextEdit(stateRef.current); // sync for paint
-          proseCursorRef.current = null; dragRef.current = null;
+          proseCursorRef.current = null; selAnchorRef.current = null; dragRef.current = null;
           blinkRef.current = true; canvas.focus(); paint(); return;
         }
       }
@@ -712,7 +733,7 @@ export default function DemoV2() {
       if (decision.kind === "applyRule") {
         stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(targetId) }).state;
       }
-      proseCursorRef.current = null; textEditRef.current = null;
+      proseCursorRef.current = null; selAnchorRef.current = null; textEditRef.current = null;
       const found = findFrameById(framesRef.current, targetId);
       if (found) {
         dragRef.current = {
@@ -729,7 +750,27 @@ export default function DemoV2() {
       stateRef.current = stateRef.current.update({ effects: selectFrameEffect.of(null) }).state;
       dragRef.current = null;
       textEditRef.current = null;
+      const prevCursor = proseCursorRef.current;
       const cursor = proseCursorFromClick(px, py);
+      if (cursor && isDblClick) {
+        // Double-click on prose selects the word under the cursor.
+        const lineText = stateRef.current.doc.line(cursor.row + 1).text;
+        const word = wordRangeAt(lineText, cursor.row, cursor.col);
+        if (word) {
+          selAnchorRef.current = word.from;
+          proseCursorRef.current = word.to;
+          stateRef.current = moveCursorTo(stateRef.current, word.to);
+          proseSelectingRef.current = false;
+          blinkRef.current = true; paint(); return;
+        }
+      }
+      if (cursor && e.shiftKey && prevCursor) {
+        // Shift+click extends from the existing cursor (or existing anchor).
+        if (!selAnchorRef.current) selAnchorRef.current = prevCursor;
+      } else {
+        selAnchorRef.current = cursor; // collapsed until the drag extends it
+      }
+      proseSelectingRef.current = cursor !== null;
       proseCursorRef.current = cursor;
       if (cursor) stateRef.current = moveCursorTo(stateRef.current, cursor);
       blinkRef.current = true; paint();
@@ -743,6 +784,21 @@ export default function DemoV2() {
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top + (canvas.parentElement?.scrollTop ?? 0);
     if (drawPreviewRef.current) { drawPreviewRef.current = { ...drawPreviewRef.current, curX: px, curY: py }; paint(); return; }
+    // Prose drag-select: extend the selection head while the button is held.
+    if (proseSelectingRef.current && !dragRef.current) {
+      if ((e.buttons & 1) === 0) {
+        proseSelectingRef.current = false;
+      } else {
+        const cursor = proseCursorFromClick(px, py);
+        if (cursor) {
+          proseCursorRef.current = cursor;
+          stateRef.current = moveCursorTo(stateRef.current, cursor);
+          blinkRef.current = true;
+          paint();
+        }
+        return;
+      }
+    }
     const drag = dragRef.current;
     if (!drag) {
       // Armed draw/text tool overrides hover cursors — the crosshair is the
@@ -939,6 +995,15 @@ export default function DemoV2() {
   }
 
   function onMouseUp(e?: { clientX: number; clientY: number }) {
+    proseSelectingRef.current = false;
+    // A click that never extended into a drag-select leaves a collapsed
+    // anchor at the click point. Drop it — otherwise the next typed char
+    // moves the cursor off the stale anchor, fabricating a phantom 1-char
+    // selection that the following keystroke's replace-on-type deletes.
+    if (selAnchorRef.current && proseCursorRef.current
+        && cmpPos(selAnchorRef.current, proseCursorRef.current) === 0) {
+      selAnchorRef.current = null;
+    }
     if (dragRef.current) {
       // Strategy A (Fix 1): if onMouseDown deferred the drill (mouse-down
       // landed on the current selection or a descendant) AND the gesture
@@ -1193,6 +1258,7 @@ export default function DemoV2() {
             effects: [selectFrameEffect.of(null), setTextEditEffect.of(null)],
           }).state;
           proseCursorRef.current = null;
+          selAnchorRef.current = null;
           textEditRef.current = null;
           dragRef.current = null;
           doLayout(); paint();
@@ -1207,6 +1273,7 @@ export default function DemoV2() {
             effects: [selectFrameEffect.of(id), setTextEditEffect.of(null)],
           }).state;
           proseCursorRef.current = null;
+          selAnchorRef.current = null;
           textEditRef.current = null;
           syncRefsFromState();
           paint();
@@ -1274,6 +1341,17 @@ export default function DemoV2() {
         preparedRef.current = buildPreparedCache(proseRef.current);
         proseCursorRef.current = getCursor(stateRef.current);
         doLayout(); blinkRef.current = true; paint();
+        return;
+      }
+      if (mod && e.key === "a" && !textEditRef.current && !textPlacementRef.current) {
+        // Select all prose. Works without an active cursor — Cmd+A is how
+        // users grab the whole document for copying.
+        e.preventDefault();
+        const endCursor = posToRowCol(stateRef.current, stateRef.current.doc.length);
+        selAnchorRef.current = { row: 0, col: 0 };
+        proseCursorRef.current = endCursor;
+        stateRef.current = moveCursorTo(stateRef.current, endCursor);
+        blinkRef.current = true; paint();
         return;
       }
       if (mod && e.key === "o") {
@@ -1470,58 +1548,63 @@ export default function DemoV2() {
         return;
       }
       if (proseCursorRef.current) {
-        if (e.key === "Escape") { proseCursorRef.current = null; paint(); return; }
-        if (e.key === "ArrowLeft") {
-          e.preventDefault();
-          stateRef.current = proseMoveLeft(stateRef.current);
-          proseCursorRef.current = getCursor(stateRef.current);
-          blinkRef.current = true; paint(); return;
-        }
-        if (e.key === "ArrowRight") {
-          e.preventDefault();
-          stateRef.current = proseMoveRight(stateRef.current);
-          proseCursorRef.current = getCursor(stateRef.current);
-          blinkRef.current = true; paint(); return;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          stateRef.current = proseMoveUp(stateRef.current);
-          proseCursorRef.current = getCursor(stateRef.current);
-          blinkRef.current = true; paint(); return;
-        }
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          stateRef.current = proseMoveDown(stateRef.current);
-          proseCursorRef.current = getCursor(stateRef.current);
-          blinkRef.current = true; paint(); return;
-        }
-        if (e.key === "Home") {
-          e.preventDefault();
-          stateRef.current = proseMoveToLineStart(stateRef.current);
-          proseCursorRef.current = getCursor(stateRef.current);
-          blinkRef.current = true; paint(); return;
-        }
-        if (e.key === "End") {
-          e.preventDefault();
-          stateRef.current = proseMoveToLineEnd(stateRef.current);
-          proseCursorRef.current = getCursor(stateRef.current);
-          blinkRef.current = true; paint(); return;
-        }
-        if (e.key === "Backspace") {
-          e.preventDefault();
-          const beforeCursor = getCursor(stateRef.current)!;
-          applyAndTrack(prev => proseDeleteBefore(prev, beforeCursor));
-          // Unified-doc: proseDelete mutates the CM doc; mapPos in framesField
-          // shifts every frame's docOffset automatically. No manual frame-shift
-          // loop needed. syncRefsFromState rebuilds preparedRef from scratch.
+        const selA = selAnchorRef.current;
+        const hasSelection = !!selA && !!proseCursorRef.current
+          && cmpPos(selA, proseCursorRef.current) !== 0;
+        // Delete the active selection (band-aware). applyDeleteRange refuses
+        // ranges whose endpoints sit on band rows — then the selection is
+        // simply dropped and the key proceeds against the collapsed cursor.
+        const deleteSelection = () => {
+          const head = proseCursorRef.current!;
+          applyAndTrack(prev => applyDeleteRange(prev, selA!, head));
+          selAnchorRef.current = null;
           syncRefsFromState();
+          proseCursorRef.current = getCursor(stateRef.current) ?? head;
+          doLayout();
+        };
+        if (e.key === "Escape") { selAnchorRef.current = null; proseCursorRef.current = null; paint(); return; }
+        const MOVES: Record<string, (s: EditorState) => EditorState> = {
+          ArrowLeft: proseMoveLeft, ArrowRight: proseMoveRight,
+          ArrowUp: proseMoveUp, ArrowDown: proseMoveDown,
+          Home: proseMoveToLineStart, End: proseMoveToLineEnd,
+        };
+        if (MOVES[e.key]) {
+          e.preventDefault();
+          // Shift extends the selection (anchoring at the pre-move cursor on
+          // first extension); a bare move collapses it.
+          if (e.shiftKey) {
+            if (!selAnchorRef.current) selAnchorRef.current = proseCursorRef.current;
+          } else {
+            selAnchorRef.current = null;
+          }
+          stateRef.current = MOVES[e.key](stateRef.current);
           proseCursorRef.current = getCursor(stateRef.current);
-          doLayout(); blinkRef.current = true; paint(); return;
+          blinkRef.current = true; paint(); return;
+        }
+        if (e.key === "Backspace" || e.key === "Delete") {
+          e.preventDefault();
+          if (hasSelection) {
+            deleteSelection();
+          } else {
+            const c = getCursor(stateRef.current)!;
+            // Unified-doc: the change mutates the CM doc; mapPos in
+            // framesField shifts every frame's docOffset automatically.
+            applyAndTrack(prev => e.key === "Backspace"
+              ? proseDeleteBefore(prev, c)
+              : proseDeleteAfter(prev, c));
+            selAnchorRef.current = null;
+            syncRefsFromState();
+            proseCursorRef.current = getCursor(stateRef.current);
+            doLayout();
+          }
+          blinkRef.current = true; paint(); return;
         }
         if (e.key === "Enter") {
           e.preventDefault();
-          const c = getCursor(stateRef.current)!;
+          if (hasSelection) deleteSelection();
+          const c = getCursor(stateRef.current) ?? proseCursorRef.current!;
           applyAndTrack(prev => proseInsert(prev, c, "\n"));
+          selAnchorRef.current = null;
           // Same as Backspace: unified pipeline handles both doc + frame shift.
           syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
@@ -1529,9 +1612,11 @@ export default function DemoV2() {
         }
         if (e.key.length === 1 && !mod) {
           e.preventDefault();
-          const c = getCursor(stateRef.current)!;
+          if (hasSelection) deleteSelection();
+          const c = getCursor(stateRef.current) ?? proseCursorRef.current!;
           const key = e.key;
           applyAndTrack(prev => proseInsert(prev, c, key));
+          selAnchorRef.current = null;
           syncRefsFromState();
           proseCursorRef.current = getCursor(stateRef.current);
           doLayout(); blinkRef.current = true; paint(); return;
@@ -1591,8 +1676,71 @@ export default function DemoV2() {
         if (e.key === "t" || e.key === "T") setTool("text");
       }
     };
+    // Clipboard: native copy/cut/paste events fire on the focused document
+    // regardless of engine, and paste hands over clipboardData without a
+    // permission prompt (navigator.clipboard.readText doesn't in Firefox).
+    // Label text-edit and text-placement modes keep browser defaults.
+    const selectionRange = (): { a: CursorPos; c: CursorPos } | null => {
+      if (textEditRef.current || textPlacementRef.current) return null;
+      const a = selAnchorRef.current, c = proseCursorRef.current;
+      if (!a || !c || cmpPos(a, c) === 0) return null;
+      return { a, c };
+    };
+    const afterDocChange = () => {
+      syncRefsFromState();
+      proseCursorRef.current = getCursor(stateRef.current!);
+      doLayout(); blinkRef.current = true; paint();
+    };
+    const serializedRange = (a: CursorPos, c: CursorPos): string =>
+      rangeTextSerialized(
+        serializeUnified(getDoc(stateRef.current!), getFrames(stateRef.current!)),
+        a, c,
+        claimedRows(getFrames(stateRef.current!)),
+      );
+    const onCopy = (ev: ClipboardEvent) => {
+      const sel = selectionRange();
+      if (!sel || !stateRef.current) return;
+      ev.preventDefault();
+      ev.clipboardData?.setData("text/plain", serializedRange(sel.a, sel.c));
+    };
+    const onCut = (ev: ClipboardEvent) => {
+      const sel = selectionRange();
+      if (!sel || !stateRef.current) return;
+      ev.preventDefault();
+      ev.clipboardData?.setData("text/plain", serializedRange(sel.a, sel.c));
+      applyAndTrack(prev => applyDeleteRange(prev, sel.a, sel.c));
+      selAnchorRef.current = null;
+      afterDocChange();
+    };
+    const onPaste = (ev: ClipboardEvent) => {
+      if (textEditRef.current || textPlacementRef.current) return;
+      if (!proseCursorRef.current || !stateRef.current) return;
+      const text = ev.clipboardData?.getData("text/plain");
+      if (!text) return;
+      ev.preventDefault();
+      const sel = selectionRange();
+      if (sel) {
+        applyAndTrack(prev => applyDeleteRange(prev, sel.a, sel.c));
+        selAnchorRef.current = null;
+        syncRefsFromState();
+        proseCursorRef.current = getCursor(stateRef.current) ?? proseCursorRef.current;
+      }
+      const cur = getCursor(stateRef.current) ?? proseCursorRef.current;
+      if (!cur) return;
+      applyAndTrack(prev => proseInsert(prev, cur, text.replace(/\r\n?/g, "\n")));
+      selAnchorRef.current = null;
+      afterDocChange();
+    };
     window.addEventListener("keydown", fn);
-    return () => window.removeEventListener("keydown", fn);
+    document.addEventListener("copy", onCopy);
+    document.addEventListener("cut", onCut);
+    document.addEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("keydown", fn);
+      document.removeEventListener("copy", onCopy);
+      document.removeEventListener("cut", onCut);
+      document.removeEventListener("paste", onPaste);
+    };
   }, [backend, currentPath, docDirty]);
 
   useEffect(() => { if (ready) { doLayout(); paint(); } }, [ready]);
